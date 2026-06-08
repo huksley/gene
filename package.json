@@ -1,15 +1,24 @@
 {
   "name": "geneai",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
+  "description": "Gene AI — Linear + GitLab autonomous code pipeline (Claude Code dispatch daemon)",
+  "type": "module",
   "license": "ISC",
+  "volta": {
+    "node": "24.16.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env.development src/index.ts",
+    "once": "node --env-file-if-exists=.env.development src/index.ts --once",
+    "clone": "node --env-file-if-exists=.env.development src/clone.ts",
+    "reset": "node --env-file-if-exists=.env.development src/reset.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.1"
   }
 }
