@@ -1,11 +1,14 @@
 /**
- * Trello tracker. Reads and writes go through the `trello` CLI
- * (https://github.com/Scale-Flow/trello-cli) — a Go single binary on PATH that
- * emits a `{ "ok": true, "data": … }` / `{ "ok": false, "error": {…} }` envelope
- * and authenticates from the environment (TRELLO_API_KEY / TRELLO_TOKEN), so the
- * daemon and the spawned agent both inherit the creds. The one thing the CLI
- * can't do — download an attachment binary — uses the REST endpoint with an
- * OAuth Authorization header (ported from pipeline/trello.ts).
+ * Trello tracker. Reads and writes go through the bundled, dependency-free Trello
+ * REST wrapper (../../trello): `createTrelloClient()` authenticates with
+ * TRELLO_API_KEY + TRELLO_TOKEN — Trello requires BOTH on every call. The one
+ * thing the wrapper doesn't cover, attachments, is done here with direct REST:
+ * listing via key+token query auth, downloading via an OAuth Authorization header.
+ *
+ * The spawned agent can't import the wrapper (it runs inside a different repo's
+ * worktree), so it writes back by invoking the bundled CLI directly:
+ * `node <REPO_ROOT>/trello/cli.ts comment|move …` (allowedTools: `Bash(node *)`),
+ * inheriting the same TRELLO_* creds from the environment.
  *
  * Semantics mirror Linear: the Gene *label* marks ownership, a *list* is the
  * lifecycle state (the card's list name = stateName), and "assigned to me" filters
@@ -14,37 +17,21 @@
  */
 
 import logger from "../logger.ts";
-import { env } from "../config.ts";
-import { run } from "../exec.ts";
+import { env, REPO_ROOT } from "../config.ts";
 import { fetchRetryTimeout } from "../fetch.ts";
+import { createTrelloClient } from "../../trello/index.ts";
+import type {
+  TrelloCard,
+  TrelloClient,
+  TrelloComment,
+  TrelloList,
+  TrelloMember
+} from "../../trello/index.ts";
 import type { Attachment, Comment, Issue, Tracker } from "./index.ts";
 
-type RawCard = {
-  id: string;
-  name?: string | null;
-  desc?: string | null;
-  shortLink?: string | null;
-  shortUrl?: string | null;
-  url?: string | null;
-  idList?: string | null;
-  idLabels?: string[] | null;
-  idMembers?: string[] | null;
-  dateLastActivity?: string | null;
-};
+const TRELLO_API_BASE = "https://api.trello.com/1";
 
-type RawList = { id: string; name?: string | null };
-type RawLabel = { id: string; name?: string | null };
-type RawMember = { id: string; username?: string | null; fullName?: string | null };
-
-type RawTrelloComment = {
-  id: string;
-  date?: string | null;
-  createdAt?: string | null;
-  text?: string | null;
-  data?: { text?: string | null } | null;
-  memberCreator?: { id?: string; username?: string | null; fullName?: string | null } | null;
-};
-
+/** A card attachment, as Trello returns it (the wrapper deliberately omits these). */
 type RawAttachment = {
   id: string;
   name?: string | null;
@@ -74,48 +61,22 @@ const boardId = (): string => {
   return env.TRELLO_BOARD;
 };
 
-/** Pass the creds explicitly so the CLI authenticates regardless of how env was loaded. */
-const trelloEnv = (): NodeJS.ProcessEnv => {
-  const childEnv = { ...process.env };
-  if (env.TRELLO_API_KEY) {
-    childEnv.TRELLO_API_KEY = env.TRELLO_API_KEY;
+// The REST client, created lazily on first use (creds are validated then, not at
+// import time — so a Linear run never touches Trello creds).
+let client: TrelloClient | undefined;
+const trello = (): TrelloClient => {
+  if (!client) {
+    client = createTrelloClient();
   }
-  if (env.TRELLO_TOKEN) {
-    childEnv.TRELLO_TOKEN = env.TRELLO_TOKEN;
-  }
-  return childEnv;
+  return client;
 };
 
-/** Run a `trello` CLI command and unwrap its `{ok,data}` envelope (throws on `ok:false`). */
-const trelloCli = async <T>(args: string[]): Promise<T> => {
-  const result = await run("trello", args, { env: trelloEnv() });
-  let parsed: { ok?: boolean; data?: T; error?: { code?: string; message?: string } } | undefined;
-  if (result.stdout.trim()) {
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      /* fall through to the error below */
-    }
-  }
-  if (!parsed) {
-    throw new Error(
-      `trello ${args.join(" ")} failed (exit ${result.code}): ${oneLine(result.stderr || result.stdout, 300)}`
-    );
-  }
-  if (!parsed.ok) {
-    const e = parsed.error;
-    throw new Error(`trello ${args.join(" ")} failed: ${e?.code ?? "ERROR"} — ${e?.message ?? "unknown error"}`);
-  }
-  return parsed.data as T;
-};
-
-// Board metadata, resolved once per process (the tracker is a singleton): list
-// names↔ids, the Gene label id, board members, and the authenticated member.
+// Board metadata, resolved once per process (the tracker is a singleton): the
+// lists (name↔id), board members, the authenticated member, and the board name.
 let boardName: string | undefined;
-let listsCache: RawList[] | undefined;
-let labelsCache: RawLabel[] | undefined;
-let membersCache: RawMember[] | undefined;
-let meCache: RawMember | null | undefined;
+let listsCache: TrelloList[] | undefined;
+let membersCache: TrelloMember[] | undefined;
+let meCache: TrelloMember | null | undefined;
 let listMapCache: Record<string, string> | null | undefined;
 
 /** Parse + cache the optional TRELLO_LIST_MAP (state-name → list-id) override. */
@@ -148,37 +109,28 @@ const parseListMap = (): Record<string, string> => {
 };
 
 const ensureMeta = async (): Promise<void> => {
-  if (listsCache && labelsCache && membersCache && meCache !== undefined) {
+  if (listsCache && membersCache && meCache !== undefined) {
     return;
   }
   const board = boardId();
-  const [lists, labels, members, auth, boardInfo] = await Promise.all([
-    trelloCli<RawList[]>(["lists", "list", "--board", board]),
-    trelloCli<RawLabel[]>(["labels", "list", "--board", board]),
-    trelloCli<RawMember[]>(["members", "list", "--board", board]),
-    trelloCli<{ member?: RawMember | null }>(["auth", "status"]),
-    trelloCli<{ name?: string | null }>(["boards", "get", "--board", board]).catch(() => ({ name: undefined }))
+  const c = trello();
+  // Members/me/boards are best-effort: a missing member list just loses username
+  // resolution; the lists are essential (they are the lifecycle states).
+  const [lists, members, me, boards] = await Promise.all([
+    c.listLists(board),
+    c.listMembers(board).catch(() => [] as TrelloMember[]),
+    c.getMe().catch(() => null),
+    c.listBoards().catch(() => [])
   ]);
-  listsCache = lists ?? [];
-  labelsCache = labels ?? [];
-  membersCache = members ?? [];
-  meCache = auth?.member ?? null;
-  boardName = boardInfo?.name ?? undefined;
-};
-
-/** The board's Gene label id (matched by name, case-insensitive), or null if absent. */
-const labelId = (): string | null => {
-  const want = env.LABEL.toLowerCase();
-  return (labelsCache ?? []).find(l => (l.name ?? "").toLowerCase() === want)?.id ?? null;
+  listsCache = lists;
+  membersCache = members;
+  meCache = me;
+  boardName = boards.find(b => b.id === board)?.name;
 };
 
 /** A card's list id → the list's name (the lifecycle state). */
-const listName = (idList: string | null | undefined): string => {
-  if (!idList) {
-    return "";
-  }
-  return (listsCache ?? []).find(l => l.id === idList)?.name ?? "";
-};
+const listName = (idList: string): string =>
+  (listsCache ?? []).find(l => l.id === idList)?.name ?? "";
 
 /** Resolve a state name to a list id — TRELLO_LIST_MAP override first, else by list name. */
 const listIdForState = (stateName: string): string | null => {
@@ -187,7 +139,7 @@ const listIdForState = (stateName: string): string | null => {
     return override;
   }
   const want = stateName.toLowerCase();
-  return (listsCache ?? []).find(l => (l.name ?? "").toLowerCase() === want)?.id ?? null;
+  return (listsCache ?? []).find(l => l.name.toLowerCase() === want)?.id ?? null;
 };
 
 /** Map a card's member ids to usernames (board members + the authenticated user). */
@@ -202,22 +154,21 @@ const usernamesFor = (idMembers: string[]): string[] => {
     .filter((u): u is string => Boolean(u));
 };
 
-const toCard = (raw: RawCard): Issue => {
+const toIssue = (card: TrelloCard): Issue => {
   const me = meCache;
-  const idMembers = raw.idMembers ?? [];
-  const usernames = usernamesFor(idMembers);
-  const shortLink = raw.shortLink ?? raw.id;
+  const usernames = usernamesFor(card.idMembers);
+  const identifier = card.shortLink || card.id;
   return {
-    id: raw.id,
-    identifier: shortLink,
-    title: raw.name ?? "(untitled)",
-    description: raw.desc ?? "",
-    url: raw.shortUrl ?? raw.url ?? "",
-    branchName: `gene/${shortLink}`,
-    stateName: listName(raw.idList),
-    updatedAt: raw.dateLastActivity ?? "",
+    id: card.id,
+    identifier,
+    title: card.name,
+    description: card.desc,
+    url: card.url,
+    branchName: `gene/${identifier}`,
+    stateName: listName(card.idList),
+    updatedAt: card.dateLastActivity ?? "",
     assigneeName: usernames.length > 0 ? usernames.join(", ") : null,
-    assigneeIsMe: me ? idMembers.includes(me.id) : false,
+    assigneeIsMe: me ? card.idMembers.includes(me.id) : false,
     assigneeMatch: usernames.length > 0 ? usernames.join(",") : null,
     teamKey: "",
     teamName: boardName ?? "",
@@ -225,15 +176,30 @@ const toCard = (raw: RawCard): Issue => {
   };
 };
 
-const toComment = (raw: RawTrelloComment): Comment => {
-  const body = raw.text ?? raw.data?.text ?? "";
-  return {
-    id: raw.id,
-    body,
-    createdAt: raw.date ?? raw.createdAt ?? "",
-    authorName: raw.memberCreator?.fullName ?? raw.memberCreator?.username ?? null,
-    isAgent: body.includes(env.AGENT_MARKER)
-  };
+const toComment = (c: TrelloComment): Comment => ({
+  id: c.id,
+  body: c.text,
+  createdAt: c.date,
+  authorName: c.authorName ?? c.authorUsername ?? null,
+  isAgent: c.text.includes(env.AGENT_MARKER)
+});
+
+/** List a card's attachments via direct REST (the wrapper doesn't cover attachments). */
+const listCardAttachments = async (cardId: string): Promise<RawAttachment[]> => {
+  if (!env.TRELLO_API_KEY || !env.TRELLO_TOKEN) {
+    return [];
+  }
+  const url = new URL(`${TRELLO_API_BASE}/cards/${cardId}/attachments`);
+  url.search = new URLSearchParams({
+    key: env.TRELLO_API_KEY,
+    token: env.TRELLO_TOKEN,
+    fields: "name,url,mimeType,fileName"
+  }).toString();
+  const res = await fetchRetryTimeout(url.toString(), { headers: { Accept: "application/json" } });
+  if (!res.ok) {
+    throw new Error(`Trello GET /cards/${cardId}/attachments -> ${res.status}`);
+  }
+  return (await res.json()) as RawAttachment[];
 };
 
 export class TrelloTracker implements Tracker {
@@ -242,23 +208,20 @@ export class TrelloTracker implements Tracker {
   /** All Gene-labelled cards on the board, any list (caller buckets by state = list name). */
   async listIssues(): Promise<Issue[]> {
     await ensureMeta();
-    const wantLabel = labelId();
-    if (!wantLabel) {
-      logger.warn(`[trello] no label named "${env.LABEL}" on board ${boardId()} — no issues will match`);
-      return [];
-    }
-    const cards = await trelloCli<RawCard[]>(["cards", "list", "--board", boardId()]);
-    return (cards ?? []).filter(c => (c.idLabels ?? []).includes(wantLabel)).map(toCard);
+    const want = env.LABEL.toLowerCase();
+    const cards = await trello().listCardsOnBoard(boardId());
+    return cards.filter(c => c.labels.some(l => l.name.toLowerCase() === want)).map(toIssue);
   }
 
   async getComments(issue: Issue): Promise<Comment[]> {
-    const raw = await trelloCli<RawTrelloComment[]>(["comments", "list", "--card", issue.id]);
-    return (raw ?? []).map(toComment).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // The wrapper returns comments oldest-first already.
+    const raw = await trello().getComments(issue.id);
+    return raw.map(toComment);
   }
 
   async getAttachments(issue: Issue): Promise<Attachment[]> {
-    const raw = await trelloCli<RawAttachment[]>(["attachments", "list", "--card", issue.id]);
-    return (raw ?? [])
+    const raw = await listCardAttachments(issue.id);
+    return raw
       .filter(a => Boolean(a.url))
       .map(a => ({ title: a.name ?? null, url: a.url as string, sourceType: a.mimeType ?? null }));
   }
@@ -267,8 +230,7 @@ export class TrelloTracker implements Tracker {
   async collectImageUrls(issue: Issue, comments: Comment[]): Promise<string[]> {
     const seen = new Set<string>();
     try {
-      const atts = await trelloCli<RawAttachment[]>(["attachments", "list", "--card", issue.id]);
-      for (const a of atts ?? []) {
+      for (const a of await listCardAttachments(issue.id)) {
         if (!a.url) {
           continue;
         }
@@ -293,7 +255,7 @@ export class TrelloTracker implements Tracker {
     return [...seen];
   }
 
-  /** Download via REST with an OAuth header (CLI has no download); null on failure. */
+  /** Download via REST with an OAuth header (the wrapper has no download); null on failure. */
   async fetchAttachment(url: string): Promise<Buffer | null> {
     if (!env.TRELLO_API_KEY || !env.TRELLO_TOKEN) {
       return null;
@@ -321,7 +283,7 @@ export class TrelloTracker implements Tracker {
       logger.info(`[trello] (dry-run) would comment on ${issue.identifier}: ${oneLine(marked)}`);
       return;
     }
-    await trelloCli(["comments", "add", "--card", issue.id, "--text", marked]);
+    await trello().addComment(issue.id, marked);
     logger.info(`[trello] commented on ${issue.identifier}`);
   }
 
@@ -339,7 +301,7 @@ export class TrelloTracker implements Tracker {
           `Cannot move ${issue.identifier}.`
       );
     }
-    await trelloCli(["cards", "move", "--card", issue.id, "--list", listId]);
+    await trello().moveCard(issue.id, listId);
     logger.info(`[trello] moved ${issue.identifier} → "${stateName}"`);
   }
 
@@ -375,22 +337,36 @@ export class TrelloTracker implements Tracker {
     return env.ASSIGNEE;
   }
 
-  /** Prompt block: how the agent comments / moves the card via the `trello` CLI. */
+  /**
+   * Prompt block: how the agent comments / moves the card. The agent runs in a
+   * different repo's worktree, so it invokes the bundled CLI by absolute path
+   * (`node <REPO_ROOT>/trello/cli.ts …`), inheriting the TRELLO_* creds. The
+   * Blocked/In-Review list ids are embedded directly when the board metadata is
+   * already cached (it is — listIssues() warms it during the scan).
+   */
   writeBackSnippet(issue: Issue): string {
-    const board = env.TRELLO_BOARD ?? "<board>";
+    const cli = `node ${REPO_ROOT}/trello/cli.ts`;
+    const moveLine = (state: string, id: string | null): string =>
+      id
+        ? `  - "${state}" → \`${cli} move ${issue.id} ${id}\``
+        : `  - "${state}" → \`${cli} move ${issue.id} <listId>\` (find the list id below)`;
     return [
-      "# How to write back to Trello (use the `trello` CLI)",
+      "# How to write back to Trello (use the bundled trello CLI)",
       "",
-      `- **Comment:** \`trello comments add --card ${issue.id} --text "<body>"\` (end every comment with`,
-      "  the marker line — see Hard rules). When you open the change request, include its URL in a comment",
-      "  so it stays linked to this card. Keep each comment to one focused message.",
-      "- **Move state (Trello lists):** look up the destination list id with",
-      `  \`trello lists list --board ${board}\`, then \`trello cards move --card ${issue.id} --list <listId>\`.`,
-      `  Terminal states for you are the lists named **"${env.BLOCKED_STATE}"** and **"${env.REVIEW_STATE}"** (see outcomes).`
+      "These commands inherit your Trello credentials from the environment — run them from anywhere.",
+      `This card's id is \`${issue.id}\`.`,
+      "",
+      `- **Comment:** \`${cli} comment ${issue.id} "<body>"\` — end every comment with the marker line`,
+      "  (see Hard rules). When you open the change request, include its URL in a comment so it stays linked",
+      "  to this card. Keep each comment to one focused message.",
+      "- **Move state (Trello lists):** move the card to the right list. Your terminal states:",
+      moveLine(env.BLOCKED_STATE, listIdForState(env.BLOCKED_STATE)),
+      moveLine(env.REVIEW_STATE, listIdForState(env.REVIEW_STATE)),
+      `  List every list id on the board with \`${cli} lists ${boardId()}\`.`
     ].join("\n");
   }
 
   allowedTools(): string[] {
-    return ["Bash(trello *)"];
+    return ["Bash(node *)"];
   }
 }

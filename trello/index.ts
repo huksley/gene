@@ -16,6 +16,7 @@ export type {
   TrelloLabel,
   TrelloCard,
   TrelloComment,
+  TrelloMember,
   TrelloCredentials,
   CreateCardInput,
   UpdateCardInput

@@ -1,11 +1,11 @@
 /**
  * Gene AI — polling daemon.
  *
- * Every N seconds: list all Linear issues carrying the `Gene` label, bucket them
+ * Every N seconds: list all tracker issues carrying the `Gene` label, bucket them
  * by workflow state, and act. Active conversations (In Progress / Blocked) are
  * drained before new Todo work is picked up. Each actionable issue is mapped to
  * its forge repo and dispatched to a `claude -p` agent in a per-issue worktree;
- * the agent does the code work and writes back to Linear + the forge itself.
+ * the agent does the code work and writes back to the tracker + the forge itself.
  *
  * Usage:
  *   npm run gene                 # forever (poll loop)
@@ -17,16 +17,8 @@
 import logger from "./logger.ts";
 import { env, WATCHED_STATES } from "./config.ts";
 import { decideAction, type Action } from "./decide.ts";
-import {
-  getComments,
-  isAssignedToOwner,
-  listGeneIssues,
-  moveState,
-  ownerLabel,
-  postComment,
-  type LinearComment,
-  type LinearIssue
-} from "./linear.ts";
+import { tracker } from "./tracker/index.ts";
+import type { Comment, Issue } from "./tracker/index.ts";
 import { resolveTarget, targetLabel, localPathFor, type RepoTarget } from "./repos.ts";
 import { selectForge, type Forge } from "./forge/index.ts";
 import { commitsBehind, detectDefaultBranch } from "./git.ts";
@@ -97,9 +89,9 @@ const buildClarificationComment = (missing: string[]): string => {
   ].join("\n");
 };
 
-const postStartComment = async (issue: LinearIssue, intent: PromptIntent): Promise<void> => {
+const postStartComment = async (issue: Issue, intent: PromptIntent): Promise<void> => {
   try {
-    await postComment(issue.identifier, startMessages[intent]);
+    await tracker.postComment(issue, startMessages[intent]);
   } catch (error) {
     logger.warn(
       `[gene]   [${issue.identifier}] could not post start comment:`,
@@ -108,9 +100,9 @@ const postStartComment = async (issue: LinearIssue, intent: PromptIntent): Promi
   }
 };
 
-const postClarificationAndBlock = async (issue: LinearIssue, missing: string[]): Promise<void> => {
+const postClarificationAndBlock = async (issue: Issue, missing: string[]): Promise<void> => {
   try {
-    await postComment(issue.identifier, buildClarificationComment(missing));
+    await tracker.postComment(issue, buildClarificationComment(missing));
   } catch (error) {
     logger.error(
       `[gene]   [${issue.identifier}] failed to post clarification:`,
@@ -119,7 +111,7 @@ const postClarificationAndBlock = async (issue: LinearIssue, missing: string[]):
     return;
   }
   try {
-    await moveState(issue.identifier, env.BLOCKED_STATE);
+    await tracker.moveToState(issue, env.BLOCKED_STATE);
   } catch (error) {
     logger.warn(
       `[gene]   [${issue.identifier}] could not move to "${env.BLOCKED_STATE}":`,
@@ -129,7 +121,7 @@ const postClarificationAndBlock = async (issue: LinearIssue, missing: string[]):
 };
 
 /** Most recent human-meaningful activity, used to debounce rapid edits/comments. */
-const lastActivityIso = (issue: LinearIssue, comments: LinearComment[]): string =>
+const lastActivityIso = (issue: Issue, comments: Comment[]): string =>
   comments.length > 0 ? comments[comments.length - 1]!.createdAt : issue.updatedAt;
 
 const isWithinDebounceWindow = (iso: string): boolean => {
@@ -153,8 +145,8 @@ const isAtConcurrencyCap = (): boolean => inFlight.size >= env.MAX_CONCURRENT;
  * `nothing`). Used to give active conversations priority over new Todo work.
  * Live spawns are fire-and-forget; the inFlight map prevents double-spawning.
  */
-const processIssue = async (issue: LinearIssue): Promise<boolean> => {
-  const comments = await getComments(issue.id);
+const processIssue = async (issue: Issue): Promise<boolean> => {
+  const comments = await tracker.getComments(issue);
   const action = decideAction(issue, comments);
   logger.info(`[gene]   [${issue.identifier}] "${issue.title}" → ${summarizeAction(action)}`);
 
@@ -221,8 +213,8 @@ type DispatchExtras = {
  * Returns true once the issue is accounted for (dispatched, running, or deferred).
  */
 const dispatchAgent = async (
-  issue: LinearIssue,
-  comments: LinearComment[],
+  issue: Issue,
+  comments: Comment[],
   target: RepoTarget,
   forge: Forge,
   intent: PromptIntent,
@@ -243,7 +235,7 @@ const dispatchAgent = async (
     // Preview only — no clone, no worktree, no spawn, no writes (the write helpers
     // log their would-be effect). Use the notional worktree path; no drift/attachments.
     await postStartComment(issue, intent);
-    await moveState(issue.identifier, env.ACTIVE_STATE);
+    await tracker.moveToState(issue, env.ACTIVE_STATE);
     const previewPath = worktreePathFor(target, issue);
     const baseBranch =
       extras.existing?.baseBranch ?? target.ref ?? (await detectDefaultBranch(localPathFor(target)));
@@ -272,7 +264,7 @@ const dispatchAgent = async (
   // Live: everything below runs inside the per-issue lock, fire-and-forget.
   const spawnPromise = withLock(issue.identifier, async () => {
     await postStartComment(issue, intent);
-    await moveState(issue.identifier, env.ACTIVE_STATE);
+    await tracker.moveToState(issue, env.ACTIVE_STATE);
     // Advance any review cursor now we're committed to running, so a re-poll while
     // the agent works doesn't re-dispatch for the same CI failure / comment.
     if (extras.beforeSpawn) {
@@ -350,8 +342,8 @@ const dispatchAgent = async (
  * a quiet In-Review issue doesn't hold up new Todo work.
  */
 const processReview = async (
-  issue: LinearIssue,
-  comments: LinearComment[],
+  issue: Issue,
+  comments: Comment[],
   target: RepoTarget,
   forge: Forge
 ): Promise<boolean> => {
@@ -387,8 +379,8 @@ const processReview = async (
  * waiting (CI in flight); false when nothing is attached, so the caller starts fresh.
  */
 const tryContinueAttachedDraft = async (
-  issue: LinearIssue,
-  comments: LinearComment[],
+  issue: Issue,
+  comments: Comment[],
   target: RepoTarget,
   forge: Forge
 ): Promise<boolean> => {
@@ -421,14 +413,14 @@ const tryContinueAttachedDraft = async (
 
 const scanOnce = async (): Promise<void> => {
   const scannedAt = new Date().toISOString();
-  const all = await listGeneIssues();
+  const all = await tracker.listIssues();
 
   // Only work issues assigned to the configured owner (env.ASSIGNEE, default "me").
-  const mine = all.filter(isAssignedToOwner);
-  const skipped = all.filter(i => !isAssignedToOwner(i));
+  const mine = all.filter(i => tracker.isAssignedToOwner(i));
+  const skipped = all.filter(i => !tracker.isAssignedToOwner(i));
   if (skipped.length > 0) {
     logger.info(
-      `[gene]   skipping ${skipped.length} ${env.GENE_LABEL} issue(s) not assigned to ${ownerLabel()}: ` +
+      `[gene]   skipping ${skipped.length} ${env.LABEL} issue(s) not assigned to ${tracker.ownerLabel()}: ` +
       skipped.map(i => `${i.identifier} (${i.assigneeName ?? "unassigned"})`).join(", ")
     );
   }
@@ -440,7 +432,7 @@ const scanOnce = async (): Promise<void> => {
   const other = mine.length - trigger.length - active.length - blocked.length - review.length;
 
   logger.info(
-    `[gene] scan @ ${scannedAt} — ${mine.length} ${env.GENE_LABEL} issue(s) assigned to ${ownerLabel()}: ` +
+    `[gene] scan @ ${scannedAt} — ${mine.length} ${env.LABEL} issue(s) assigned to ${tracker.ownerLabel()}: ` +
     `${WATCHED_STATES.trigger}=${trigger.length}, ${WATCHED_STATES.active}=${active.length}, ` +
     `${WATCHED_STATES.blocked}=${blocked.length}, ${WATCHED_STATES.review}=${review.length}, other=${other}`
   );
@@ -471,7 +463,7 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 
 const runForever = async (): Promise<void> => {
   logger.info(
-    `[gene] starting (label=${env.GENE_LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
+    `[gene] starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
     `debounce=${env.DEBOUNCE_MS}ms, maxConcurrent=${env.MAX_CONCURRENT}, dryRun=${env.DRY_RUN})`
   );
   while (true) {

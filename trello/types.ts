@@ -47,8 +47,17 @@ export type TrelloCard = {
   due: string | null;
   dueComplete: boolean;
   labels: TrelloLabel[];
+  /** Member ids assigned to the card (resolve to people via listMembers/getMe). */
+  idMembers: string[];
   shortLink: string;
   dateLastActivity: string | null;
+};
+
+/** A Trello member (a person — board member or the authenticated user). */
+export type TrelloMember = {
+  id: string;
+  username: string | null;
+  fullName: string | null;
 };
 
 /** A comment on a card (Trello models it as a `commentCard` action). */
@@ -138,7 +147,14 @@ export type RawCard = {
   due?: string | null;
   dueComplete?: boolean;
   labels?: RawLabel[];
+  idMembers?: string[];
   dateLastActivity?: string | null;
+};
+
+export type RawMember = {
+  id: string;
+  username?: string | null;
+  fullName?: string | null;
 };
 
 export type RawComment = {

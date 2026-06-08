@@ -9,15 +9,14 @@
  * single-repo issues keep working untouched.
  *
  * Examples that resolve correctly:
- *   https://gitlab.datacrunch.io/datacrunch/nest.datacrunch.io       → gitlab, whole repo
- *   https://gitlab.datacrunch.io/datacrunch/web-apps/-/tree/main/apps/console
- *                                                                    → gitlab, subdir apps/console
- *   https://github.com/verda-cloud/sdk-python                        → github, whole repo
+ *   https://gitlab.com/example/example-repo                           → gitlab, whole repo
+ *   https://gitlab.com/example/example-repo/-/tree/main/path/to/dir   → gitlab, subdir path/to/dir
+ *   https://github.com/example/example-repo                           → github, whole repo
  */
 
 import path from "node:path";
 import { env, REPOS_ROOT } from "./config.ts";
-import type { LinearComment, LinearIssue } from "./linear.ts";
+import type { Comment, Issue } from "./tracker/index.ts";
 
 export type ForgeName = "gitlab" | "github";
 
@@ -273,7 +272,7 @@ export const defaultTargets = (): RepoTarget[] =>
  * description, else the first such link in a comment, else the team default.
  * Returns null only when there's no link AND no default for the team.
  */
-export const resolveTarget = (issue: LinearIssue, comments: LinearComment[] = []): RepoTarget | null => {
+export const resolveTarget = (issue: Issue, comments: Comment[] = []): RepoTarget | null => {
   const fromDescription = findTargetInText(issue.description);
   if (fromDescription) {
     return fromDescription;

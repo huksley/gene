@@ -1,17 +1,18 @@
 /**
- * Builds the agent prompt from a Linear issue + its chronological comment
+ * Builds the agent prompt from a tracker issue + its chronological comment
  * transcript. The issue is the conversation — there is no separate state store.
  *
  * Two things the agent MUST get right, encoded as CRITICAL rules below:
- *  - every Linear comment it posts has to carry the agent marker, or the
- *    daemon will mistake Gene's own comment for a fresh human reply and loop;
+ *  - every comment it posts has to carry the agent marker, or the daemon will
+ *    mistake Gene's own comment for a fresh human reply and loop;
  *  - every run ends in exactly one terminal state — Blocked (waiting on a human)
  *    or In Review (a change request is open) — never both, never neither.
  */
 
 import { env } from "./config.ts";
 import { parseDirective } from "./directives.ts";
-import type { LinearComment, LinearIssue } from "./linear.ts";
+import { tracker } from "./tracker/index.ts";
+import type { Comment, Issue } from "./tracker/index.ts";
 import type { ChangeRequestContext, Forge } from "./forge/index.ts";
 import type { ReviewContext } from "./review.ts";
 
@@ -23,8 +24,8 @@ export type PromptIntent =
   | "continue-draft";
 
 export type PromptInputs = {
-  issue: LinearIssue;
-  comments: LinearComment[];
+  issue: Issue;
+  comments: Comment[];
   worktreePath: string;
   baseBranch: string;
   intent: PromptIntent;
@@ -41,8 +42,6 @@ export type PromptInputs = {
   reviewContext?: ReviewContext;
 };
 
-const workspaceFlag = (): string => (env.LINEAR_WORKSPACE ? ` -w "${env.LINEAR_WORKSPACE}"` : "");
-
 const formatTimestamp = (isoDate: string): string => {
   const date = new Date(isoDate);
   return Number.isNaN(date.getTime())
@@ -53,15 +52,15 @@ const formatTimestamp = (isoDate: string): string => {
 /** Strip the marker so the transcript reads cleanly. */
 const cleanBody = (body: string): string => body.split(env.AGENT_MARKER).join("").trim();
 
-const formatComment = (comment: LinearComment): string => {
+const formatComment = (comment: Comment): string => {
   const author = comment.isAgent ? "🤖 Gene" : `👤 ${comment.authorName ?? "user"}`;
   return `[${formatTimestamp(comment.createdAt)}] ${author}:\n${cleanBody(comment.body)}`;
 };
 
-const formatTranscript = (comments: LinearComment[]): string =>
+const formatTranscript = (comments: Comment[]): string =>
   comments.length === 0 ? "(no comments yet)" : comments.map(formatComment).join("\n\n");
 
-const detectDirectives = (comments: LinearComment[]): string => {
+const detectDirectives = (comments: Comment[]): string => {
   const userComments = comments.filter(comment => !comment.isAgent);
   if (userComments.length === 0) {
     return "(none — no user comments yet)";
@@ -95,7 +94,7 @@ const intentInstructions: Record<PromptIntent, string> = {
     "(see the section below). Make the fixes on your EXISTING branch and push so CI re-runs; reply to the " +
     "reviewer(s) on the change request itself; then put the issue back in the review state. Do NOT open a " +
     "second change request — update the one that's already open. If a comment raises something you genuinely " +
-    "can't resolve, ask back (on Linear) and move to the blocked state instead.",
+    "can't resolve, ask back (comment on the issue) and move to the blocked state instead.",
   "continue-draft":
     "A change request is ALREADY attached to this issue (a human or a previous run opened it — see the " +
     "section below) and its branch is already checked out. Do NOT start over and do NOT open a second one. " +
@@ -239,16 +238,15 @@ export const buildPrompt = (inputs: PromptInputs): string => {
     baseBranch
   };
   const cr = forge.changeRequestTerm; // "merge request" / "pull request"
-  const ws = workspaceFlag();
   const project = issue.projectName ?? issue.teamName ?? "the project";
   const branchNote = onIssueBranch
-    ? `this is Linear's auto-link branch, so a ${cr} from it will link back to ${issue.identifier} automatically`
+    ? `this is ${issue.identifier}'s branch — push your work here; the ${cr} you open from it is the deliverable`
     : `this is the existing ${cr}'s source branch — keep pushing to it so the open ${cr} updates`;
 
   return `You are **Gene**, the autonomous code agent for ${project}.
 
-You are processing a single Linear issue. The issue description and the comment transcript below form
-the complete conversation between you and the human user. You have NO other memory — read everything
+You are processing a single ${tracker.name} issue. The issue description and the comment transcript below
+form the complete conversation between you and the human user. You have NO other memory — read everything
 carefully before deciding.
 
 # Repository context
@@ -257,9 +255,9 @@ carefully before deciding.
 - Worktree (your working directory, the repo root): \`${worktreePath}\`
 - Base branch: \`${baseBranch}\`
 - Your branch (already checked out): \`${branch}\` — ${branchNote}. Do NOT create a new branch.
-- Reference \`Linear: ${issue.url}\` in the commit body and the ${cr} description.
+- Reference the issue URL \`${issue.url}\` in the commit body and the ${cr} description (so the work links back to ${issue.identifier}).
 ${renderScope(subdir)}
-# Linear issue
+# Issue
 
 - **ID:** ${issue.identifier}
 - **URL:** ${issue.url}
@@ -292,13 +290,7 @@ ${renderReviewContext(reviewContext, forge)}
 
 \`${intent}\` — ${intentInstructions[intent]}
 
-# How to write back to Linear (use the \`linear\` CLI)
-
-- **Comment:** write the body to a temp file and run
-  \`linear issue comment add ${issue.identifier} --body-file <file>${ws}\`
-  (or \`--body "<text>"\` for a one-liner). Keep each comment to one focused message.
-- **Move state:** \`linear issue update ${issue.identifier} --state "<State>"${ws}\`.
-  Terminal states for you are **"${env.BLOCKED_STATE}"** and **"${env.REVIEW_STATE}"** (see outcomes).
+${tracker.writeBackSnippet(issue)}
 
 # How to open the ${cr}
 
@@ -318,7 +310,7 @@ ${forge.promptSnippet(ctx)}
 
 # Hard rules
 
-- **Comment marker (CRITICAL):** end EVERY Linear comment you post with this exact line on its own,
+- **Comment marker (CRITICAL):** end EVERY issue comment you post with this exact line on its own,
   so the daemon recognises the comment as yours and does not treat it as a new human reply:
 
   \`\`\`
@@ -326,7 +318,7 @@ ${forge.promptSnippet(ctx)}
   \`\`\`
 
   A comment missing this marker will make the daemon loop. No exceptions.
-- **Marker on ${cr} comments too (CRITICAL):** when you reply on the ${forge.name} ${cr} itself (not Linear),
+- **Marker on ${cr} comments too (CRITICAL):** when you reply on the ${forge.name} ${cr} itself (not the issue),
   end that comment with the same \`${env.AGENT_MARKER}\` line. The In-Review watchdog reads ${cr} comments to
   spot new *human* review feedback; an unmarked reply of yours looks like fresh feedback and re-dispatches you
   in a loop.
@@ -335,7 +327,7 @@ ${forge.promptSnippet(ctx)}
   - **"${env.REVIEW_STATE}"** — you opened a ${cr}.
   If you exit without opening a ${cr}, you MUST move the issue to "${env.BLOCKED_STATE}". Never both, never neither.
 - Never merge the ${cr}. Never push to the \`${baseBranch}\` branch directly.
-- Do NOT touch the issue's labels — the \`${env.GENE_LABEL}\` label is Gene's ownership tag and the daemon manages it.
+- Do NOT touch the issue's labels — the \`${env.LABEL}\` label is Gene's ownership tag and the daemon manages it.
 - Stay inside the worktree at \`${worktreePath}\`. Do not edit files elsewhere.
 - **Resuming an interrupted run (idempotency):** a previous attempt may have been cut short by a transient
   error, so treat your actions as resumable, not fresh. Before starting, run \`git status\` and

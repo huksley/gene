@@ -21,11 +21,13 @@ import type {
   RawCard,
   RawComment,
   RawList,
+  RawMember,
   TrelloBoard,
   TrelloCard,
   TrelloComment,
   TrelloCredentials,
   TrelloList,
+  TrelloMember,
   UpdateCardInput
 } from "./types.ts";
 
@@ -93,8 +95,15 @@ const toCard = (raw: RawCard): TrelloCard => ({
   due: raw.due ?? null,
   dueComplete: raw.dueComplete ?? false,
   labels: (raw.labels ?? []).map(l => ({ id: l.id ?? "", name: l.name ?? "", color: l.color ?? null })),
+  idMembers: raw.idMembers ?? [],
   shortLink: raw.shortLink ?? "",
   dateLastActivity: raw.dateLastActivity ?? null
+});
+
+const toMember = (raw: RawMember): TrelloMember => ({
+  id: raw.id,
+  username: raw.username ?? null,
+  fullName: raw.fullName ?? null
 });
 
 const toComment = (raw: RawComment): TrelloComment => ({
@@ -195,6 +204,24 @@ export class TrelloClient {
       query: { filter: includeClosed ? "all" : "open", fields: "name,closed,idBoard,pos" }
     });
     return raw.map(toList);
+  }
+
+  // --- Members --------------------------------------------------------------
+
+  /** The authenticated member (whose token this is) — for the "assigned to me" check. */
+  async getMe(): Promise<TrelloMember> {
+    const raw = await this.request<RawMember>("GET", "/members/me", {
+      query: { fields: "id,username,fullName" }
+    });
+    return toMember(raw);
+  }
+
+  /** Members of a board — to resolve a card's idMembers to usernames. */
+  async listMembers(boardId: string): Promise<TrelloMember[]> {
+    const raw = await this.request<RawMember[]>("GET", `/boards/${boardId}/members`, {
+      query: { fields: "id,username,fullName" }
+    });
+    return raw.map(toMember);
   }
 
   // --- Cards (issues) -------------------------------------------------------

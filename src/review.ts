@@ -9,7 +9,7 @@
  *
  * Discovery prefers an MR/PR *attached/linked* to the issue (by iid, so it works
  * even when the change request lives on a branch other than the issue's), and
- * falls back to an MR/PR on the issue's own Linear branch.
+ * falls back to an MR/PR on the issue's own branch.
  *
  * A small per-issue cursor (in Postgres, see db.ts) records what we've already
  * acted on — the failed head SHA and the newest handled comment — so we dispatch
@@ -26,10 +26,10 @@
  */
 
 import { getDb } from "./db.ts";
-import { getAttachments } from "./linear.ts";
+import { tracker } from "./tracker/index.ts";
 import type { Forge, ChangeRequestReview, ReviewComment } from "./forge/index.ts";
 import { findChangeRequestRefs, refMatchesTarget, type RepoTarget } from "./repos.ts";
-import type { LinearComment, LinearIssue } from "./linear.ts";
+import type { Comment, Issue } from "./tracker/index.ts";
 import logger from "./logger.ts";
 
 /** What the agent needs to know to address/continue the change request (fed into the prompt). */
@@ -85,22 +85,22 @@ export const writeCursor = async (issueId: string, cursor: ReviewCursor): Promis
 
 /**
  * Find the open change request for an issue. Prefers an MR/PR attached/linked to
- * the issue (Linear attachment, then description, then comments — matched to the
+ * the issue (tracker attachment, then description, then comments — matched to the
  * resolved target repo and looked up by iid, so a human's branch name is fine);
- * falls back to an MR/PR on the issue's own Linear branch. Null if none is open.
+ * falls back to an MR/PR on the issue's own branch. Null if none is open.
  */
 export const findOpenChangeRequest = async (
-  issue: LinearIssue,
-  comments: LinearComment[],
+  issue: Issue,
+  comments: Comment[],
   target: RepoTarget,
   forge: Forge
 ): Promise<ChangeRequestReview | null> => {
   let attachmentUrls: string[] = [];
   try {
-    attachmentUrls = (await getAttachments(issue.id)).map(a => a.url);
+    attachmentUrls = (await tracker.getAttachments(issue)).map(a => a.url);
   } catch (error) {
     logger.warn(
-      `[gene]   [${issue.identifier}] could not read Linear attachments:`,
+      `[gene]   [${issue.identifier}] could not read ${tracker.name} attachments:`,
       error instanceof Error ? error.message : error
     );
   }
@@ -198,8 +198,8 @@ const decideReviewOutcome = async (
  * CR is a no-op).
  */
 export const evaluateReview = async (
-  issue: LinearIssue,
-  comments: LinearComment[],
+  issue: Issue,
+  comments: Comment[],
   target: RepoTarget,
   forge: Forge
 ): Promise<ReviewOutcome> => {
@@ -216,8 +216,8 @@ export const evaluateReview = async (
  * so the caller proceeds with a fresh start instead.
  */
 export const evaluateDraftPickup = async (
-  issue: LinearIssue,
-  comments: LinearComment[],
+  issue: Issue,
+  comments: Comment[],
   target: RepoTarget,
   forge: Forge
 ): Promise<ReviewOutcome | null> => {

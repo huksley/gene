@@ -1,9 +1,10 @@
 /**
  * `fetch` with a per-attempt timeout and bounded retries — for the handful of
- * direct network calls the orchestrator makes itself (currently only the Linear
- * attachment downloads in `attachments.ts`). Transient failures (dropped sockets,
- * timeouts, 429/5xx) are retried with exponential backoff; other 4xx responses
- * are returned as-is so the caller decides what a 401/404 means.
+ * direct network calls the orchestrator makes itself (the tracker attachment
+ * listing/downloads in `tracker/linear.ts` and `tracker/trello.ts`). Transient
+ * failures (dropped sockets, timeouts, 429/5xx) are retried with exponential
+ * backoff; other 4xx responses are returned as-is so the caller decides what a
+ * 401/404 means.
  *
  * This does NOT cover the spawned `claude -p` agent's own calls to the Anthropic
  * API — those happen inside the agent process, out of our reach. That path has its

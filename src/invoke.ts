@@ -4,12 +4,12 @@
  * - Worktree per issue at `<repos>/.worktrees/<repoPath>/<IDENTIFIER>`. The target
  *   repo is cloned on demand (then fetched) before the worktree is branched off
  *   `origin/<baseBranch>`, so new worktrees start from the latest upstream tip.
- *   The branch is Linear's `branchName`, so the change request auto-links.
+ *   The branch is the issue's `branchName` (on Linear that auto-links the MR).
  * - Captures stream-json stdout and renders one-line summaries to the daemon log.
  * - Strips ANTHROPIC_API_KEY from the child env so `claude` uses OAuth (Max plan)
  *   rather than billing an API key.
  * - Honours GENE_DRY_RUN: logs the would-be spawn instead of running the agent
- *   (the agent makes real Linear/forge writes, so it must never run in dry-run).
+ *   (the agent makes real tracker/forge writes, so it must never run in dry-run).
  */
 
 import { spawn } from "node:child_process";
@@ -21,12 +21,14 @@ import logger from "./logger.ts";
 import { env, WORKTREES_ROOT } from "./config.ts";
 import { addWorktree, fetch } from "./git.ts";
 import { localPathFor, type RepoTarget } from "./repos.ts";
-import type { LinearIssue } from "./linear.ts";
+import { tracker } from "./tracker/index.ts";
+import type { Issue } from "./tracker/index.ts";
 import type { Forge } from "./forge/index.ts";
 
 /**
- * Tools the agent is permitted regardless of forge. The active forge adds its own
- * CLI on top (e.g. `Bash(glab *)` or `Bash(gh *)`) — none is baked in here.
+ * Tools the agent is permitted regardless of tracker/forge. The active tracker and
+ * forge each add their own CLI on top (e.g. `Bash(linear *)` / `Bash(node *)` and
+ * `Bash(glab *)` / `Bash(gh *)`) — none of those is baked in here.
  */
 const BASE_ALLOWED_TOOLS = [
   // Project tooling
@@ -34,8 +36,6 @@ const BASE_ALLOWED_TOOLS = [
   "Bash(npm *)",
   "Bash(npx *)",
   "Bash(jq *)",
-  // Linear write-back (comments + state moves)
-  "Bash(linear *)",
   // Read-only discovery + text manipulation
   "Bash(ls *)",
   "Bash(cat *)",
@@ -71,7 +71,7 @@ const BASE_ALLOWED_TOOLS = [
 ];
 
 export type InvokeInputs = {
-  issue: LinearIssue;
+  issue: Issue;
   prompt: string;
   worktreePath: string;
   forge: Forge;
@@ -80,7 +80,7 @@ export type InvokeInputs = {
 export type InvokeResult = { kind: "spawned" | "dry-run"; worktreePath: string; exitCode: number };
 
 /** Absolute worktree path for an issue: `<repos>/.worktrees/<repoPath>/<IDENTIFIER>`. */
-export const worktreePathFor = (target: RepoTarget, issue: LinearIssue): string =>
+export const worktreePathFor = (target: RepoTarget, issue: Issue): string =>
   path.join(WORKTREES_ROOT, target.repoPath, issue.identifier);
 
 /**
@@ -94,7 +94,7 @@ export type ExistingChangeRequest = { branch: string; baseBranch: string };
  * Ensure a worktree exists for this issue. Clones the target repo on demand (and
  * fetches it), then either:
  *  - **fresh** (default): branches the worktree off `origin/<base>` as the issue's
- *    Linear branch (so a new change request auto-links); or
+ *    `branchName` (on Linear that auto-links a new change request); or
  *  - **continue** (`existing` given): checks out the change request's *own* source
  *    branch at its remote head — the MR/PR may not be on the issue's branch.
  * Reuses an existing worktree (idempotent across resumes). Returns the worktree
@@ -102,7 +102,7 @@ export type ExistingChangeRequest = { branch: string; baseBranch: string };
  */
 export const ensureWorktree = async (
   target: RepoTarget,
-  issue: LinearIssue,
+  issue: Issue,
   forge: Forge,
   existing?: ExistingChangeRequest
 ): Promise<{ worktreePath: string; baseBranch: string; workBranch: string }> => {
@@ -117,7 +117,7 @@ export const ensureWorktree = async (
     await mkdir(path.dirname(worktreePath), { recursive: true });
     if (existing) {
       // Continue an existing change request: check out its branch at the remote
-      // head (fetch it first — it may differ from the issue's Linear branch).
+      // head (fetch it first — it may differ from the issue's own branch).
       await fetch(localPath, workBranch);
       await addWorktree(localPath, worktreePath, workBranch, workBranch);
     } else {
@@ -223,7 +223,7 @@ const isRetriable = (exitCode: number, resultSubtype: string | undefined): boole
 
 /** One `claude -p` run. Resolves with the exit code + the result event's subtype. */
 const runClaudeOnce = (
-  issue: LinearIssue,
+  issue: Issue,
   prompt: string,
   worktreePath: string,
   allowedTools: string[],
@@ -275,7 +275,7 @@ const runClaudeOnce = (
 export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> => {
   const { issue, prompt, worktreePath, forge } = inputs;
   const id = issue.identifier;
-  const allowedTools = [...BASE_ALLOWED_TOOLS, ...forge.allowedTools()];
+  const allowedTools = [...BASE_ALLOWED_TOOLS, ...tracker.allowedTools(), ...forge.allowedTools()];
 
   if (env.DRY_RUN) {
     logger.info(
@@ -286,7 +286,8 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
   }
 
   // Strip ANTHROPIC_API_KEY so `claude` falls through to OAuth (Max plan) rather
-  // than billing the API-key account. LINEAR_API_KEY and the rest are inherited.
+  // than billing the API-key account. The tracker's credentials (LINEAR_API_KEY /
+  // TRELLO_API_KEY + TRELLO_TOKEN) and the rest are inherited.
   const childEnv = { ...process.env };
   delete childEnv.ANTHROPIC_API_KEY;
 

@@ -83,8 +83,9 @@ export const env = {
   LINEAR_API_KEY: optional("LINEAR_API_KEY"),
   LINEAR_WORKSPACE: optional("LINEAR_WORKSPACE"),
 
-  // Trello backend (read when GENE_TRACKER=trello). The `trello` CLI inherits these
-  // from the environment, in the daemon and in the spawned agent alike.
+  // Trello backend (read when GENE_TRACKER=trello). Trello needs BOTH a key and a
+  // token on every call. The daemon talks REST via the bundled trello/ wrapper; the
+  // spawned agent uses the bundled trello CLI — both read these from the environment.
   TRELLO_API_KEY: optional("TRELLO_API_KEY"),
   TRELLO_TOKEN: optional("TRELLO_TOKEN"),
   TRELLO_BOARD: optional("TRELLO_BOARD"),

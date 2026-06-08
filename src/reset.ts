@@ -10,7 +10,7 @@
  * Because an issue's target repo is chosen per-issue (from a link), reset doesn't
  * know it up front — instead it scans every local clone for a worktree/branch
  * matching the identifier and cleans wherever it finds one. Local cleanup always
- * runs (an explicit operator action); the Linear state move and the MR/PR close
+ * runs (an explicit operator action); the tracker state move and the MR/PR close
  * honour GENE_DRY_RUN.
  */
 
@@ -21,7 +21,7 @@ import { env, LOCK_DIR, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
 import { parseRepoUrl } from "./repos.ts";
 import { deleteBranch, removeWorktree } from "./git.ts";
 import { run } from "./exec.ts";
-import { moveState } from "./linear.ts";
+import { tracker, findIssue } from "./tracker/index.ts";
 import { selectForge } from "./forge/index.ts";
 
 /** Every local clone under the repos root (a dir containing `.git`), with its repoPath. */
@@ -157,10 +157,17 @@ const main = async (): Promise<void> => {
   }
 
   // Move the issue back to the trigger state. Gene label is left untouched.
-  await moveState(identifier, env.TRIGGER_STATE);
+  const issue = await findIssue(identifier);
+  if (issue) {
+    await tracker.moveToState(issue, env.TRIGGER_STATE);
+  } else {
+    logger.warn(
+      `[gene:reset] could not find ${identifier} on ${tracker.name} — skipping state move (local cleanup done)`
+    );
+  }
 
   logger.info(
-    `[gene:reset] ✓ done — ${identifier} reset to "${env.TRIGGER_STATE}" (${env.GENE_LABEL} label kept). ` +
+    `[gene:reset] ✓ done — ${identifier} reset to "${env.TRIGGER_STATE}" (${env.LABEL} label kept). ` +
       "The next scan will pick it up fresh."
   );
 };
