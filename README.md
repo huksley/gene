@@ -99,9 +99,9 @@ fallback). From the link Gene derives:
 - **the base branch** — the `<branch>` in a `/tree/` link, else the repo's default.
 
 ```
-https://gitlab.datacrunch.io/datacrunch/nest.datacrunch.io                  → gitlab, whole repo
-https://gitlab.datacrunch.io/datacrunch/web-apps/-/tree/main/apps/console   → gitlab, subdir apps/console
-https://github.com/verda-cloud/sdk-python                                   → github, whole repo
+https://gitlab.com/example/example-repo                                   → gitlab, whole repo
+https://gitlab.com/example/example-repo/-/tree/main/path/to/dir           → gitlab, subdir path/to/dir
+https://github.com/example/example-repo                                   → github, whole repo
 ```
 
 Issues with **no link** fall back to a per-team default repo (built-in: `CLOUD →
@@ -123,11 +123,15 @@ JSON object of `team key → repo URL`). All resolution logic lives in `src/repo
 Prerequisites: Node 24 (via [Volta](https://volta.sh) — pinned in `package.json`),
 and the `linear`, `claude`, `git`, and `glab` and/or `gh` CLIs on `PATH`.
 
+> Prefer isolation? The whole toolchain is packaged as a microVM — see
+> [`sandbox/`](sandbox/README.md) to run `claude -p` agents in a throwaway VM
+> (microsandbox) instead of installing the CLIs on your host.
+
 ```bash
 # 1. Authenticate the CLIs (one-time, interactive — run with a leading `!` here)
 glab auth login --hostname gitlab.datacrunch.io   # accept "use glab as a git credential helper"
 gh auth login                                      # only if any issue targets a GitHub repo
-linear login                                       # if not already authed to verda-cloud
+linear login                                       # if not already logged in
 claude  /login                                     # OAuth / Max session
 
 # 2. Configure

@@ -55,10 +55,10 @@ EOF
 # Env vars proxied into the sandbox when --inherit is set, but only if set on the
 # host. Tokens flow straight to the tools: gh←GITHUB_TOKEN, glab←GITLAB_TOKEN/
 # GITLAB_HOST, claude←ANTHROPIC_API_KEY & CLAUDE_*, ntn←NOTION_API_TOKEN/NOTION_*,
-# plus OPENAI_*/CODEX_*/HUGGINGFACE_TOKEN/NPM_TOKEN. Only key names are ever
-# printed — never values.
-PROXY_EXACT="ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN GITLAB_HOST OPENAI_TOKEN NOTION_API_TOKEN"
-PROXY_GLOBS="CLAUDE_ OPENAI_ CODEX_ NOTION_"
+# trello←TRELLO_API_KEY/TRELLO_TOKEN/TRELLO_*, plus OPENAI_*/CODEX_*/
+# HUGGINGFACE_TOKEN/NPM_TOKEN. Only key names are ever printed — never values.
+PROXY_EXACT="ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN GITLAB_HOST OPENAI_TOKEN NOTION_API_TOKEN TRELLO_API_KEY TRELLO_TOKEN"
+PROXY_GLOBS="CLAUDE_ OPENAI_ CODEX_ NOTION_ TRELLO_"
 INHERIT_RO="${GENE_SANDBOX_INHERIT_RO:-}"
 
 PROXY_ARGS=(); PROXY_SEEN=""
@@ -427,7 +427,8 @@ run flags:
       more trusted dirs with GENE_SANDBOX_TRUST_DIRS="dir1 dir2".
   • proxies these env vars when set (values never printed):
       ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN
-      GITLAB_HOST OPENAI_TOKEN NOTION_API_TOKEN  and  CLAUDE_* OPENAI_* CODEX_* NOTION_*
+      GITLAB_HOST OPENAI_TOKEN NOTION_API_TOKEN TRELLO_API_KEY TRELLO_TOKEN
+      and  CLAUDE_* OPENAI_* CODEX_* NOTION_* TRELLO_*
   • on macOS, bridges your Claude Code Keychain login into a 0600
       ~/.claude/.credentials.json so the (Linux) sandbox's claude is logged in —
       macOS hides the token in the Keychain, which the mount alone can't carry.

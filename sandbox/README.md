@@ -73,7 +73,8 @@ into it so `claude`, `gh`, `glab`, `linear`, and `ntn` are logged in:
 - **Env proxy** — these are forwarded **when set** (only names are ever printed,
   never values): `ANTHROPIC_API_KEY`, `HUGGINGFACE_TOKEN`, `GITHUB_TOKEN`,
   `NPM_TOKEN`, `GITLAB_TOKEN`, `GITLAB_HOST`, `OPENAI_TOKEN`, `NOTION_API_TOKEN`,
-  plus anything matching `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `NOTION_*`.
+  `TRELLO_API_KEY`, `TRELLO_TOKEN`, plus anything matching `CLAUDE_*`, `OPENAI_*`,
+  `CODEX_*`, `NOTION_*`, `TRELLO_*`.
 - **macOS Keychain bridge** — macOS keeps the Claude Code login in the Keychain,
   not on disk, so the `~/.claude` mount alone won't carry it. On macOS, `--inherit`
   copies the Keychain blob into a `0600 ~/.claude/.credentials.json` (where the
