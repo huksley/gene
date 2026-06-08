@@ -21,6 +21,7 @@ import { env, LOCK_DIR, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
 import { parseRepoUrl } from "./repos.ts";
 import { deleteBranch, removeWorktree } from "./git.ts";
 import { run } from "./exec.ts";
+import { logEvent, closeDb } from "./db.ts";
 import { tracker, findIssue } from "./tracker/index.ts";
 import { selectForge } from "./forge/index.ts";
 
@@ -170,6 +171,22 @@ const main = async (): Promise<void> => {
     `[gene:reset] ✓ done — ${identifier} reset to "${env.TRIGGER_STATE}" (${env.LABEL} label kept). ` +
       "The next scan will pick it up fresh."
   );
+
+  // Record the reset in the issue's activity log. Local cleanup always runs; the
+  // state move honours GENE_DRY_RUN, so describe each part as it actually happened.
+  const stateNote = issue
+    ? `${env.DRY_RUN ? "would reset" : "reset"} to "${env.TRIGGER_STATE}"`
+    : `not found on ${tracker.name} — state unchanged`;
+  const localNote = cleanedAnything ? "cleared local worktree/branch(es)" : "no local state";
+  await logEvent({
+    tracker: tracker.name,
+    identifier,
+    event: "reset",
+    detail: `${stateNote}; ${localNote}${closeMr ? "; --close-mr" : ""}`
+  });
+
+  // logEvent opened PGlite; release it so this one-shot CLI can exit.
+  await closeDb();
 };
 
 main().catch(error => {

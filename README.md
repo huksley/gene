@@ -89,6 +89,15 @@ marks the draft **ready for review** and moves the issue to **In Review** (or ba
 to **Blocked** if it needs a decision). This is the same machinery as In-Review
 handling, just with "there's queued work here" rather than "wait for a new signal".
 
+**Activity log (`db.ts`).** Alongside the review cursor, the daemon records a
+per-issue **activity log** in the embedded store, keyed by `(tracker, issue id)`:
+each dispatch, the agent's start / finish (with its own final summary), review
+re-dispatches, draft pickups, and resets (dry-run entries are flagged). Inspect one
+issue's history with `npm run log -- <system>:<id>` (e.g. `linear:CLOUD-1094`; a bare
+id defaults the system to `GENE_TRACKER`). Because PGlite is single-process, the
+daemon and a one-shot command (`log` / `reset` / `once`) can't hold the store at the
+same time — stop the daemon before running them.
+
 ## Repo targeting (per issue)
 
 An issue declares its target repo simply by including a **GitLab or GitHub link**
@@ -161,6 +170,7 @@ npm run once            # a single scan, then exit  (great with GENE_DRY_RUN=tru
 npm run clone           # pre-clone the team default repo(s)
 npm run reset -- CLOUD-1094            # reset one issue back to Todo
 npm run reset -- CLOUD-1094 --close-mr # ...and close its open MR/PR
+npm run log -- linear:CLOUD-1094       # show one issue's activity log (what Gene did for it)
 npm run typecheck       # tsc --noEmit
 ```
 
@@ -186,7 +196,7 @@ Node 24 runs the `.ts` files directly (type-stripping — no build step), so:
 src/
   index.ts        daemon: scan → decide → dispatch (--once supported)
   config.ts       env + constants (hand-rolled, no zod)
-  db.ts           embedded Postgres (PGlite) state store (.gene/pgdata)
+  db.ts           embedded Postgres (PGlite) state: review cursor + issue activity log
   logger.ts       timestamped server logger
   decide.ts       pure (issue, comments) → Action
   review.ts       In-Review watchdog + draft pickup: find the open MR/PR, decide re-dispatch
@@ -196,6 +206,7 @@ src/
   lock.ts         per-issue file lock (keyed by ISSUE-ID), stale-PID reclamation
   attachments.ts  best-effort staging of tracker image attachments into the worktree
   reset.ts        reset one issue (worktree/branch/lock + back to Todo)
+  log.ts          show one issue's activity log (npm run log -- <sys>:<id>)
   repos.ts        per-issue link → RepoTarget (forge/host/repoPath/subdir + defaults)
   clone.ts        pre-clone the team default repo(s) (npm run clone)
   tracker/

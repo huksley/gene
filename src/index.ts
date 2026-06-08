@@ -25,7 +25,7 @@ import { commitsBehind, detectDefaultBranch } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
 import { evaluateDraftPickup, evaluateReview, writeCursor, type ReviewContext } from "./review.ts";
-import { closeDb } from "./db.ts";
+import { closeDb, logEvent } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 
@@ -49,6 +49,19 @@ const summarizeAction = (action: Action): string => {
     }
   }
 };
+
+/**
+ * Append a line to the issue's activity log in the state store (db.ts) — a
+ * persistent, per-issue trail of what the daemon did, surfaced by `npm run log`.
+ * Best-effort (never throws); dry-run actions are flagged so the log stays honest.
+ */
+const record = (issue: Issue, event: string, detail: string): Promise<void> =>
+  logEvent({
+    tracker: tracker.name,
+    identifier: issue.identifier,
+    event,
+    detail: env.DRY_RUN ? `(dry-run) ${detail}` : detail
+  });
 
 const intentFor = (action: Action): PromptIntent | null => {
   switch (action.kind) {
@@ -118,6 +131,7 @@ const postClarificationAndBlock = async (issue: Issue, missing: string[]): Promi
       error instanceof Error ? error.message : error
     );
   }
+  await record(issue, "clarification", `missing section(s): ${missing.join(", ")} → ${env.BLOCKED_STATE}`);
 };
 
 /** Most recent human-meaningful activity, used to debounce rapid edits/comments. */
@@ -230,6 +244,8 @@ const dispatchAgent = async (
     );
     return true;
   }
+
+  await record(issue, "dispatch", `${intent} → ${targetLabel(target)} [${forge.name}]`);
 
   if (env.DRY_RUN) {
     // Preview only — no clone, no worktree, no spawn, no writes (the write helpers
@@ -364,6 +380,7 @@ const processReview = async (
   }
 
   logger.info(`[gene]   [${issue.identifier}] in review — ${outcome.reason}; dispatching a fix`);
+  await record(issue, "review", outcome.reason);
   return dispatchAgent(issue, comments, target, forge, "address-review", {
     reviewContext: outcome.context,
     existing: { branch: outcome.context.sourceBranch, baseBranch: outcome.context.targetBranch },
@@ -404,6 +421,7 @@ const tryContinueAttachedDraft = async (
     return true;
   }
   logger.info(`[gene]   [${issue.identifier}] attached change request — ${outcome.reason}; continuing it`);
+  await record(issue, "draft", outcome.reason);
   return dispatchAgent(issue, comments, target, forge, "continue-draft", {
     reviewContext: outcome.context,
     existing: { branch: outcome.context.sourceBranch, baseBranch: outcome.context.targetBranch },

@@ -20,6 +20,7 @@ import readline from "node:readline";
 import logger from "./logger.ts";
 import { env, WORKTREES_ROOT } from "./config.ts";
 import { addWorktree, fetch } from "./git.ts";
+import { logEvent } from "./db.ts";
 import { localPathFor, type RepoTarget } from "./repos.ts";
 import { tracker } from "./tracker/index.ts";
 import type { Issue } from "./tracker/index.ts";
@@ -228,9 +229,16 @@ const runClaudeOnce = (
   worktreePath: string,
   allowedTools: string[],
   childEnv: NodeJS.ProcessEnv
-): Promise<{ exitCode: number; resultSubtype: string | undefined }> =>
+): Promise<{
+  exitCode: number;
+  resultSubtype: string | undefined;
+  resultText: string | undefined;
+  durationMs: number | undefined;
+}> =>
   new Promise((resolve, reject) => {
     let resultSubtype: string | undefined;
+    let resultText: string | undefined;
+    let durationMs: number | undefined;
     const proc = spawn(
       env.CLAUDE_BIN,
       [
@@ -260,6 +268,8 @@ const runClaudeOnce = (
         const event = JSON.parse(line) as StreamEvent;
         if (event.type === "result") {
           resultSubtype = event.subtype;
+          resultText = event.result;
+          durationMs = event.duration_ms;
         }
         renderEvent(issue.identifier, event);
       } catch {
@@ -269,7 +279,7 @@ const runClaudeOnce = (
     // A spawn `error` (e.g. the claude binary is missing) is not transient — let it
     // reject so the caller surfaces it rather than retrying a doomed command.
     proc.on("error", reject);
-    proc.on("exit", code => resolve({ exitCode: code ?? -1, resultSubtype }));
+    proc.on("exit", code => resolve({ exitCode: code ?? -1, resultSubtype, resultText, durationMs }));
   });
 
 export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> => {
@@ -291,10 +301,21 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
   const childEnv = { ...process.env };
   delete childEnv.ANTHROPIC_API_KEY;
 
+  const recordAgent = (event: string, detail: string): Promise<void> =>
+    logEvent({ tracker: tracker.name, identifier: id, event, detail });
+
   const totalAttempts = env.AGENT_MAX_RETRIES + 1;
   let exitCode = -1;
   let resultSubtype: string | undefined;
+  let resultText: string | undefined;
+  let durationMs: number | undefined;
   let attemptsMade = 0;
+
+  await recordAgent(
+    "agent-start",
+    `dispatching ${env.CLAUDE_BIN} in ${worktreePath}` +
+      (totalAttempts > 1 ? ` (up to ${totalAttempts} attempts)` : "")
+  );
 
   for (let attempt = 1; attempt <= totalAttempts; attempt++) {
     attemptsMade = attempt;
@@ -302,7 +323,7 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
     logger.info(`[gene] [${id}] spawning agent in ${worktreePath}${suffix}`);
     logger.info(`[gene] [${id}]   prompt: ${prompt.length} chars`);
 
-    ({ exitCode, resultSubtype } = await runClaudeOnce(
+    ({ exitCode, resultSubtype, resultText, durationMs } = await runClaudeOnce(
       issue,
       prompt,
       worktreePath,
@@ -320,6 +341,19 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
         `(attempt ${attempt + 1}/${totalAttempts})`
     );
     await sleep(delay);
+  }
+
+  // Record what the agent actually did — its own final summary is the best account.
+  const seconds = durationMs ? (durationMs / 1000).toFixed(1) : "?";
+  const summary = resultText ? ` — ${truncate(resultText, 2000)}` : "";
+  if (exitCode === 0) {
+    await recordAgent("agent-done", `completed in ${seconds}s${summary}`);
+  } else {
+    const triedNote = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
+    await recordAgent(
+      "agent-error",
+      `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""}${triedNote}${summary}`
+    );
   }
 
   if (exitCode !== 0) {

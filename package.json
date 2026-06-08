@@ -12,6 +12,7 @@
     "once": "node --env-file-if-exists=.env.development src/index.ts --once",
     "clone": "node --env-file-if-exists=.env.development src/clone.ts",
     "reset": "node --env-file-if-exists=.env.development src/reset.ts",
+    "log": "node --env-file-if-exists=.env.development src/log.ts",
     "trello": "node --env-file-if-exists=.env.development trello/cli.ts",
     "typecheck": "tsc --noEmit"
   },
