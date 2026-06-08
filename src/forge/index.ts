@@ -35,9 +35,17 @@ export type ReviewComment = {
 
 /** A snapshot of an open change request: its CI verdict and discussion. */
 export type ChangeRequestReview = {
+  /** MR iid / PR number, as a string (identifies the change request to the forge CLI). */
+  iid: string;
   /** Web URL of the MR/PR. */
   url: string;
   state: "open" | "merged" | "closed" | "locked";
+  /** True while the change request is still a draft / work-in-progress. */
+  isDraft: boolean;
+  /** Source (head) branch the change request is built from — may differ from the issue branch. */
+  sourceBranch: string;
+  /** Target (base) branch it merges into. */
+  targetBranch: string;
   /** Head commit the CI ran against — debounces repeated CI-fix dispatches. */
   headSha: string;
   ci: { status: CiStatus; url?: string; detail?: string };
@@ -68,6 +76,12 @@ export interface Forge {
    * null when no open MR/PR exists for the branch. Used by the In-Review watchdog.
    */
   getReviewStatus(repo: RepoTarget, branch: string): Promise<ChangeRequestReview | null>;
+  /**
+   * Read a specific change request by its iid/number (any branch) — branches,
+   * draft flag, CI, and discussion. Used to pick up an MR/PR attached to a Linear
+   * issue, which may live on a branch other than the issue's. Null if unreadable.
+   */
+  getReviewByIid(repo: RepoTarget, iid: string): Promise<ChangeRequestReview | null>;
 }
 
 export const selectForge = (name: "gitlab" | "github"): Forge =>

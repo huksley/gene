@@ -131,6 +131,91 @@ export const findTargetInText = (text: string): RepoTarget | null => {
   return null;
 };
 
+/** A reference to a specific change request (MR/PR) on a forge. */
+export type ChangeRequestRef = {
+  forge: ForgeName;
+  host: string;
+  repoPath: string;
+  /** MR iid / PR number. */
+  iid: string;
+};
+
+const firstInt = (segment: string | undefined): string | null => {
+  const m = (segment ?? "").match(/^\d+/);
+  return m ? m[0] : null;
+};
+
+/**
+ * Parse an MR/PR *deep* link into a ChangeRequestRef, or null. Unlike
+ * `parseRepoUrl` (which stops at the repo), this recognises the change-request
+ * sub-route:
+ *   GitLab:  https://<host>/<repoPath…>/-/merge_requests/<iid>
+ *   GitHub:  https://<host>/<owner>/<repo>/pull/<number>
+ */
+export const parseChangeRequestUrl = (raw: string): ChangeRequestRef | null => {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return null;
+  }
+  const host = url.hostname;
+  const github = isGithubHost(host);
+  const gitlab = !github && isGitlabHost(host);
+  if (!github && !gitlab) {
+    return null;
+  }
+  const segments = url.pathname.split("/").filter(Boolean);
+
+  if (github) {
+    const pull = segments.indexOf("pull");
+    const iid = pull >= 2 ? firstInt(segments[pull + 1]) : null;
+    if (!iid) {
+      return null;
+    }
+    return { forge: "github", host, repoPath: `${segments[0]}/${stripGit(segments[1]!)}`, iid };
+  }
+
+  // GitLab: the project path precedes "/-/merge_requests/<iid>".
+  const dash = segments.indexOf("-");
+  if (dash < 1) {
+    return null;
+  }
+  const rest = segments.slice(dash + 1); // ["merge_requests","<iid>", …]
+  const iid = rest[0] === "merge_requests" ? firstInt(rest[1]) : null;
+  if (!iid) {
+    return null;
+  }
+  const repoPath = stripGit(segments.slice(0, dash).join("/"));
+  if (!repoPath.includes("/")) {
+    return null;
+  }
+  return { forge: "gitlab", host, repoPath, iid };
+};
+
+/** Every distinct MR/PR ref found in a block of text. */
+export const findChangeRequestRefs = (text: string): ChangeRequestRef[] => {
+  if (!text) {
+    return [];
+  }
+  const refs: ChangeRequestRef[] = [];
+  for (const match of text.matchAll(URL_PATTERN)) {
+    const cleaned = match[0].replace(/[.,;:]+$/, "");
+    const ref = parseChangeRequestUrl(cleaned);
+    if (ref) {
+      refs.push(ref);
+    }
+  }
+  return refs;
+};
+
+/** True when a change-request ref points at the same repo as a resolved target. */
+export const refMatchesTarget = (ref: ChangeRequestRef, target: RepoTarget): boolean =>
+  ref.forge === target.forge && ref.host === target.host && ref.repoPath === target.repoPath;
+
 /** Per-team default repo URLs, used when an issue carries no link. */
 const DEFAULT_TARGET_URLS: Record<string, string> = {
   CLOUD: `https://${env.GITLAB_HOST}/datacrunch/nest.datacrunch.io`

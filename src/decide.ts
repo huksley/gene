@@ -16,7 +16,7 @@
  */
 
 import { env, WATCHED_STATES } from "./config.ts";
-import type { Comment, Issue } from "./linear.ts";
+import type { Comment, Issue } from "./tracker/index.ts";
 
 export type Action =
   | { kind: "nothing"; reason: string }

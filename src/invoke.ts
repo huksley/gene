@@ -19,7 +19,7 @@ import path from "node:path";
 import readline from "node:readline";
 import logger from "./logger.ts";
 import { env, WORKTREES_ROOT } from "./config.ts";
-import { addWorktree } from "./git.ts";
+import { addWorktree, fetch } from "./git.ts";
 import { localPathFor, type RepoTarget } from "./repos.ts";
 import type { LinearIssue } from "./linear.ts";
 import type { Forge } from "./forge/index.ts";
@@ -84,28 +84,47 @@ export const worktreePathFor = (target: RepoTarget, issue: LinearIssue): string 
   path.join(WORKTREES_ROOT, target.repoPath, issue.identifier);
 
 /**
+ * Where an existing change request lives, when continuing one rather than
+ * starting fresh: its own source branch (checked out at the remote head) and the
+ * target branch it merges into (used as the base for drift).
+ */
+export type ExistingChangeRequest = { branch: string; baseBranch: string };
+
+/**
  * Ensure a worktree exists for this issue. Clones the target repo on demand (and
- * fetches it), resolves the base branch (the ref pinned by a /tree/ link, else
- * the clone's default branch), then branches the worktree off `origin/<base>`.
+ * fetches it), then either:
+ *  - **fresh** (default): branches the worktree off `origin/<base>` as the issue's
+ *    Linear branch (so a new change request auto-links); or
+ *  - **continue** (`existing` given): checks out the change request's *own* source
+ *    branch at its remote head — the MR/PR may not be on the issue's branch.
  * Reuses an existing worktree (idempotent across resumes). Returns the worktree
- * path and the resolved base branch.
+ * path, the resolved base branch, and the branch actually checked out.
  */
 export const ensureWorktree = async (
   target: RepoTarget,
   issue: LinearIssue,
-  forge: Forge
-): Promise<{ worktreePath: string; baseBranch: string }> => {
+  forge: Forge,
+  existing?: ExistingChangeRequest
+): Promise<{ worktreePath: string; baseBranch: string; workBranch: string }> => {
   const localPath = localPathFor(target);
   // Clone-on-demand keeps arbitrary per-issue repos warm without a static list;
   // ensureClone also fetches an existing clone so worktrees see the latest tip.
   await forge.ensureClone(target, localPath);
-  const baseBranch = target.ref ?? (await forge.detectDefaultBranch(localPath));
+  const baseBranch = existing?.baseBranch ?? target.ref ?? (await forge.detectDefaultBranch(localPath));
+  const workBranch = existing?.branch ?? issue.branchName;
   const worktreePath = worktreePathFor(target, issue);
   if (!existsSync(worktreePath)) {
     await mkdir(path.dirname(worktreePath), { recursive: true });
-    await addWorktree(localPath, worktreePath, issue.branchName, baseBranch);
+    if (existing) {
+      // Continue an existing change request: check out its branch at the remote
+      // head (fetch it first — it may differ from the issue's Linear branch).
+      await fetch(localPath, workBranch);
+      await addWorktree(localPath, worktreePath, workBranch, workBranch);
+    } else {
+      await addWorktree(localPath, worktreePath, workBranch, baseBranch);
+    }
   }
-  return { worktreePath, baseBranch };
+  return { worktreePath, baseBranch, workBranch };
 };
 
 const TEXT_MAX = 220;

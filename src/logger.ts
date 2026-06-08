@@ -28,8 +28,7 @@ class Level {
   }
 
   toString(): string {
-    const suffix = this._level === "INFO" ? "" : ` ${this._level}`;
-    return `${new Date().toISOString()}${suffix}`;
+    return `${new Date().toISOString()} ${this._level}`;
   }
 
   [Symbol.toPrimitive](hint: string): string | undefined {
@@ -43,7 +42,7 @@ const logger: Logger = {
   isVerbose: verbose,
   verbose: verbose
     ? console.info.bind(console, "%s", new Level("DEBUG"))
-    : () => {},
+    : () => { },
   info: console.info.bind(console, "%s", new Level("INFO")),
   warn: console.warn.bind(console, "%s", new Level("WARN")),
   error: console.error.bind(console, "%s", new Level("ERROR"))

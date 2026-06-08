@@ -98,7 +98,6 @@ collect_inherit_mounts() {
     fi
   done <<EOF
 $HOME/.claude|$GUEST_HOME/.claude
-$HOME/.claude.json|$GUEST_HOME/.claude.json
 $HOME/.config/gh|$GUEST_HOME/.config/gh
 $HOME/.config/glab-cli|$GUEST_HOME/.config/glab-cli
 $HOME/.config/glab|$GUEST_HOME/.config/glab
@@ -107,10 +106,121 @@ $HOME/.config/notion|$GUEST_HOME/.config/notion
 EOF
 }
 
+# macOS keeps Claude Code's OAuth login in the Keychain, not on disk — so the
+# ~/.claude bind-mount alone won't carry it into the (Linux) sandbox, where
+# Claude Code instead reads ~/.claude/.credentials.json. Bridge the two: copy the
+# Keychain blob into that 0600 file just before the run, so it rides the existing
+# ~/.claude mount in. The token is never printed; on ephemeral runs the file is
+# removed afterward (GENE_SANDBOX_KEEP_CREDENTIALS=1 keeps it on the host;
+# GENE_SANDBOX_NO_KEYCHAIN=1 skips the bridge). A pre-existing file is left alone.
+stage_claude_credentials() {
+  [ -n "${GENE_SANDBOX_NO_KEYCHAIN:-}" ] && return 0
+  [ "$(uname -s)" = "Darwin" ] || return 0          # only macOS hides it in the Keychain
+  have security || return 0
+  local f="$HOME/.claude/.credentials.json"
+  if [ -e "$f" ]; then
+    info "claude  login: using existing ~/.claude/.credentials.json"
+    return 0
+  fi
+  if ! security find-generic-password -s "Claude Code-credentials" -a "$USER" >/dev/null 2>&1; then
+    info "claude  login: none in Keychain (run 'claude' to log in) — sandbox claude unauthenticated"
+    return 0
+  fi
+  mkdir -p "$HOME/.claude"
+  local tmp="$f.staging.$$"
+  if ( umask 077; security find-generic-password -s "Claude Code-credentials" -a "$USER" -w >"$tmp" 2>/dev/null ) && [ -s "$tmp" ]; then
+    chmod 600 "$tmp"; mv -f "$tmp" "$f"
+    if [ -n "${GENE_SANDBOX_KEEP_CREDENTIALS:-}" ]; then
+      info "claude  login: bridged Keychain -> ~/.claude/.credentials.json (0600, kept)"
+    else
+      STAGED_CRED_FILE="$f"
+      info "claude  login: bridged Keychain -> ~/.claude/.credentials.json (0600, removed after run)"
+    fi
+  else
+    rm -f "$tmp"
+    warn "claude  login: Keychain read denied — sandbox claude may be unauthenticated"
+  fi
+}
+
+# Pre-trust the sandbox workdir so non-interactive `claude -p` doesn't block on the
+# "Do you trust the files in this folder?" dialog. Claude Code records trust in
+# ~/.claude.json under projects.<dir>.hasTrustDialogAccepted — but the host file is
+# keyed by HOST paths (never /workspace). So we stage a COPY of the host config
+# (preserving onboarding/MCP/global flags) with the workdir(s) marked trusted, and
+# mount that as the guest's ~/.claude.json (set in CLAUDE_CFG_MOUNT). The copy
+# replaces the live mount, so the sandbox no longer writes its own state back into
+# your real ~/.claude.json. Removed after ephemeral runs (kept for -k/-d).
+CLAUDE_CFG_MOUNT=""
+stage_claude_config() {
+  local guest_dst="$1"; shift
+  local dirs="$*"                      # space-separated guest dirs to trust
+  local host_cfg="$HOME/.claude.json"
+  local tmp="${TMPDIR:-/tmp}/geneai-claude-json.$$"
+  local ok=""
+  CLAUDE_CFG_MOUNT=""
+
+  if have python3; then
+    if CJ_HOST="$host_cfg" CJ_DIRS="$dirs" python3 - "$tmp" <<'PY' 2>/dev/null
+import json, os, sys
+out = sys.argv[1]
+host = os.environ.get("CJ_HOST", "")
+dirs = os.environ.get("CJ_DIRS", "").split()
+data = {}
+if host and os.path.exists(host):
+    try:
+        data = json.load(open(host))
+    except Exception:
+        data = {}
+if not isinstance(data, dict):
+    data = {}
+proj = data.get("projects")
+if not isinstance(proj, dict):
+    proj = {}
+    data["projects"] = proj
+for d in dirs:
+    e = proj.get(d)
+    if not isinstance(e, dict):
+        e = {}
+        proj[d] = e
+    e["hasTrustDialogAccepted"] = True
+json.dump(data, open(out, "w"))
+PY
+    then ok=1; fi
+  elif have jq; then
+    local body="" d
+    for d in $dirs; do body="$body | .projects[\"$d\"].hasTrustDialogAccepted = true"; done
+    if [ -e "$host_cfg" ]; then
+      jq ". $body" "$host_cfg" >"$tmp" 2>/dev/null && ok=1
+    else
+      jq -n "{} $body" >"$tmp" 2>/dev/null && ok=1
+    fi
+  fi
+
+  if [ -n "$ok" ] && [ -s "$tmp" ]; then
+    chmod 600 "$tmp" 2>/dev/null || true
+    STAGED_CONFIG_FILE="$tmp"
+    CLAUDE_CFG_MOUNT="$tmp:$guest_dst${INHERIT_RO:+:ro}"
+    info "claude  trust: [$dirs] pre-trusted in ~/.claude.json (staged copy of host config)"
+  else
+    rm -f "$tmp" 2>/dev/null
+    if [ -e "$host_cfg" ]; then
+      CLAUDE_CFG_MOUNT="$host_cfg:$guest_dst${INHERIT_RO:+:ro}"
+      warn "claude  trust: no python3/jq to inject trust — mounting live ~/.claude.json (trust dialog may block)"
+    else
+      warn "claude  trust: no ~/.claude.json and no python3/jq — workdir not pre-trusted"
+    fi
+  fi
+}
+
 # ── ephemeral-sandbox cleanup (globals so the EXIT trap can see them) ──────────
-SB_NAME=""; SB_KEEP=""
+SB_NAME=""; SB_KEEP=""; STAGED_CRED_FILE=""; STAGED_CONFIG_FILE=""
 cleanup() {
   [ -n "$SB_KEEP" ] && return 0
+  # Drop the transient files staged for this run (the Keychain-bridged credential
+  # and the trust-injected ~/.claude.json copy). Ephemeral runs only — kept/detached
+  # sandboxes returned above still have them mounted.
+  [ -n "$STAGED_CRED_FILE" ]   && rm -f "$STAGED_CRED_FILE" 2>/dev/null
+  [ -n "$STAGED_CONFIG_FILE" ] && rm -f "$STAGED_CONFIG_FILE" 2>/dev/null
   [ -n "$SB_NAME" ] || return 0
   msb stop "$SB_NAME" >/dev/null 2>&1 || true
   msb rm   "$SB_NAME" >/dev/null 2>&1 || true
@@ -173,9 +283,11 @@ do_versions() {
 do_run() {
   local name="" keep="" detach="" inherit="" workdir="${GENE_SANDBOX_WORKDIR:-/workspace}"
   local cpus="${GENE_SANDBOX_CPUS:-}" mem="$MEM_DEFAULT" user="$GUEST_USER"
+  local internal="" internal_set="" pwd_mount="" workdir_set="${GENE_SANDBOX_WORKDIR:+1}"
   local -a vols=()
   [ -n "${GENE_SANDBOX_VOLUME:-}" ] && vols+=("$GENE_SANDBOX_VOLUME")
   [ -n "${GENE_SANDBOX_INHERIT:-}" ] && inherit=1
+  [ -n "${GENE_SANDBOX_INTERNAL:-}" ] && { internal=1; internal_set=1; }
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -183,8 +295,11 @@ do_run() {
       -k|--keep)    keep=1; shift;;
       -d|--detach)  detach=1; keep=1; shift;;
       -i|--inherit) inherit=1; shift;;
+      --internal|--net-host)    internal=1; internal_set=1; shift;;
+      --isolated|--no-internal) internal=""; internal_set=1; shift;;
       -v|--volume)  vols+=("$2"); shift 2;;
-      -w|--workdir) workdir="$2"; shift 2;;
+      --pwd)        pwd_mount=1; shift;;
+      -w|--workdir) workdir="$2"; workdir_set=1; shift 2;;
       -c|--cpus)    cpus="$2"; shift 2;;
       -m|--memory)  mem="$2"; shift 2;;
       -u|--user)    user="$2"; shift 2;;
@@ -195,6 +310,18 @@ do_run() {
     esac
   done
   local -a cmd=("$@")
+
+  # --pwd: mount the host's current directory into the sandbox at
+  # /workspace/<basename> (NOT at /workspace itself) and — unless -w was given —
+  # make it the workdir. So you land in your project, and with --inherit that dir
+  # is the one pre-trusted for claude. The mount auto-creates /workspace/<basename>.
+  if [ -n "$pwd_mount" ]; then
+    local pwd_base; pwd_base="$(basename "$PWD")"
+    [ -n "$pwd_base" ] && [ "$pwd_base" != "/" ] || die "--pwd: cannot derive a directory name from PWD ($PWD)"
+    local pwd_dst="/workspace/$pwd_base"
+    vols+=("$PWD:$pwd_dst")
+    if [ -z "$workdir_set" ]; then workdir="$pwd_dst"; info "pwd    mounting $PWD -> $pwd_dst (workdir)"; else info "pwd    mounting $PWD -> $pwd_dst"; fi
+  fi
 
   [ -n "$name" ] || name="geneai-$$"
   ensure_loaded
@@ -208,15 +335,37 @@ do_run() {
   local v; for v in "${vols[@]}"; do opts+=(-v "$v"); done
 
   if [ -n "$inherit" ]; then
-    collect_proxy_env
-    collect_inherit_mounts
     log "inheriting host context (running as non-root '$user'):"
+    local trust_dirs="${workdir:-/workspace}"
+    [ -n "${GENE_SANDBOX_TRUST_DIRS:-}" ] && trust_dirs="$trust_dirs $GENE_SANDBOX_TRUST_DIRS"
+    collect_proxy_env
+    stage_claude_credentials                                  # macOS: Keychain login -> ~/.claude/.credentials.json
+    stage_claude_config "$GUEST_HOME/.claude.json" $trust_dirs  # workdir trust -> staged ~/.claude.json (word-split intended)
+    collect_inherit_mounts
     local d
     for d in "${INHERIT_DESC[@]}"; do info "mount  $d"; done
     [ "${#INHERIT_DESC[@]}" -eq 0 ] && info "mount  (no host config dirs found to inherit)"
     if [ -n "$PROXY_SEEN" ]; then info "env   $PROXY_SEEN"; else info "env    (none of the proxied vars are set on the host)"; fi
     [ -z "$INHERIT_RO" ] && warn "--inherit bind-mounts LIVE host credentials read-write; the sandbox can modify them (GENE_SANDBOX_INHERIT_RO=1 for read-only)"
     opts+=("${INHERIT_ARGS[@]}" "${PROXY_ARGS[@]}")
+    [ -n "$CLAUDE_CFG_MOUNT" ] && opts+=(-v "$CLAUDE_CFG_MOUNT")
+  fi
+
+  # Authenticated real work (--inherit) almost always targets internal hosts
+  # (e.g. gitlab.datacrunch.io over Tailscale), so turn on internal networking
+  # alongside it — unless the user explicitly asked for isolation.
+  if [ -n "$inherit" ] && [ -z "$internal_set" ]; then internal=1; fi
+
+  if [ -n "$internal" ]; then
+    # msb's default egress is deny-all-but-public, and it drops DNS answers that
+    # resolve to private IPs (rebind protection) — which blocks internal hosts
+    # like gitlab.datacrunch.io (a 10.x reached via a Tailscale subnet route).
+    # Unrestricting egress + disabling rebind protection lets the sandbox use the
+    # host's full reach; msb's DNS forwarder already points at the host resolver.
+    opts+=(--net-default-egress allow --no-dns-rebind-protection)
+    log "network: internal ON — private/Tailscale hosts reachable, egress unrestricted"
+  else
+    info "network: isolated — public egress only (use --internal for private/Tailscale hosts)"
   fi
 
   [ -n "$detach" ] && opts+=(-d)
@@ -254,10 +403,15 @@ Sandboxes run as the unprivileged user 'gene' (uid 1000) with 2G memory by defau
 
 run flags:
   -i, --inherit       bring host tool auth/context into the sandbox (see below)
+      --internal      reach private/internal hosts (RFC1918, Tailscale subnet
+                      routes) — e.g. gitlab.datacrunch.io; implied by --inherit
+      --isolated      force public-egress-only, even with --inherit (--no-internal)
   -n, --name NAME     name the sandbox (named sandboxes are kept, not auto-removed)
   -k, --keep          keep the sandbox after the command exits
   -d, --detach        start in the background and print the name
   -v, --volume SPEC   mount host:guest[:opts] into the sandbox (repeatable)
+      --pwd           mount the current dir at /workspace/<basename> and make it
+                      the workdir (so claude --inherit pre-trusts it); not /workspace
   -w, --workdir DIR   working directory inside the sandbox (default: /workspace)
   -c, --cpus N        number of vCPUs
   -m, --memory SIZE   memory, e.g. 2G            (default: 2G)
@@ -265,12 +419,28 @@ run flags:
 
 --inherit brings your host identity into the otherwise-isolated sandbox:
   • bind-mounts each tool's host config dir that exists, read-write:
-      ~/.claude, ~/.claude.json, ~/.config/{gh,glab-cli,glab,linear,notion}
+      ~/.claude, ~/.config/{gh,glab-cli,glab,linear,notion}
+  • stages a copy of ~/.claude.json with the workdir (default /workspace) marked
+      trusted (projects.<dir>.hasTrustDialogAccepted=true) so `claude -p` won't
+      block on the folder-trust dialog. The copy — not the live file — is mounted,
+      so the sandbox can't write its state back to your real ~/.claude.json. Add
+      more trusted dirs with GENE_SANDBOX_TRUST_DIRS="dir1 dir2".
   • proxies these env vars when set (values never printed):
       ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN
       GITLAB_HOST OPENAI_TOKEN NOTION_API_TOKEN  and  CLAUDE_* OPENAI_* CODEX_* NOTION_*
+  • on macOS, bridges your Claude Code Keychain login into a 0600
+      ~/.claude/.credentials.json so the (Linux) sandbox's claude is logged in —
+      macOS hides the token in the Keychain, which the mount alone can't carry.
+      The file is removed after the run (GENE_SANDBOX_KEEP_CREDENTIALS=1 to keep it,
+      GENE_SANDBOX_NO_KEYCHAIN=1 to skip the bridge).
   WARNING: mounts are read-write — the sandbox can modify your real credentials.
            Set GENE_SANDBOX_INHERIT_RO=1 to mount them read-only instead.
+  --inherit also turns on --internal (real work usually needs the internal
+  network); pass --isolated to keep public-egress-only.
+
+Network: a bare `run` is isolated — only public egress is allowed and DNS
+  answers that resolve to private IPs are dropped (msb defaults). --internal
+  lifts both so the sandbox reaches whatever the host can (incl. Tailscale).
 
 Examples:
   ./sandbox.sh base
@@ -278,13 +448,21 @@ Examples:
   ./sandbox.sh run                                  # interactive shell (as gene, 2G)
   ./sandbox.sh run claude --version
   ./sandbox.sh run --inherit -- claude -p 'summarize the open Linear issues'
+  ./sandbox.sh run --internal -- glab -R group/repo mr list            # internal GitLab
+  ./sandbox.sh run --inherit --isolated -- claude --version            # creds, no internal net
   GENE_SANDBOX_INHERIT_RO=1 ./sandbox.sh run --inherit                 # read-only auth
+  ./sandbox.sh run --pwd -- bash -lc 'npm test'         # mount cwd at /workspace/<name>, cd there
+  ./sandbox.sh run --pwd --inherit -- claude -p 'fix the failing test'   # cwd mounted + trusted
   ./sandbox.sh run -v "$PWD:/workspace" -- bash -lc 'cd /workspace && npm test'
 
 Env overrides: GENE_SANDBOX_IMAGE, GENE_SANDBOX_TAG, GENE_SANDBOX_DOCKERFILE,
   GENE_SANDBOX_CONTEXT, GENE_SANDBOX_VOLUME, GENE_SANDBOX_WORKDIR,
   GENE_SANDBOX_CPUS, GENE_SANDBOX_MEMORY, GENE_SANDBOX_USER, GENE_SANDBOX_HOME,
-  GENE_SANDBOX_INHERIT (=1 to always inherit), GENE_SANDBOX_INHERIT_RO (=1 read-only)
+  GENE_SANDBOX_INHERIT (=1 to always inherit), GENE_SANDBOX_INHERIT_RO (=1 read-only),
+  GENE_SANDBOX_INTERNAL (=1 to always allow internal/private network access),
+  GENE_SANDBOX_KEEP_CREDENTIALS (=1 keep the bridged claude creds file on the host),
+  GENE_SANDBOX_NO_KEYCHAIN (=1 skip the macOS Keychain → credentials.json bridge),
+  GENE_SANDBOX_TRUST_DIRS (space-separated extra guest dirs to pre-trust for claude)
 USAGE
 }
 

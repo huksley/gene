@@ -102,32 +102,27 @@ export class GitlabForge implements Forge {
     await run("glab", ["mr", "close", branch], { cwd: localPath });
   }
 
-  async getReviewStatus(repo: RepoTarget, branch: string): Promise<ChangeRequestReview | null> {
-    const enc = encodeURIComponent(repo.repoPath);
-    const apiEnv = { ...process.env, GITLAB_HOST: repo.host };
-    // glab api hits /api/v4/<path>; returns the parsed JSON, or null on any failure.
-    const api = async (query: string): Promise<any> => {
-      const res = await run("glab", ["api", query], { env: apiEnv });
-      if (res.code !== 0) {
-        return null;
-      }
-      try {
-        return JSON.parse(res.stdout);
-      } catch {
-        return null;
-      }
-    };
-
-    const mrs = await api(
-      `projects/${enc}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=opened&per_page=1`
-    );
-    const mr: any = Array.isArray(mrs) ? mrs[0] : undefined;
-    if (!mr) {
+  /** glab api hits /api/v4/<path>; returns the parsed JSON, or null on any failure. */
+  private async api(repo: RepoTarget, query: string): Promise<any> {
+    const res = await run("glab", ["api", query], { env: { ...process.env, GITLAB_HOST: repo.host } });
+    if (res.code !== 0) {
       return null;
     }
-    const headSha: string = mr.sha ?? mr.diff_refs?.head_sha ?? "";
+    try {
+      return JSON.parse(res.stdout);
+    } catch {
+      return null;
+    }
+  }
 
-    // Prefer the MR's head pipeline; fall back to the latest pipeline for the branch.
+  /** Turn a raw MR object (from either lookup) into a ChangeRequestReview. */
+  private async buildReview(repo: RepoTarget, mr: any): Promise<ChangeRequestReview> {
+    const enc = encodeURIComponent(repo.repoPath);
+    const headSha: string = mr.sha ?? mr.diff_refs?.head_sha ?? "";
+    const sourceBranch: string = mr.source_branch ?? "";
+    const targetBranch: string = mr.target_branch ?? "";
+
+    // Prefer the MR's head pipeline; fall back to the latest pipeline for its branch.
     let ci: ChangeRequestReview["ci"] = { status: "none" };
     if (mr.head_pipeline?.status) {
       ci = {
@@ -135,9 +130,10 @@ export class GitlabForge implements Forge {
         url: mr.head_pipeline.web_url,
         detail: mr.head_pipeline.status
       };
-    } else {
-      const pipelines = await api(
-        `projects/${enc}/pipelines?ref=${encodeURIComponent(branch)}&per_page=1`
+    } else if (sourceBranch) {
+      const pipelines = await this.api(
+        repo,
+        `projects/${enc}/pipelines?ref=${encodeURIComponent(sourceBranch)}&per_page=1`
       );
       const pipeline: any = Array.isArray(pipelines) ? pipelines[0] : undefined;
       if (pipeline) {
@@ -145,7 +141,7 @@ export class GitlabForge implements Forge {
       }
     }
 
-    const notes = await api(`projects/${enc}/merge_requests/${mr.iid}/notes?sort=asc&per_page=100`);
+    const notes = await this.api(repo, `projects/${enc}/merge_requests/${mr.iid}/notes?sort=asc&per_page=100`);
     const comments: ReviewComment[] = Array.isArray(notes)
       ? notes
           .filter((n: any) => !n.system) // drop "changed status to…" system notes
@@ -161,6 +157,38 @@ export class GitlabForge implements Forge {
           })
       : [];
 
-    return { url: String(mr.web_url ?? ""), state: mapMrState(mr.state), headSha, ci, comments };
+    return {
+      iid: String(mr.iid ?? ""),
+      url: String(mr.web_url ?? ""),
+      state: mapMrState(mr.state),
+      isDraft: Boolean(mr.draft ?? mr.work_in_progress ?? false),
+      sourceBranch,
+      targetBranch,
+      headSha,
+      ci,
+      comments
+    };
+  }
+
+  async getReviewStatus(repo: RepoTarget, branch: string): Promise<ChangeRequestReview | null> {
+    const enc = encodeURIComponent(repo.repoPath);
+    const mrs = await this.api(
+      repo,
+      `projects/${enc}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=opened&per_page=1`
+    );
+    const mr: any = Array.isArray(mrs) ? mrs[0] : undefined;
+    if (!mr) {
+      return null;
+    }
+    return this.buildReview(repo, mr);
+  }
+
+  async getReviewByIid(repo: RepoTarget, iid: string): Promise<ChangeRequestReview | null> {
+    const enc = encodeURIComponent(repo.repoPath);
+    const mr = await this.api(repo, `projects/${enc}/merge_requests/${encodeURIComponent(iid)}`);
+    if (!mr || mr.iid === undefined) {
+      return null;
+    }
+    return this.buildReview(repo, mr);
   }
 }

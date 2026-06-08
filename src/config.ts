@@ -63,15 +63,45 @@ const list = (key: string): string[] => {
     .filter(Boolean);
 };
 
-export const env = {
-  LINEAR_API_KEY: optional("LINEAR_API_KEY"),
-  LINEAR_WORKSPACE: optional("GENE_LINEAR_WORKSPACE"),
+/**
+ * Which issue tracker Gene drives (GENE_TRACKER). Tracker-specific settings are
+ * namespaced by the active tracker's prefix (LINEAR_* / TRELLO_*), so the exported
+ * names below stay tracker-neutral and every downstream consumer is unchanged —
+ * only the env *keys* differ per tracker.
+ */
+const trackerRaw = str("GENE_TRACKER", "linear").toLowerCase();
+const TRACKER: "linear" | "trello" = trackerRaw === "trello" ? "trello" : "linear";
+if (trackerRaw !== "linear" && trackerRaw !== "trello") {
+  problems.push(`GENE_TRACKER: expected "linear" or "trello", got "${trackerRaw}"`);
+}
+const TP = TRACKER === "trello" ? "TRELLO_" : "LINEAR_";
 
-  GENE_LABEL: str("GENE_LABEL", "Gene"),
-  TRIGGER_STATE: str("GENE_TRIGGER_STATE", "Todo"),
-  ACTIVE_STATE: str("GENE_ACTIVE_STATE", "In Progress"),
-  BLOCKED_STATE: str("GENE_BLOCKED_STATE", "Blocked"),
-  REVIEW_STATE: str("GENE_REVIEW_STATE", "In Review"),
+export const env = {
+  TRACKER,
+
+  // Linear backend (read when GENE_TRACKER=linear).
+  LINEAR_API_KEY: optional("LINEAR_API_KEY"),
+  LINEAR_WORKSPACE: optional("LINEAR_WORKSPACE"),
+
+  // Trello backend (read when GENE_TRACKER=trello). The `trello` CLI inherits these
+  // from the environment, in the daemon and in the spawned agent alike.
+  TRELLO_API_KEY: optional("TRELLO_API_KEY"),
+  TRELLO_TOKEN: optional("TRELLO_TOKEN"),
+  TRELLO_BOARD: optional("TRELLO_BOARD"),
+  // Optional JSON map of state-name → list-id, overriding name-based list lookup
+  // (use when the board's list names differ from the *_STATE values, or to pin ids).
+  TRELLO_LIST_MAP: optional("TRELLO_LIST_MAP"),
+
+  // Tracker semantics — namespaced by the active tracker (LINEAR_* / TRELLO_*).
+  LABEL: str(`${TP}LABEL`, "Gene"),
+  // Whom Gene works for: "me" (the authenticated tracker user), "any" (no assignee
+  // filter), or a specific assignee (Linear: email; Trello: username). Issues not
+  // assigned to this user are skipped.
+  ASSIGNEE: str(`${TP}ASSIGNEE`, "me"),
+  TRIGGER_STATE: str(`${TP}TRIGGER_STATE`, "Todo"),
+  ACTIVE_STATE: str(`${TP}ACTIVE_STATE`, "In Progress"),
+  BLOCKED_STATE: str(`${TP}BLOCKED_STATE`, "Blocked"),
+  REVIEW_STATE: str(`${TP}REVIEW_STATE`, "In Review"),
   AGENT_MARKER: str("GENE_AGENT_MARKER", "#gene-ai"),
   REQUIRE_SECTIONS: list("GENE_REQUIRE_SECTIONS"),
 
@@ -91,6 +121,12 @@ export const env = {
   AGENT_MAX_RETRIES: int("GENE_AGENT_MAX_RETRIES", 2),
   AGENT_RETRY_DELAY_MS: int("GENE_AGENT_RETRY_DELAY_MS", 5_000)
 } as const;
+
+// Trello needs a board to watch; fail fast with a friendly message rather than
+// silently listing nothing later.
+if (env.TRACKER === "trello" && !env.TRELLO_BOARD) {
+  problems.push("TRELLO_BOARD: required when GENE_TRACKER=trello (the board id whose cards Gene watches)");
+}
 
 if (problems.length > 0) {
   /* eslint-disable no-console */

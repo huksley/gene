@@ -19,8 +19,10 @@ import { env, WATCHED_STATES } from "./config.ts";
 import { decideAction, type Action } from "./decide.ts";
 import {
   getComments,
+  isAssignedToOwner,
   listGeneIssues,
   moveState,
+  ownerLabel,
   postComment,
   type LinearComment,
   type LinearIssue
@@ -28,9 +30,9 @@ import {
 import { resolveTarget, targetLabel, localPathFor, type RepoTarget } from "./repos.ts";
 import { selectForge, type Forge } from "./forge/index.ts";
 import { commitsBehind, detectDefaultBranch } from "./git.ts";
-import { ensureWorktree, invokeAgent, worktreePathFor } from "./invoke.ts";
+import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
-import { evaluateReview, writeCursor, type ReviewContext } from "./review.ts";
+import { evaluateDraftPickup, evaluateReview, writeCursor, type ReviewContext } from "./review.ts";
 import { closeDb } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
@@ -76,7 +78,9 @@ const startMessages: Record<PromptIntent, string> = {
   "handle-user-feedback":
     "🧬 Got your feedback — incorporating it now. I'll comment again with the next iteration.",
   "address-review":
-    "🧬 Spotted new review feedback / CI status on the change request — addressing it now and I'll push an update."
+    "🧬 Spotted new review feedback / CI status on the change request — addressing it now and I'll push an update.",
+  "continue-draft":
+    "🧬 There's already a change request attached here — picking it up to finish the work, fix CI, and address review comments."
 };
 
 const buildClarificationComment = (missing: string[]): string => {
@@ -190,12 +194,21 @@ const processIssue = async (issue: LinearIssue): Promise<boolean> => {
   if (intent === null) {
     return false;
   }
+
+  // A fresh Todo issue may already carry an open change request (a human attached a
+  // draft, or a prior run opened one). Continue it instead of starting from scratch.
+  if (intent === "start-processing" && (await tryContinueAttachedDraft(issue, comments, target, forge))) {
+    return true;
+  }
+
   return dispatchAgent(issue, comments, target, forge, intent);
 };
 
 type DispatchExtras = {
-  /** Forge review state to feed the prompt (address-review only). */
+  /** Forge review state to feed the prompt (address-review / continue-draft). */
   reviewContext?: ReviewContext;
+  /** When continuing an existing change request: its source branch + merge target. */
+  existing?: ExistingChangeRequest;
   /** Runs inside the lock, just before the agent spawns (e.g. advance the review cursor). */
   beforeSpawn?: () => Promise<void>;
 };
@@ -232,7 +245,9 @@ const dispatchAgent = async (
     await postStartComment(issue, intent);
     await moveState(issue.identifier, env.ACTIVE_STATE);
     const previewPath = worktreePathFor(target, issue);
-    const baseBranch = target.ref ?? (await detectDefaultBranch(localPathFor(target)));
+    const baseBranch =
+      extras.existing?.baseBranch ?? target.ref ?? (await detectDefaultBranch(localPathFor(target)));
+    const workBranch = extras.existing?.branch ?? issue.branchName;
     const prompt = buildPrompt({
       issue,
       comments,
@@ -242,13 +257,14 @@ const dispatchAgent = async (
       attachmentRelativePaths: [],
       commitsBehind: 0,
       forge,
+      workBranch,
       repoLabel: targetLabel(target),
       subdir: target.subdir,
       reviewContext: extras.reviewContext
     });
     logger.info(
       `[gene]   [${issue.identifier}] (dry-run) would dispatch ${intent} → ${targetLabel(target)} ` +
-      `[${forge.name}] (branch "${issue.branchName}", base "${baseBranch}", prompt ${prompt.length} chars)`
+      `[${forge.name}] (branch "${workBranch}", base "${baseBranch}", prompt ${prompt.length} chars)`
     );
     return true;
   }
@@ -263,7 +279,12 @@ const dispatchAgent = async (
       await extras.beforeSpawn();
     }
 
-    const { worktreePath, baseBranch } = await ensureWorktree(target, issue, forge);
+    const { worktreePath, baseBranch, workBranch } = await ensureWorktree(
+      target,
+      issue,
+      forge,
+      extras.existing
+    );
     const drift = await commitsBehind(worktreePath, baseBranch);
     if (drift > 0) {
       logger.info(`[gene]   [${issue.identifier}] ${drift} commit(s) behind origin/${baseBranch}`);
@@ -289,6 +310,7 @@ const dispatchAgent = async (
       attachmentRelativePaths,
       commitsBehind: drift,
       forge,
+      workBranch,
       repoLabel: targetLabel(target),
       subdir: target.subdir,
       reviewContext: extras.reviewContext
@@ -335,7 +357,7 @@ const processReview = async (
 ): Promise<boolean> => {
   let outcome;
   try {
-    outcome = await evaluateReview(issue, target, forge);
+    outcome = await evaluateReview(issue, comments, target, forge);
   } catch (error) {
     logger.warn(
       `[gene]   [${issue.identifier}] review check failed:`,
@@ -352,6 +374,47 @@ const processReview = async (
   logger.info(`[gene]   [${issue.identifier}] in review — ${outcome.reason}; dispatching a fix`);
   return dispatchAgent(issue, comments, target, forge, "address-review", {
     reviewContext: outcome.context,
+    existing: { branch: outcome.context.sourceBranch, baseBranch: outcome.context.targetBranch },
+    beforeSpawn: () => writeCursor(issue.identifier, outcome.nextCursor)
+  });
+};
+
+/**
+ * Draft pickup for a fresh Todo issue: if it already has an open change request
+ * attached (matched to the target repo, found by iid so a human branch name is
+ * fine), dispatch the agent to CONTINUE it (intent "continue-draft") on the change
+ * request's own source branch. Returns true if it acted or is intentionally
+ * waiting (CI in flight); false when nothing is attached, so the caller starts fresh.
+ */
+const tryContinueAttachedDraft = async (
+  issue: LinearIssue,
+  comments: LinearComment[],
+  target: RepoTarget,
+  forge: Forge
+): Promise<boolean> => {
+  let outcome;
+  try {
+    outcome = await evaluateDraftPickup(issue, comments, target, forge);
+  } catch (error) {
+    logger.warn(
+      `[gene]   [${issue.identifier}] draft-pickup check failed:`,
+      error instanceof Error ? error.message : error
+    );
+    return false;
+  }
+  if (!outcome) {
+    return false; // nothing attached — caller proceeds with a fresh start
+  }
+  if (!outcome.act) {
+    // An attached change request exists but CI is mid-flight: wait, don't start a
+    // parallel fresh run on the issue's own branch.
+    logger.info(`[gene]   [${issue.identifier}] attached change request — ${outcome.reason}`);
+    return true;
+  }
+  logger.info(`[gene]   [${issue.identifier}] attached change request — ${outcome.reason}; continuing it`);
+  return dispatchAgent(issue, comments, target, forge, "continue-draft", {
+    reviewContext: outcome.context,
+    existing: { branch: outcome.context.sourceBranch, baseBranch: outcome.context.targetBranch },
     beforeSpawn: () => writeCursor(issue.identifier, outcome.nextCursor)
   });
 };
@@ -360,14 +423,24 @@ const scanOnce = async (): Promise<void> => {
   const scannedAt = new Date().toISOString();
   const all = await listGeneIssues();
 
-  const trigger = all.filter(i => i.stateName === WATCHED_STATES.trigger);
-  const active = all.filter(i => i.stateName === WATCHED_STATES.active);
-  const blocked = all.filter(i => i.stateName === WATCHED_STATES.blocked);
-  const review = all.filter(i => i.stateName === WATCHED_STATES.review);
-  const other = all.length - trigger.length - active.length - blocked.length - review.length;
+  // Only work issues assigned to the configured owner (env.ASSIGNEE, default "me").
+  const mine = all.filter(isAssignedToOwner);
+  const skipped = all.filter(i => !isAssignedToOwner(i));
+  if (skipped.length > 0) {
+    logger.info(
+      `[gene]   skipping ${skipped.length} ${env.GENE_LABEL} issue(s) not assigned to ${ownerLabel()}: ` +
+      skipped.map(i => `${i.identifier} (${i.assigneeName ?? "unassigned"})`).join(", ")
+    );
+  }
+
+  const trigger = mine.filter(i => i.stateName === WATCHED_STATES.trigger);
+  const active = mine.filter(i => i.stateName === WATCHED_STATES.active);
+  const blocked = mine.filter(i => i.stateName === WATCHED_STATES.blocked);
+  const review = mine.filter(i => i.stateName === WATCHED_STATES.review);
+  const other = mine.length - trigger.length - active.length - blocked.length - review.length;
 
   logger.info(
-    `[gene] scan @ ${scannedAt} — ${all.length} ${env.GENE_LABEL} issue(s): ` +
+    `[gene] scan @ ${scannedAt} — ${mine.length} ${env.GENE_LABEL} issue(s) assigned to ${ownerLabel()}: ` +
     `${WATCHED_STATES.trigger}=${trigger.length}, ${WATCHED_STATES.active}=${active.length}, ` +
     `${WATCHED_STATES.blocked}=${blocked.length}, ${WATCHED_STATES.review}=${review.length}, other=${other}`
   );

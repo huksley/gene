@@ -1,31 +1,46 @@
 /**
- * In-Review watchdog. Once an issue's agent has opened a change request, the
- * issue sits in the review state and the human reviews it. This module polls the
- * forge for two kinds of signal and decides whether the agent should be
- * re-dispatched to address them:
+ * Change-request watchdog. Once an issue has an open MR/PR — whether a previous
+ * Gene run opened it, or a human attached a draft for Gene to continue — this
+ * module finds it, reads the forge for two kinds of signal, and decides whether
+ * the agent should be (re-)dispatched:
  *
  *   - **failing CI** — a GitLab pipeline / GitHub Actions run that failed; and
  *   - **new human review comments** on the MR/PR.
  *
+ * Discovery prefers an MR/PR *attached/linked* to the issue (by iid, so it works
+ * even when the change request lives on a branch other than the issue's), and
+ * falls back to an MR/PR on the issue's own Linear branch.
+ *
  * A small per-issue cursor (in Postgres, see db.ts) records what we've already
  * acted on — the failed head SHA and the newest handled comment — so we dispatch
- * once per signal, not on every poll. The rules:
+ * once per signal, not on every poll. The In-Review rules:
  *
  *   - CI still **running** → wait (no-op); don't pile work on mid-flight CI.
  *   - CI **failed** at a head we haven't handled → act.
  *   - a **new human comment** since the cursor → act.
  *   - otherwise → no-op, and the daemon moves on to other issues.
+ *
+ * Picking up an *attached draft* (a Todo issue that already has an open MR/PR) is
+ * the same machinery with `alwaysAct` — there's queued work to continue, so we
+ * dispatch regardless of whether CI/comments changed.
  */
 
 import { getDb } from "./db.ts";
+import { getAttachments } from "./linear.ts";
 import type { Forge, ChangeRequestReview, ReviewComment } from "./forge/index.ts";
-import type { RepoTarget } from "./repos.ts";
-import type { LinearIssue } from "./linear.ts";
+import { findChangeRequestRefs, refMatchesTarget, type RepoTarget } from "./repos.ts";
+import type { LinearComment, LinearIssue } from "./linear.ts";
+import logger from "./logger.ts";
 
-/** What the agent needs to know to address the review (fed into the prompt). */
+/** What the agent needs to know to address/continue the change request (fed into the prompt). */
 export type ReviewContext = {
   crTerm: string;
   crUrl: string;
+  iid: string;
+  isDraft: boolean;
+  /** The change request's own branches — the worktree checks out the source branch. */
+  sourceBranch: string;
+  targetBranch: string;
   ci: ChangeRequestReview["ci"];
   newComments: ReviewComment[];
 };
@@ -69,31 +84,75 @@ export const writeCursor = async (issueId: string, cursor: ReviewCursor): Promis
 };
 
 /**
- * Decide whether an In-Review issue needs the agent re-dispatched. Reads the
- * forge (open CR + CI + comments) and compares against the persisted cursor.
- * Pure-ish: it reads state but writes nothing — the caller persists `nextCursor`
- * only if it actually dispatches.
+ * Find the open change request for an issue. Prefers an MR/PR attached/linked to
+ * the issue (Linear attachment, then description, then comments — matched to the
+ * resolved target repo and looked up by iid, so a human's branch name is fine);
+ * falls back to an MR/PR on the issue's own Linear branch. Null if none is open.
  */
-export const evaluateReview = async (
+export const findOpenChangeRequest = async (
   issue: LinearIssue,
+  comments: LinearComment[],
   target: RepoTarget,
   forge: Forge
-): Promise<ReviewOutcome> => {
-  const review = await forge.getReviewStatus(target, issue.branchName);
-  if (!review) {
-    return { act: false, reason: "no open change request for the branch (merged, closed, or not opened yet)" };
-  }
-  if (review.state !== "open") {
-    return { act: false, reason: `change request is ${review.state}` };
+): Promise<ChangeRequestReview | null> => {
+  let attachmentUrls: string[] = [];
+  try {
+    attachmentUrls = (await getAttachments(issue.id)).map(a => a.url);
+  } catch (error) {
+    logger.warn(
+      `[gene]   [${issue.identifier}] could not read Linear attachments:`,
+      error instanceof Error ? error.message : error
+    );
   }
 
-  // Honour "still running → wait": don't dispatch while CI is mid-flight.
+  const texts = [...attachmentUrls, issue.description, ...comments.map(c => c.body)];
+  const seen = new Set<string>();
+  for (const text of texts) {
+    for (const ref of findChangeRequestRefs(text)) {
+      if (!refMatchesTarget(ref, target) || seen.has(ref.iid)) {
+        continue;
+      }
+      seen.add(ref.iid);
+      const review = await forge.getReviewByIid(target, ref.iid);
+      if (review && review.state === "open") {
+        return review;
+      }
+    }
+  }
+
+  const byBranch = await forge.getReviewStatus(target, issue.branchName);
+  return byBranch && byBranch.state === "open" ? byBranch : null;
+};
+
+const toContext = (forge: Forge, review: ChangeRequestReview, newComments: ReviewComment[]): ReviewContext => ({
+  crTerm: forge.changeRequestTerm,
+  crUrl: review.url,
+  iid: review.iid,
+  isDraft: review.isDraft,
+  sourceBranch: review.sourceBranch,
+  targetBranch: review.targetBranch,
+  ci: review.ci,
+  newComments
+});
+
+/**
+ * Given an already-found open change request, decide whether to (re-)dispatch the
+ * agent, comparing CI + comments against the persisted cursor. With `alwaysAct`
+ * (picking up an attached draft), dispatch even if nothing changed — there's work
+ * queued — but still skip if CI is mid-flight to avoid racing it. Reads state but
+ * writes nothing; the caller persists `nextCursor` only if it actually dispatches.
+ */
+const decideReviewOutcome = async (
+  review: ChangeRequestReview,
+  issueId: string,
+  forge: Forge,
+  alwaysAct: boolean
+): Promise<ReviewOutcome> => {
   if (review.ci.status === "running") {
     return { act: false, reason: "CI still running — waiting" };
   }
 
-  const cursor = await readCursor(issue.identifier);
-
+  const cursor = await readCursor(issueId);
   const newComments = review.comments.filter(
     c => !c.isAgent && (cursor.handledCommentAt === undefined || c.createdAt > cursor.handledCommentAt)
   );
@@ -106,8 +165,13 @@ export const evaluateReview = async (
   if (newComments.length > 0) {
     reasons.push(`${newComments.length} new review comment(s)`);
   }
+
   if (reasons.length === 0) {
-    return { act: false, reason: `nothing new (CI ${review.ci.status}, no new comments)` };
+    if (!alwaysAct) {
+      return { act: false, reason: `nothing new (CI ${review.ci.status}, no new comments)` };
+    }
+    // Draft pickup: act anyway — the open change request itself is the work.
+    reasons.push(review.isDraft ? "continuing the attached draft" : "continuing the attached change request");
   }
 
   // Advance the cursor to what we're about to act on. We deliberately advance the
@@ -120,10 +184,46 @@ export const evaluateReview = async (
   return {
     act: true,
     reason: reasons.join(" + "),
-    context: { crTerm: forge.changeRequestTerm, crUrl: review.url, ci: review.ci, newComments },
+    context: toContext(forge, review, newComments),
     nextCursor: {
       handledCommentAt: newestCommentAt,
       handledFailedSha: review.ci.status === "failed" ? review.headSha : cursor.handledFailedSha
     }
   };
+};
+
+/**
+ * In-Review evaluation: find the issue's open change request and decide whether
+ * failing CI / new review comments warrant a re-dispatch (gated — a quiet, green
+ * CR is a no-op).
+ */
+export const evaluateReview = async (
+  issue: LinearIssue,
+  comments: LinearComment[],
+  target: RepoTarget,
+  forge: Forge
+): Promise<ReviewOutcome> => {
+  const review = await findOpenChangeRequest(issue, comments, target, forge);
+  if (!review) {
+    return { act: false, reason: "no open change request for the issue (merged, closed, or not opened yet)" };
+  }
+  return decideReviewOutcome(review, issue.identifier, forge, false);
+};
+
+/**
+ * Draft pickup: if a Todo issue already has an open MR/PR attached, return an
+ * outcome that continues it (always acts). Returns null when nothing is attached,
+ * so the caller proceeds with a fresh start instead.
+ */
+export const evaluateDraftPickup = async (
+  issue: LinearIssue,
+  comments: LinearComment[],
+  target: RepoTarget,
+  forge: Forge
+): Promise<ReviewOutcome | null> => {
+  const review = await findOpenChangeRequest(issue, comments, target, forge);
+  if (!review) {
+    return null;
+  }
+  return decideReviewOutcome(review, issue.identifier, forge, true);
 };

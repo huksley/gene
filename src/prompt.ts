@@ -19,7 +19,8 @@ export type PromptIntent =
   | "start-processing"
   | "resume-from-block"
   | "handle-user-feedback"
-  | "address-review";
+  | "address-review"
+  | "continue-draft";
 
 export type PromptInputs = {
   issue: LinearIssue;
@@ -30,6 +31,8 @@ export type PromptInputs = {
   attachmentRelativePaths: string[];
   commitsBehind: number;
   forge: Forge;
+  /** Branch actually checked out in the worktree (the issue's, or a continued CR's). */
+  workBranch: string;
   /** "host/repoPath" of the resolved target repo, for the prompt header. */
   repoLabel: string;
   /** Monorepo subdirectory to scope work to, if the issue link pinned one. */
@@ -92,7 +95,16 @@ const intentInstructions: Record<PromptIntent, string> = {
     "(see the section below). Make the fixes on your EXISTING branch and push so CI re-runs; reply to the " +
     "reviewer(s) on the change request itself; then put the issue back in the review state. Do NOT open a " +
     "second change request — update the one that's already open. If a comment raises something you genuinely " +
-    "can't resolve, ask back (on Linear) and move to the blocked state instead."
+    "can't resolve, ask back (on Linear) and move to the blocked state instead.",
+  "continue-draft":
+    "A change request is ALREADY attached to this issue (a human or a previous run opened it — see the " +
+    "section below) and its branch is already checked out. Do NOT start over and do NOT open a second one. " +
+    "First understand where it stands: run `git log " +
+    "--oneline` and review the diff against the base branch, then read the review comments and CI result " +
+    "below. Then CONTINUE the work — address failing CI and reviewer feedback, and finish whatever the " +
+    "change request is still missing relative to the issue. When it's complete and CI is green, mark it " +
+    "ready for review (un-draft it) and move the issue to the review state. If you're blocked or need a " +
+    "decision, comment and move to the blocked state instead."
 };
 
 const renderScope = (subdir: string | undefined): string => {
@@ -113,30 +125,46 @@ const renderScope = (subdir: string | undefined): string => {
 
 const capitalize = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
-const renderReviewContext = (rc: ReviewContext | undefined): string => {
+/** The forge CLI command to mark a change request ready for review (un-draft). */
+const readyCommand = (forge: Forge, iid: string): string =>
+  forge.name === "github" ? `gh pr ready ${iid}` : `glab mr update ${iid} --ready`;
+
+const renderReviewContext = (rc: ReviewContext | undefined, forge: Forge): string => {
   if (!rc) {
     return "";
   }
   const term = capitalize(rc.crTerm);
-  const ciLine = `- CI: **${rc.ci.status}**${rc.ci.detail ? ` — ${rc.ci.detail}` : ""}${
-    rc.ci.url ? ` (${rc.ci.url})` : ""
-  }`;
+  const bullets = [
+    `- ${term}: ${rc.crUrl}`,
+    `- CI: **${rc.ci.status}**${rc.ci.detail ? ` — ${rc.ci.detail}` : ""}${rc.ci.url ? ` (${rc.ci.url})` : ""}`
+  ];
+  if (rc.ci.status === "failed") {
+    bullets.push(
+      "- Inspect the failing pipeline/checks to see the actual errors — open the CI URL above" +
+        (forge.name === "github" ? " or run `gh run view` / `gh pr checks`." : " or run `glab ci view`.")
+    );
+  }
+  if (rc.isDraft) {
+    bullets.push(
+      `- This ${rc.crTerm} is a **draft**. When the work is complete and CI is green, mark it ready for ` +
+        `review: \`${readyCommand(forge, rc.iid)}\`.`
+    );
+  }
   const comments =
     rc.newComments.length === 0
-      ? "(no new review comments — this was triggered by the CI result above)"
+      ? "(no new review comments — continue from the change request's current state and the CI result above)"
       : rc.newComments
           .map(c => `[${formatTimestamp(c.createdAt)}] 👤 ${c.author}:\n${cleanBody(c.body)}`)
           .join("\n\n");
   return [
     "",
-    `# ${term} under review — address this`,
+    `# ${term} to continue — address this`,
     "",
-    `Your open ${rc.crTerm} already exists; do NOT open another. Push fixes to the same branch.`,
+    `Your open ${rc.crTerm} already exists; do NOT open another. Push fixes to the same branch (already checked out).`,
     "",
-    `- ${term}: ${rc.crUrl}`,
-    ciLine,
+    ...bullets,
     "",
-    "New review feedback since you last acted:",
+    "Review feedback to address (new since you last acted):",
     "",
     comments,
     ""
@@ -193,20 +221,29 @@ export const buildPrompt = (inputs: PromptInputs): string => {
     attachmentRelativePaths,
     commitsBehind,
     forge,
+    workBranch,
     repoLabel,
     subdir,
     reviewContext
   } = inputs;
 
+  // The branch actually checked out: the issue's own auto-link branch for fresh
+  // work, or a continued change request's source branch (which may be human-named).
+  const branch = workBranch;
+  const onIssueBranch = branch === issue.branchName;
+
   const ctx: ChangeRequestContext = {
     issueId: issue.identifier,
     issueUrl: issue.url,
-    branch: issue.branchName,
+    branch,
     baseBranch
   };
   const cr = forge.changeRequestTerm; // "merge request" / "pull request"
   const ws = workspaceFlag();
   const project = issue.projectName ?? issue.teamName ?? "the project";
+  const branchNote = onIssueBranch
+    ? `this is Linear's auto-link branch, so a ${cr} from it will link back to ${issue.identifier} automatically`
+    : `this is the existing ${cr}'s source branch — keep pushing to it so the open ${cr} updates`;
 
   return `You are **Gene**, the autonomous code agent for ${project}.
 
@@ -219,8 +256,7 @@ carefully before deciding.
 - Repository: \`${repoLabel}\` (forge: ${forge.name})
 - Worktree (your working directory, the repo root): \`${worktreePath}\`
 - Base branch: \`${baseBranch}\`
-- Your branch (already checked out): \`${issue.branchName}\` — this is Linear's auto-link branch, so a
-  ${cr} from it will link back to ${issue.identifier} automatically. Do NOT create a new branch.
+- Your branch (already checked out): \`${branch}\` — ${branchNote}. Do NOT create a new branch.
 - Reference \`Linear: ${issue.url}\` in the commit body and the ${cr} description.
 ${renderScope(subdir)}
 # Linear issue
@@ -251,7 +287,7 @@ ${formatTranscript(comments)}
 # Directives detected
 
 ${detectDirectives(comments)}
-${renderReviewContext(reviewContext)}
+${renderReviewContext(reviewContext, forge)}
 # This invocation's intent
 
 \`${intent}\` — ${intentInstructions[intent]}
@@ -275,7 +311,7 @@ ${forge.promptSnippet(ctx)}
 2. **Propose a plan** — post a comment outlining files to change + approach + estimated scope, move the
    issue to **"${env.BLOCKED_STATE}"**, then exit. Wait for user approval before executing.
 3. **Execute code changes** — edit files on your branch, run typecheck + lint, commit, \`git push -u origin
-   "${issue.branchName}"\`, open the ${cr} (above), post a comment with the ${cr} link, then move the issue to
+   "${branch}"\`, open the ${cr} (above), post a comment with the ${cr} link, then move the issue to
    **"${env.REVIEW_STATE}"**. Do NOT merge — human merge is the final gate.
 4. **Acknowledge and adjust** — when the user redirected you, post an acknowledgement comment describing
    the revised approach, then either execute (outcome 3) or propose (outcome 2).
@@ -305,7 +341,7 @@ ${forge.promptSnippet(ctx)}
   error, so treat your actions as resumable, not fresh. Before starting, run \`git status\` and
   \`git log --oneline ${baseBranch}..HEAD\` in the worktree and continue from any partial work (reconciled
   with the transcript) instead of redoing it. Before opening a ${cr}, check whether one already exists for
-  \`${issue.branchName}\` and update that one rather than creating a duplicate.
+  \`${branch}\` and update that one rather than creating a duplicate.
 - Run \`npx tsc --noEmit\` and the project linter on changed files before committing.
 - If pre-commit hooks fail, fix and create a NEW commit (never \`--amend\` pushed commits).
 - After completing exactly one of the four outcomes above, EXIT. Do not loop, do not poll, do not await

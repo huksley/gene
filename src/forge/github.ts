@@ -131,52 +131,41 @@ export class GithubForge implements Forge {
     await run("gh", ["pr", "close", branch], { cwd: localPath });
   }
 
-  async getReviewStatus(repo: RepoTarget, branch: string): Promise<ChangeRequestReview | null> {
-    const ghEnv: NodeJS.ProcessEnv = { ...process.env };
+  private ghEnv(repo: RepoTarget): NodeJS.ProcessEnv {
+    const e: NodeJS.ProcessEnv = { ...process.env };
     if (repo.host !== "github.com") {
-      ghEnv.GH_HOST = repo.host;
+      e.GH_HOST = repo.host;
     }
-    const R = repo.repoPath;
+    return e;
+  }
 
-    const listRes = await run(
-      "gh",
-      ["pr", "list", "-R", R, "--head", branch, "--state", "open", "--json", "number", "--limit", "1"],
-      { env: ghEnv }
-    );
-    if (listRes.code !== 0) {
-      return null;
-    }
-    let prs: any;
-    try {
-      prs = JSON.parse(listRes.stdout);
-    } catch {
-      return null;
-    }
-    const pr: any = Array.isArray(prs) ? prs[0] : undefined;
-    if (!pr) {
-      return null;
-    }
-
-    const viewRes = await run(
+  /** `gh pr view <n> --json …` → parsed object, or null on failure. */
+  private async view(repo: RepoTarget, number: string): Promise<any> {
+    const res = await run(
       "gh",
       [
         "pr",
         "view",
-        String(pr.number),
+        String(number),
         "-R",
-        R,
+        repo.repoPath,
         "--json",
-        "url,state,headRefOid,statusCheckRollup,comments,reviews"
+        "number,url,state,isDraft,headRefName,baseRefName,headRefOid,statusCheckRollup,comments,reviews"
       ],
-      { env: ghEnv }
+      { env: this.ghEnv(repo) }
     );
-    let v: any = {};
-    try {
-      v = JSON.parse(viewRes.stdout);
-    } catch {
-      v = {};
+    if (res.code !== 0) {
+      return null;
     }
+    try {
+      return JSON.parse(res.stdout);
+    } catch {
+      return null;
+    }
+  }
 
+  /** Turn a `gh pr view` object into a ChangeRequestReview. */
+  private buildReview(v: any): ChangeRequestReview {
     const marker = env.AGENT_MARKER;
     const toComment = (id: string, author: string, body: string, createdAt: string): ReviewComment => ({
       id,
@@ -203,11 +192,46 @@ export class GithubForge implements Forge {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
     return {
+      iid: String(v.number ?? ""),
       url: String(v.url ?? ""),
       state: mapPrState(v.state),
+      isDraft: Boolean(v.isDraft ?? false),
+      sourceBranch: String(v.headRefName ?? ""),
+      targetBranch: String(v.baseRefName ?? ""),
       headSha: String(v.headRefOid ?? ""),
       ci: mapRollup(v.statusCheckRollup ?? []),
       comments
     };
+  }
+
+  async getReviewStatus(repo: RepoTarget, branch: string): Promise<ChangeRequestReview | null> {
+    const listRes = await run(
+      "gh",
+      ["pr", "list", "-R", repo.repoPath, "--head", branch, "--state", "open", "--json", "number", "--limit", "1"],
+      { env: this.ghEnv(repo) }
+    );
+    if (listRes.code !== 0) {
+      return null;
+    }
+    let prs: any;
+    try {
+      prs = JSON.parse(listRes.stdout);
+    } catch {
+      return null;
+    }
+    const pr: any = Array.isArray(prs) ? prs[0] : undefined;
+    if (!pr) {
+      return null;
+    }
+    const v = await this.view(repo, String(pr.number));
+    return v ? this.buildReview(v) : null;
+  }
+
+  async getReviewByIid(repo: RepoTarget, iid: string): Promise<ChangeRequestReview | null> {
+    const v = await this.view(repo, iid);
+    if (!v || v.number === undefined) {
+      return null;
+    }
+    return this.buildReview(v);
   }
 }

@@ -40,8 +40,9 @@ The lifecycle is driven by Linear **workflow states**:
 
 | Phase | Mechanism |
 |---|---|
-| Eligible | label `Gene` **and** state `Todo` |
+| Eligible | label `Gene`, **assigned to you**, **and** state `Todo` |
 | Picked up | orchestrator → **In Progress**, start comment, lock taken |
+| Picked up — change request already attached | agent **continues** the open MR/PR (on its own branch) instead of starting fresh |
 | Agent asks a question / proposes a plan | agent comments + → **Blocked** |
 | Agent opens a change request | agent comments (MR/PR link) + → **In Review** |
 | CI fails or a reviewer comments | daemon re-dispatches the agent to address it (back to **In Review**) |
@@ -51,6 +52,11 @@ The `Gene` label is an **ownership tag and is never removed by the pipeline.**
 Each scan watches `Gene` issues in **{Todo, In Progress, Blocked, In Review}** and
 handles ongoing work — active conversations (In Progress / Blocked) and open change
 requests (In Review) — *before* picking up new Todo work.
+
+**Assignee filter.** Gene only works issues **assigned to you** — the Linear user the
+`linear` CLI is authenticated as. Issues with the `Gene` label assigned to someone
+else (or unassigned) are skipped and logged. Set `GENE_ASSIGNEE` to `any` to drop the
+filter, or to a teammate's email to work on their behalf (default: `me`).
 
 **Agent vs human comments.** The `linear` CLI posts as your user, so author identity
 can't tell them apart. Every comment Gene writes carries a marker
@@ -66,6 +72,19 @@ agent to push a fix and reply. CI that's still **running**, or nothing new since
 the last check, is a no-op — the daemon just moves on. A per-issue cursor (the
 handled head SHA + newest comment, stored in Postgres via `db.ts`) ensures each
 signal triggers exactly one dispatch, not one per poll.
+
+**Draft pickup (`review.ts`).** If a Todo issue **already has an open change
+request** — a human opened a **draft** MR/PR and handed it to Gene, or a previous
+run opened one — Gene **continues** it instead of starting from scratch. It finds
+the change request from the issue's Linear attachments (then description, then
+comments), matched to the resolved repo and looked up by number — so it works even
+when the MR/PR lives on a **human-named branch**, not Linear's auto-link branch.
+The agent checks out *that* branch, reads the diff, the CI result and any review
+comments, addresses the pipeline failures / feedback below, finishes whatever the
+change request is still missing, and — once the work is complete and CI is green —
+marks the draft **ready for review** and moves the issue to **In Review** (or back
+to **Blocked** if it needs a decision). This is the same machinery as In-Review
+handling, just with "there's queued work here" rather than "wait for a new signal".
 
 ## Repo targeting (per issue)
 
@@ -160,7 +179,7 @@ src/
   logger.ts       timestamped server logger
   linear.ts       Linear access (read via `linear api`, write via `linear issue …`)
   decide.ts       pure (issue, comments) → Action
-  review.ts       In-Review watchdog: forge CI + review comments → re-dispatch
+  review.ts       In-Review watchdog + draft pickup: find the open MR/PR, decide re-dispatch
   directives.ts   `@gene approve|redo|stop|retry` parser
   prompt.ts       builds the agent's prompt (the full contract it runs under)
   invoke.ts       worktree management + spawns `claude -p`, renders stream-json
@@ -181,8 +200,9 @@ Implement the `Forge` interface (`src/forge/index.ts`) in a new file and registe
 in `selectForge()`. The interface covers cloning, default-branch detection, the
 agent's allowlist additions (`allowedTools()`), the MR/PR instructions injected into
 the prompt (`promptSnippet()`), closing a change request (used by `npm run reset
---close-mr`), and reading an open change request's CI + review comments
-(`getReviewStatus()`, used by the In-Review watchdog). To route issues to it, teach
+--close-mr`), and reading an open change request's CI + review comments — both by
+source branch (`getReviewStatus()`) and by number (`getReviewByIid()`, used to pick
+up an attached MR/PR on a human-named branch). To route issues to it, teach
 `parseRepoUrl()` in `src/repos.ts` how to recognise its host so a link maps to the new
 `ForgeName`.
 
