@@ -33,7 +33,7 @@ const main = async (): Promise<void> => {
     return;
   }
 
-  print(`${system}:${identifier} — ${rows.length} event(s)`);
+  print(`${system ? `${system}:${identifier} — ` : ""}${rows.length} event(s)`);
   print("");
   const eventWidth = Math.max(...rows.map(r => r.event.length));
   for (const row of rows) {

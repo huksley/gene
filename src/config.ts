@@ -138,6 +138,9 @@ export const env = {
 
   // Use Claude API-billing
   CLAUDE_API_BILLING: bool("GENE_CLAUDE_API_BILLING", false),
+
+  // Comma-separated list of additional tools to allow the agent to use.
+  ALLOWED_TOOLS: list("GENE_ALLOWED_TOOLS"),
 } as const;
 
 // Trello needs a board to watch; fail fast with a friendly message rather than

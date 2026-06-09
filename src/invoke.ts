@@ -57,6 +57,7 @@ const BASE_ALLOWED_TOOLS = [
   "Bash(true *)",
   "Bash(false *)",
   "Bash(test *)",
+  "Bash(base64 *)",
   // Light filesystem operations (worktree-scoped via cwd)
   "Bash(mkdir *)",
   "Bash(mv *)",
@@ -128,10 +129,10 @@ export const ensureWorktree = async (
   return { worktreePath, baseBranch, workBranch };
 };
 
-const TEXT_MAX = 220;
+const DEFAULT_TRUNCATE_MAX = 220;
 const TOOL_ARG_MAX = 200;
 
-const truncate = (value: string, max = TEXT_MAX): string => {
+const truncate = (value: string, max = DEFAULT_TRUNCATE_MAX): string => {
   const oneLine = value.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 };
@@ -286,6 +287,7 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
   const { issue, prompt, worktreePath, forge } = inputs;
   const id = issue.identifier;
   const allowedTools = [...BASE_ALLOWED_TOOLS, ...tracker.allowedTools(), ...forge.allowedTools()];
+  allowedTools.push(...env.ALLOWED_TOOLS);
 
   if (env.DRY_RUN) {
     logger.info(
@@ -299,9 +301,7 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
   // than billing the API-key account. The tracker's credentials (LINEAR_API_KEY /
   // TRELLO_API_KEY + TRELLO_TOKEN) and the rest are inherited.
   const childEnv = { ...process.env };
-  if (env.CLAUDE_API_BILLING) {
-    childEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  } else {
+  if (!env.CLAUDE_API_BILLING) {
     delete childEnv.ANTHROPIC_API_KEY;
   }
 

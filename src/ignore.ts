@@ -1,10 +1,13 @@
 /**
- * Comment ignore-patterns. Some comments shouldn't wake Gene up — slash/bang
- * commands aimed at other bots (`/review`), or a tracker's own status chatter — so
- * they're filtered out before they count as a new human comment (decide.ts) or a
- * new review comment on the change request (review.ts).
+ * Comment ignore-patterns. Some comments shouldn't wake Gene up — Gene's own
+ * comments (they carry GENE_AGENT_MARKER), slash/bang commands aimed at other bots
+ * (`/review`), or a tracker's own status chatter — so they're filtered out before
+ * they count as a new human comment (decide.ts) or a new review comment on the
+ * change request (review.ts).
  *
  * Patterns are combined per source ("linear" / "trello" / "gitlab" / "github"):
+ *   - the agent marker (GENE_AGENT_MARKER) everywhere — self-generated comments are
+ *     never a trigger (this is the same signal as `Comment.isAgent`);
  *   - built-ins (below): `!review` and `/review` everywhere, plus `Review` on Linear;
  *   - env: GITLAB_/GITHUB_/LINEAR_/TRELLO_IGNORE_COMMENTS — a comma-separated list,
  *     each item either a bare string (case-insensitive *substring* match) or a
@@ -117,11 +120,15 @@ const matchersFor = (source: string): CommentMatcher[] => {
   if (cached) {
     return cached;
   }
+
   const tokens = [
     ...COMMON_BUILTINS,
+    // Self-generated comments carry the agent marker and must never wake Gene.
+    env.AGENT_MARKER,
     ...(SOURCE_BUILTINS[source] ?? []),
     ...splitPatterns(envSpecFor(source) ?? "")
   ];
+
   const matchers: CommentMatcher[] = [];
   for (const token of tokens) {
     const matcher = compile(source, token);
