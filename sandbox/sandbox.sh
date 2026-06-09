@@ -283,11 +283,12 @@ do_versions() {
 do_run() {
   local name="" keep="" detach="" inherit="" workdir="${GENE_SANDBOX_WORKDIR:-/workspace}"
   local cpus="${GENE_SANDBOX_CPUS:-}" mem="$MEM_DEFAULT" user="$GUEST_USER"
-  local internal="" internal_set="" mount_dir="" workdir_set="${GENE_SANDBOX_WORKDIR:+1}"
+  local internal="" internal_set="" mount_dir="" workdir_set="${GENE_SANDBOX_WORKDIR:+1}" docker_d=""
   local -a vols=()
   [ -n "${GENE_SANDBOX_VOLUME:-}" ] && vols+=("$GENE_SANDBOX_VOLUME")
   [ -n "${GENE_SANDBOX_INHERIT:-}" ] && inherit=1
   [ -n "${GENE_SANDBOX_INTERNAL:-}" ] && { internal=1; internal_set=1; }
+  [ -n "${GENE_SANDBOX_DOCKER:-}" ] && docker_d=1
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -297,6 +298,8 @@ do_run() {
       -i|--inherit) inherit=1; shift;;
       --internal|--net-host)    internal=1; internal_set=1; shift;;
       --isolated|--no-internal) internal=""; internal_set=1; shift;;
+      --docker)                 docker_d=1; shift;;
+      --no-docker)              docker_d=""; shift;;
       -v|--volume)  vols+=("$2"); shift 2;;
       --dir)        mount_dir="$2"; shift 2;;
       --pwd)        mount_dir="$PWD"; shift;;
@@ -372,6 +375,23 @@ do_run() {
     info "network: isolated — public egress only (use --internal for private/Tailscale hosts)"
   fi
 
+  # Optional in-sandbox Docker daemon: msb --init hands PID 1 to the dockerd
+  # launcher (root); the command below runs alongside as gene and reaches the
+  # socket via the docker group. dockerd needs egress to pull images — the default
+  # public-egress rule covers public registries (use --internal for private ones).
+  # Requires an image built with the docker layer (./sandbox.sh base).
+  if [ -n "$docker_d" ]; then
+    opts+=(--init /usr/local/bin/sandbox-dockerd-init)
+    log "docker: in-sandbox dockerd ON (PID 1; iptables off — use 'docker --network=host' for egress)"
+    if [ "${#cmd[@]}" -gt 0 ]; then
+      # gate the command on daemon readiness so it doesn't race dockerd startup
+      local dwait="${GENE_DOCKER_WAIT:-60}"
+      cmd=(bash -lc "wait-for-docker $dwait || exit 1; exec \"\$@\"" _ "${cmd[@]}")
+    else
+      info "docker: interactive — run 'wait-for-docker' to block until the daemon is ready"
+    fi
+  fi
+
   [ -n "$detach" ] && opts+=(-d)
   # Allocate a TTY for interactive sessions (attached + on a real terminal).
   if [ -z "$detach" ] && [ -t 0 ] && [ -t 1 ]; then opts+=(-t); fi
@@ -410,6 +430,10 @@ run flags:
       --internal      reach private/internal hosts (RFC1918, Tailscale subnet
                       routes) — e.g. gitlab.example.com; implied by --inherit
       --isolated      force public-egress-only, even with --inherit (--no-internal)
+      --docker        start dockerd inside the sandbox (msb --init hands it PID 1);
+                      experimental — iptables off, so pass 'docker --network=host'
+                      for build/run egress; needs an image built with the docker
+                      layer (./sandbox.sh base)
   -n, --name NAME     name the sandbox (named sandboxes are kept, not auto-removed)
   -k, --keep          keep the sandbox after the command exits
   -d, --detach        start in the background and print the name
@@ -461,12 +485,15 @@ Examples:
   ./sandbox.sh run --dir ~/src/myrepo --inherit -- claude -p 'fix the bug'  # mount that repo + trust it
   ./sandbox.sh run --pwd --inherit -- claude -p 'fix the failing test'   # cwd mounted + trusted
   ./sandbox.sh run -v "$PWD:/workspace" -- bash -lc 'cd /workspace && npm test'
+  ./sandbox.sh run --docker -- bash -lc 'docker build --network=host -t demo .'   # dockerd in-sandbox
 
 Env overrides: GENE_SANDBOX_IMAGE, GENE_SANDBOX_TAG, GENE_SANDBOX_DOCKERFILE,
   GENE_SANDBOX_CONTEXT, GENE_SANDBOX_VOLUME, GENE_SANDBOX_WORKDIR,
   GENE_SANDBOX_CPUS, GENE_SANDBOX_MEMORY, GENE_SANDBOX_USER, GENE_SANDBOX_HOME,
   GENE_SANDBOX_INHERIT (=1 to always inherit), GENE_SANDBOX_INHERIT_RO (=1 read-only),
   GENE_SANDBOX_INTERNAL (=1 to always allow internal/private network access),
+  GENE_SANDBOX_DOCKER (=1 to always start the in-sandbox dockerd; see --docker),
+  GENE_DOCKER_WAIT (seconds wait-for-docker blocks for daemon readiness; default 60),
   GENE_SANDBOX_KEEP_CREDENTIALS (=1 keep the bridged claude creds file on the host),
   GENE_SANDBOX_NO_KEYCHAIN (=1 skip the macOS Keychain → credentials.json bridge),
   GENE_SANDBOX_TRUST_DIRS (space-separated extra guest dirs to pre-trust for claude)

@@ -8,10 +8,14 @@
  * the agent does the code work and writes back to the tracker + the forge itself.
  *
  * Usage:
- *   npm run gene                 # forever (poll loop)
- *   npm run gene:once            # single scan, then exit
+ *   npm run gene                          # forever (poll loop), every Gene issue
+ *   npm run gene:once                     # single scan, then exit
+ *   npm run gene -- linear:CLOUD-1094     # focus loop: poll, but only that one ticket
+ *   npm run gene:once -- CLOUD-1094       # focus once: that ticket only, then exit
  *
- * Set GENE_DRY_RUN=true (the default) to preview decisions without any writes.
+ * The optional focus arg is `[tracker:]IDENTIFIER` — it narrows a run to a single
+ * ticket (the tracker prefix, if given, must match GENE_TRACKER). Set
+ * GENE_DRY_RUN=true (the default) to preview decisions without any writes.
  */
 
 import logger from "./logger.ts";
@@ -464,9 +468,23 @@ const tryContinueAttachedDraft = async (
   });
 };
 
-const scanOnce = async (): Promise<void> => {
+/**
+ * One scan cycle. With an issueFilter, narrows to that single ticket (still looked
+ * up among the Gene-labelled issues, then run through the normal assignee + state
+ * pipeline). Returns false only when a filter was given but matched nothing this
+ * cycle — the caller decides whether that's fatal (`--once`) or just "keep waiting"
+ * (the loop). An unfiltered scan always returns true.
+ */
+const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   const scannedAt = new Date().toISOString();
-  const all = await tracker.listIssues();
+  let all = await tracker.listIssues();
+
+  if (issueFilter) {
+    all = all.filter(i => i.identifier.toLowerCase() === issueFilter.toLowerCase());
+    if (all.length === 0) {
+      return false;
+    }
+  }
 
   // Only work issues assigned to the configured owner (env.ASSIGNEE, default "me").
   const mine = all.filter(i => tracker.isAssignedToOwner(i));
@@ -504,20 +522,22 @@ const scanOnce = async (): Promise<void> => {
     logger.info(
       `[gene] deferring ${WATCHED_STATES.trigger} scan — ${actionableCount} ongoing item(s) need attention`
     );
-    return;
+    return true;
   }
 
   for (const issue of trigger) {
     await processIssue(issue);
   }
+  return true;
 };
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
-const runForever = async (): Promise<void> => {
+const runForever = async (issueFilter?: string): Promise<void> => {
   logger.info(
     `[gene] starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
-    `debounce=${env.DEBOUNCE_MS}ms, maxConcurrent=${env.MAX_CONCURRENT}, dryRun=${env.DRY_RUN})`
+    `debounce=${env.DEBOUNCE_MS}ms, maxConcurrent=${env.MAX_CONCURRENT}, dryRun=${env.DRY_RUN}` +
+    (issueFilter ? `, filter=${issueFilter}` : "") + ")"
   );
   // Surface in-flight agents between scans on the same cadence as the poll loop;
   // unref() so the heartbeat alone never holds the process open at shutdown.
@@ -525,9 +545,17 @@ const runForever = async (): Promise<void> => {
   heartbeat.unref();
   while (true) {
     try {
-      await scanOnce();
+      const found = await scanOnce(issueFilter);
+      if (!found) {
+        // Filtered run, issue not in the labelled set yet (typo, label not applied,
+        // or a transient empty list). Keep polling rather than giving up.
+        logger.info(
+          `[gene] issue "${issueFilter}" not found among ${env.LABEL} issues yet — ` +
+          `waiting (next poll in ${Math.round(env.POLL_INTERVAL_MS / 1000)}s)`
+        );
+      }
     } catch (error) {
-      logger.error("[gene] scan failed:", error instanceof Error ? error.message : error);
+      logger.error("[gene] scan failed:", error instanceof Error ? error.message : error, { cause: error });
     }
     await sleep(env.POLL_INTERVAL_MS);
   }
@@ -554,21 +582,49 @@ const handleShutdown = (signal: string): void => {
 process.on("SIGINT", () => handleShutdown("SIGINT"));
 process.on("SIGTERM", () => handleShutdown("SIGTERM"));
 
+const parseIssueFilter = (argv: string[]): string | undefined => {
+  const raw = argv.slice(2).find(a => !a.startsWith("--"));
+  if (!raw) {
+    return undefined;
+  }
+  const colon = raw.indexOf(":");
+  const prefix = colon === -1 ? undefined : raw.slice(0, colon).toLowerCase();
+  const identifier = colon === -1 ? raw : raw.slice(colon + 1);
+  if (prefix && prefix !== env.TRACKER) {
+    logger.error(
+      `[gene] filter "${raw}": tracker "${prefix}" ≠ GENE_TRACKER=${env.TRACKER}. This run drives ` +
+      `${env.TRACKER}; use "${env.TRACKER}:${identifier}" (or set GENE_TRACKER=${prefix} and re-run).`
+    );
+    process.exit(1);
+  }
+  if (!identifier) {
+    logger.error(`[gene] filter "${raw}": missing issue identifier (expected [tracker:]IDENTIFIER)`);
+    process.exit(1);
+  }
+  return identifier;
+};
+
 const main = async (): Promise<void> => {
+  const issueFilter = parseIssueFilter(process.argv);
+
   if (process.argv.includes("--once")) {
-    await scanOnce();
+    const found = await scanOnce(issueFilter);
+    if (!found) {
+      // Fail fast in once-mode: the operator named a ticket that isn't there.
+      logger.error(`[gene] unable to find issue with identifier "${issueFilter}"`);
+      await closeDb();
+      process.exit(1);
+    }
     // Let any live spawns kicked off this scan finish before exiting. The map holds
     // context objects now, so pull out the promises (a just-registered entry may not
     // have one yet) before awaiting.
-    const pending = [...inFlight.values()]
-      .map(ctx => ctx.promise)
-      .filter((p): p is Promise<unknown> => p !== undefined);
-    await Promise.allSettled(pending);
+    const pending = [...inFlight.values()].map(ctx => ctx.promise);
+    await Promise.allSettled(pending.filter(Boolean));
     // Close the Postgres pool, else its open sockets keep the process alive.
     await closeDb();
-    return;
+  } else {
+    await runForever(issueFilter);
   }
-  await runForever();
 };
 
 main().catch(error => {

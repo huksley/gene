@@ -137,11 +137,12 @@ RUN set -eux; \
 RUN set -eux; chown -R gene:gene /home/gene /workspace
 
 # ── docker (Docker CE) — engine + CLI + buildx/compose, for builds in-sandbox ──
-# Docker's signed apt repo, then the engine, CLI, containerd, and the buildx/
-# compose plugins; finally add `gene` to the docker group so the unprivileged
-# user can reach the daemon socket. The daemon is NOT started here — `docker
-# build` has no init — so dockerd must be launched at runtime (the microVM has to
-# run privileged, with cgroup/overlay support) before `docker` works in-sandbox.
+# Docker's signed apt repo, then the engine, CLI, containerd, the buildx/compose
+# plugins, and iptables; finally add `gene` to the docker group so the
+# unprivileged user can reach the daemon socket. The daemon is NOT baked-on —
+# `docker build` has no init — it starts on demand at runtime: `sandbox.sh
+# --docker` hands PID 1 to /usr/local/bin/sandbox-dockerd-init via msb's `--init`,
+# which execs dockerd as root while your command runs alongside as gene.
 RUN set -eux; \
     install -d -m 0755 /etc/apt/keyrings; \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
@@ -150,10 +151,48 @@ RUN set -eux; \
         > /etc/apt/sources.list.d/docker.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
+        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin iptables; \
     rm -rf /var/lib/apt/lists/*; \
     getent group docker || groupadd docker; \
     usermod -aG docker gene
+
+# dockerd config + runtime helpers for the optional in-sandbox daemon. iptables
+# is disabled so dockerd doesn't fight msb's managed networking — pass `docker
+# --network=host` for build/run egress. Storage driver is left to dockerd's
+# auto-detect (overlay2 when the guest kernel supports it); pin "storage-driver":
+# "vfs" here if dockerd refuses to start. sandbox-dockerd-init is msb's `--init`
+# PID-1 target (execs dockerd); wait-for-docker gates commands on daemon readiness.
+RUN <<'SETUP'
+set -eux
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<'JSON'
+{
+  "iptables": false
+}
+JSON
+cat > /usr/local/bin/sandbox-dockerd-init <<'SH'
+#!/bin/sh
+# PID 1 (root) when the sandbox starts with docker enabled. dockerd runs in the
+# foreground as PID 1, stays up for the VM lifetime, and reads its flags from
+# /etc/docker/daemon.json. The user command runs alongside as gene (docker
+# group); msb stops the VM when that command exits.
+set -e
+mkdir -p /var/lib/docker /var/run
+# best-effort: dockerd/containerd want cgroup v2 mounted
+grep -q ' /sys/fs/cgroup ' /proc/mounts 2>/dev/null || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+exec dockerd
+SH
+cat > /usr/local/bin/wait-for-docker <<'SH'
+#!/bin/sh
+# Block until dockerd accepts connections (arg 1: max seconds, default 60).
+i=0; max="${1:-60}"
+until docker info >/dev/null 2>&1; do
+  i=$((i + 1)); [ "$i" -ge "$max" ] && { echo "wait-for-docker: timed out after ${max}s" >&2; exit 1; }
+  sleep 1
+done
+SH
+chmod 0755 /usr/local/bin/sandbox-dockerd-init /usr/local/bin/wait-for-docker
+SETUP
 
 # ── Runtime environment ───────────────────────────────────────────────────────
 # Keep long-lived agent connections alive and make Node/Bun networking resilient
