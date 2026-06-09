@@ -172,7 +172,7 @@ const summarizeToolUse = (block: ContentBlock): string => {
 };
 
 const renderEvent = (issueId: string, event: StreamEvent): void => {
-  const prefix = `[gene] [${issueId}]`;
+  const prefix = `[gene:invoke] [${issueId}]`;
   if (event.type === "system" && event.subtype === "init") {
     logger.info(`${prefix} ▶ session started`);
     return;
@@ -339,12 +339,12 @@ const runClaudeOnce = (
       killTimer = setTimeout(() => {
         timedOut = true;
         logger.warn(
-          `[gene] [${issue.identifier}] exceeded GENE_AGENT_MAX_PROCESSING_TIME ` +
+          `[gene:invoke] [${issue.identifier}] exceeded GENE_AGENT_MAX_PROCESSING_TIME ` +
           `(${env.AGENT_MAX_PROCESSING_TIME}s) — terminating (pid ${proc.pid})`
         );
         signalChild("SIGTERM");
         hardKillTimer = setTimeout(() => {
-          logger.warn(`[gene] [${issue.identifier}] still alive after SIGTERM — sending SIGKILL`);
+          logger.warn(`[gene:invoke] [${issue.identifier}] still alive after SIGTERM — sending SIGKILL`);
           signalChild("SIGKILL");
         }, KILL_GRACE_MS);
       }, env.AGENT_MAX_PROCESSING_TIME * 1000);
@@ -372,7 +372,7 @@ const runClaudeOnce = (
         }
         renderEvent(issue.identifier, event);
       } catch {
-        logger.info(`[gene] [${issue.identifier}] raw: ${truncate(line, 200)}`);
+        logger.info(`[gene:invoke] [${issue.identifier}] raw: ${truncate(line, 200)}`);
       }
     });
     // A spawn `error` (e.g. the claude binary is missing) is not transient — let it
@@ -400,7 +400,7 @@ export const invokeAgent = async (
 
   if (env.DRY_RUN) {
     logger.info(
-      `[gene] [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
+      `[gene:invoke] [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
       `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
     );
     return { kind: "dry-run", worktreePath, exitCode: 0 };
@@ -434,8 +434,8 @@ export const invokeAgent = async (
   for (let attempt = 1; attempt <= totalAttempts; attempt++) {
     attemptsMade = attempt;
     const suffix = totalAttempts > 1 ? ` (attempt ${attempt}/${totalAttempts})` : "";
-    logger.info(`[gene] [${id}] spawning agent in ${worktreePath}${suffix}`);
-    logger.info(`[gene] [${id}]   prompt: ${prompt.length} chars`);
+    logger.info(`[gene:invoke] [${id}] spawning agent in ${worktreePath}${suffix}`);
+    logger.info(`[gene:invoke] [${id}]   prompt: ${prompt.length} chars`);
 
     ({ exitCode, resultSubtype, resultText, durationMs, timedOut } = await runClaudeOnce(
       issue,
@@ -463,7 +463,7 @@ export const invokeAgent = async (
       ? `timed out after ${env.AGENT_MAX_PROCESSING_TIME}s`
       : `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""} — likely transient`;
     logger.warn(
-      `[gene] [${id}] agent ${why}; retrying in ${Math.round(delay / 1000)}s ` +
+      `[gene:invoke] [${id}] agent ${why}; retrying in ${Math.round(delay / 1000)}s ` +
       `(attempt ${attempt + 1}/${totalAttempts})`
     );
     await sleep(delay);
@@ -486,7 +486,7 @@ export const invokeAgent = async (
   if (exitCode !== 0) {
     const tried = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
     logger.error(
-      `[gene] [${id}] agent exited ${exitCode}${tried} — issue left in "${env.ACTIVE_STATE}"; ` +
+      `[gene:invoke] [${id}] agent exited ${exitCode}${tried} — issue left in "${env.ACTIVE_STATE}"; ` +
       `inspect, then re-trigger or \`npm run reset -- ${id}\``
     );
   }

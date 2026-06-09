@@ -379,10 +379,13 @@ do_run() {
   # launcher (root); the command below runs alongside as gene and reaches the
   # socket via the docker group. dockerd needs egress to pull images — the default
   # public-egress rule covers public registries (use --internal for private ones).
-  # Requires an image built with the docker layer (./sandbox.sh base).
+  # `--security default` is required: Docker-in-Docker needs the guest mount
+  # privileges (CAP_SYS_ADMIN, for containerd's overlay layer extraction) that
+  # microsandbox restored by default in #911 (v0.5.5+); `--security restricted`
+  # strips them. Requires an image built with the docker layer (./sandbox.sh base).
   if [ -n "$docker_d" ]; then
-    opts+=(--init /usr/local/bin/sandbox-dockerd-init)
-    log "docker: in-sandbox dockerd ON (PID 1; iptables off — use 'docker --network=host' for egress)"
+    opts+=(--security default --init /usr/local/bin/sandbox-dockerd-init)
+    log "docker: in-sandbox dockerd ON (PID 1, --security default; iptables off — use 'docker --network=host' for egress)"
     if [ "${#cmd[@]}" -gt 0 ]; then
       # gate the command on daemon readiness so it doesn't race dockerd startup
       local dwait="${GENE_DOCKER_WAIT:-60}"
@@ -430,10 +433,11 @@ run flags:
       --internal      reach private/internal hosts (RFC1918, Tailscale subnet
                       routes) — e.g. gitlab.example.com; implied by --inherit
       --isolated      force public-egress-only, even with --inherit (--no-internal)
-      --docker        start dockerd inside the sandbox (msb --init hands it PID 1);
-                      experimental — iptables off, so pass 'docker --network=host'
-                      for build/run egress; needs an image built with the docker
-                      layer (./sandbox.sh base)
+      --docker        start dockerd inside the sandbox (msb --init hands it PID 1
+                      on the default security profile). Needs msb v0.5.5+ (PR #911
+                      restored the Docker-in-Docker mount privileges) and an image
+                      built with the docker layer (./sandbox.sh base). iptables is
+                      off, so pass 'docker --network=host' for build/run egress
   -n, --name NAME     name the sandbox (named sandboxes are kept, not auto-removed)
   -k, --keep          keep the sandbox after the command exits
   -d, --detach        start in the background and print the name

@@ -159,9 +159,11 @@ RUN set -eux; \
 # dockerd config + runtime helpers for the optional in-sandbox daemon. iptables
 # is disabled so dockerd doesn't fight msb's managed networking — pass `docker
 # --network=host` for build/run egress. Storage driver is left to dockerd's
-# auto-detect (overlay2 when the guest kernel supports it); pin "storage-driver":
-# "vfs" here if dockerd refuses to start. sandbox-dockerd-init is msb's `--init`
-# PID-1 target (execs dockerd); wait-for-docker gates commands on daemon readiness.
+# auto-detect: overlay2 works because msb's default security profile grants the
+# CAP_SYS_ADMIN mounts containerd needs (microsandbox #911, v0.5.5+) — pin
+# "storage-driver": "vfs" only if dockerd refuses to start on an older/restricted
+# runtime. sandbox-dockerd-init is msb's `--init` PID-1 target (execs dockerd);
+# wait-for-docker gates commands on daemon readiness.
 RUN <<'SETUP'
 set -eux
 mkdir -p /etc/docker
@@ -177,10 +179,14 @@ cat > /usr/local/bin/sandbox-dockerd-init <<'SH'
 # /etc/docker/daemon.json. The user command runs alongside as gene (docker
 # group); msb stops the VM when that command exits.
 set -e
-mkdir -p /var/lib/docker /var/run
+mkdir -p /var/lib/docker /var/run /var/log
 # best-effort: dockerd/containerd want cgroup v2 mounted
 grep -q ' /sys/fs/cgroup ' /proc/mounts 2>/dev/null || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
-exec dockerd
+# Under msb --init, PID 1's stdio is /dev/console — the same console the
+# interactive shell uses. An unredirected dockerd reads that console and floods
+# it with logs, and holds it open so EOF wedges (Ctrl-D needs two presses to
+# exit). Detach: read nothing, send the daemon log to a file.
+exec dockerd </dev/null >>/var/log/dockerd.log 2>&1
 SH
 cat > /usr/local/bin/wait-for-docker <<'SH'
 #!/bin/sh

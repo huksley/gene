@@ -103,7 +103,7 @@ const compile = (source: string, token: string): CommentMatcher | null => {
       return body => re.test(body);
     } catch (error) {
       logger.warn(
-        `[gene] skipping invalid ${source.toUpperCase()}_IGNORE_COMMENTS regex ${token}:`,
+        `[gene:ignore] skipping invalid ${source.toUpperCase()}_IGNORE_COMMENTS regex ${token}:`,
         error instanceof Error ? error.message : error
       );
       return null;

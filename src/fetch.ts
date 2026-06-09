@@ -50,7 +50,7 @@ export const fetchRetryTimeout = async (
     try {
       const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeout) });
       if (isRetriableStatus(res.status) && attempt < retries) {
-        logger.warn(`[gene] fetch ${url} → HTTP ${res.status}; retrying (${attempt + 1}/${retries})`);
+        logger.warn(`[gene:fetch] fetch ${url} → HTTP ${res.status}; retrying (${attempt + 1}/${retries})`);
         continue;
       }
       return res;
@@ -58,7 +58,7 @@ export const fetchRetryTimeout = async (
       lastError = error;
       if (attempt < retries) {
         const reason = error instanceof Error ? error.message : String(error);
-        logger.warn(`[gene] fetch ${url} failed (${reason}); retrying (${attempt + 1}/${retries})`);
+        logger.warn(`[gene:fetch] fetch ${url} failed (${reason}); retrying (${attempt + 1}/${retries})`);
         continue;
       }
     }

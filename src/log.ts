@@ -45,7 +45,7 @@ const main = async (): Promise<void> => {
 
 main()
   .catch(error => {
-    logger.error("[gene:log] fatal:", error instanceof Error ? error.message : error);
+    logger.error("[gene:log] fatal:", error instanceof Error ? error.message : error, { cause: error });
     process.exitCode = 1;
   })
   .finally(closeDb);
