@@ -15,7 +15,7 @@ import logger from "./logger.ts";
 import { env } from "./config.ts";
 import { closeDb, readIssueLog } from "./db.ts";
 
-const USAGE = "[gene:log] Usage: npm run log -- <system>:<ISSUE-ID>   (e.g. linear:CLOUD-1094)";
+const USAGE = `${logger.tag.log} Usage: npm run log -- <system>:<ISSUE-ID>   (e.g. linear:CLOUD-1094)`;
 
 const print = (line = ""): void => {
   process.stdout.write(`${line}\n`);
@@ -45,7 +45,7 @@ const main = async (): Promise<void> => {
 
 main()
   .catch(error => {
-    logger.error("[gene:log] fatal:", error instanceof Error ? error.message : error, { cause: error });
+    logger.error(`${logger.tag.log} fatal:`, error instanceof Error ? error.message : error, { cause: error });
     process.exitCode = 1;
   })
   .finally(closeDb);

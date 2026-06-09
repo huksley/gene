@@ -80,7 +80,7 @@ const open = async (): Promise<Pool> => {
   // A server-dropped idle client surfaces as a pool 'error'; log and swallow it so a
   // transient disconnect can't crash the daemon (the next query reconnects).
   pool.on("error", error =>
-    logger.warn("[gene:db] idle client error:", error instanceof Error ? error.message : error)
+    logger.warn(`${logger.tag.db} idle client error:`, error instanceof Error ? error.message : error)
   );
 
   const deadline = Date.now() + 30_000;
@@ -101,14 +101,14 @@ const open = async (): Promise<Pool> => {
 
   await pool.query(SCHEMA);
   const where = url ? "via DATABASE_URL" : `${discrete.host}:${discrete.port}/${discrete.database}`;
-  logger.info(`[gene:db] connected to Postgres (${where})`);
+  logger.info(`${logger.tag.db} connected to Postgres (${where})`);
   return pool;
 };
 
 /** Lazily open (and migrate) the pool; the same instance is reused thereafter. */
 export const getDb = async (): Promise<Pool> => {
   if (!dbPromise) {
-    logger.info(`[gene:db] opening pool to ${process.env.DATABASE_URL ?? "local dev server"}`);
+    logger.info(`${logger.tag.db} opening pool to ${process.env.DATABASE_URL ?? "local dev server"}`);
     dbPromise = open().catch(error => {
       dbPromise = null; // allow a later retry rather than wedging on a transient failure
       throw error;
@@ -152,7 +152,7 @@ export const logEvent = async (entry: IssueLogEntry): Promise<void> => {
     ]);
   } catch (error) {
     logger.warn(
-      "[gene:db] could not record activity log entry:",
+      `${logger.tag.db} could not record activity log entry:`,
       error instanceof Error ? error.message : error
     );
   }

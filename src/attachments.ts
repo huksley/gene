@@ -68,7 +68,7 @@ export const stageIssueAttachments = async (
     const relativePath = path.join(ATTACHMENTS_DIRNAME, fileName);
 
     if (await fileExists(localPath)) {
-      logger.info(`[gene:tracker] attachment cached: ${relativePath}`);
+      logger.info(`${logger.tag.tracker} attachment cached: ${relativePath}`);
       staged.push({ url, localPath, relativePath });
       continue;
     }
@@ -78,7 +78,7 @@ export const stageIssueAttachments = async (
       continue;
     }
     await writeFile(localPath, data);
-    logger.info(`[gene:tracker] downloaded attachment: ${relativePath} (${data.length} bytes)`);
+    logger.info(`${logger.tag.tracker} downloaded attachment: ${relativePath} (${data.length} bytes)`);
     staged.push({ url, localPath, relativePath });
   }
 

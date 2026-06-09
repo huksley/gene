@@ -23,7 +23,7 @@ import { selectForge } from "./forge/index.ts";
 const main = async (): Promise<void> => {
   await mkdir(REPOS_ROOT, { recursive: true });
   const targets = defaultTargets();
-  logger.info(`[gene:clone] warming ${targets.length} default repo(s) under ${REPOS_ROOT}`);
+  logger.info(`${logger.tag.clone} warming ${targets.length} default repo(s) under ${REPOS_ROOT}`);
 
   for (const target of targets) {
     const forge = selectForge(target.forge);
@@ -31,19 +31,19 @@ const main = async (): Promise<void> => {
     try {
       await forge.ensureClone(target, dest);
       const branch = target.ref ?? (await forge.detectDefaultBranch(dest));
-      logger.info(`[gene:clone] ✓ ${targetLabel(target)} [${forge.name}] (base branch: ${branch})`);
+      logger.info(`${logger.tag.clone} ✓ ${targetLabel(target)} [${forge.name}] (base branch: ${branch})`);
     } catch (error) {
       logger.error(
-        `[gene:clone] ✗ ${targetLabel(target)}:`,
+        `${logger.tag.clone} ✗ ${targetLabel(target)}:`,
         error instanceof Error ? error.message : error
       );
       process.exitCode = 1;
     }
   }
-  logger.info("[gene:clone] done");
+  logger.info(`${logger.tag.clone} done`);
 };
 
 main().catch(error => {
-  logger.error("[gene:clone] fatal:", error instanceof Error ? error.message : error);
+  logger.error(`${logger.tag.clone} fatal:`, error instanceof Error ? error.message : error);
   process.exit(1);
 });

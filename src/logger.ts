@@ -14,6 +14,24 @@ import chalk from "chalk";
 
 export interface Logger {
   isVerbose: boolean;
+  tag: {
+    db: string;
+    flow: string;
+    invoke: string;
+    review: string;
+    reset: string;
+    log: string;
+    lock: string;
+    fetch: string;
+    ignore: string;
+    tracker: string;
+    forge: string;
+    config: string;
+    clone: string;
+    attachments: string;
+    trello: string;
+    linear: string;
+  };
   verbose: (...args: unknown[]) => void;
   info: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -46,7 +64,25 @@ const logger: Logger = {
     : () => { },
   info: console.info.bind(console, "%s", new Level("INFO")),
   warn: console.warn.bind(console, "%s", new Level("WARN")),
-  error: console.error.bind(console, "%s", new Level("ERROR"))
+  error: console.error.bind(console, "%s", new Level("ERROR")),
+  tag: {
+    db: chalk.dim("[gene:db]"),
+    flow: chalk.yellowBright("[gene:flow]"),
+    invoke: chalk.gray("[gene:invoke]"),
+    review: chalk.gray("[gene:review]"),
+    reset: chalk.gray("[gene:reset]"),
+    log: chalk.gray("[gene:log]"),
+    lock: chalk.gray("[gene:lock]"),
+    fetch: chalk.gray("[gene:fetch]"),
+    ignore: chalk.gray("[gene:ignore]"),
+    tracker: chalk.blueBright("[gene:tracker]"),
+    forge: chalk.greenBright("[gene:forge]"),
+    config: chalk.gray("[gene:config]"),
+    clone: chalk.gray("[gene:clone]"),
+    attachments: chalk.gray("[gene:attachments]"),
+    trello: chalk.blueBright("[gene:trello]"),
+    linear: chalk.blueBright("[gene:linear]"),
+  }
 };
 
 export default logger;

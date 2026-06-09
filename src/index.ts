@@ -111,7 +111,7 @@ const postStartComment = async (issue: Issue, intent: PromptIntent): Promise<voi
     await tracker.postComment(issue, startMessages[intent]);
   } catch (error) {
     logger.warn(
-      `[gene:flow] [${issue.identifier}] could not post start comment:`,
+      `${logger.tag.flow} [${issue.identifier}] could not post start comment:`,
       error instanceof Error ? error.message : error
     );
   }
@@ -122,7 +122,7 @@ const postClarificationAndBlock = async (issue: Issue, missing: string[]): Promi
     await tracker.postComment(issue, buildClarificationComment(missing));
   } catch (error) {
     logger.error(
-      `[gene:flow] [${issue.identifier}] failed to post clarification:`,
+      `${logger.tag.flow} [${issue.identifier}] failed to post clarification:`,
       error instanceof Error ? error.message : error
     );
     return;
@@ -131,7 +131,7 @@ const postClarificationAndBlock = async (issue: Issue, missing: string[]): Promi
     await tracker.moveToState(issue, env.BLOCKED_STATE);
   } catch (error) {
     logger.warn(
-      `[gene:flow] [${issue.identifier}] could not move to "${env.BLOCKED_STATE}":`,
+      `${logger.tag.flow} [${issue.identifier}] could not move to "${env.BLOCKED_STATE}":`,
       error instanceof Error ? error.message : error
     );
   }
@@ -181,7 +181,7 @@ const reportInFlight = (): void => {
     const elapsed = ctx.startedAt === undefined ? "?" : `${Math.round((now - ctx.startedAt) / 1000)}s`;
     return `${ctx.identifier ?? "?"} (${pid}, ${elapsed})`;
   });
-  logger.info(`[gene:flow] in flight ${inFlight.size}/${env.MAX_CONCURRENT}: ${lines.join(" · ")}`);
+  logger.info(`${logger.tag.flow} in flight ${inFlight.size}/${env.MAX_CONCURRENT}: ${lines.join(" · ")}`);
 };
 
 /**
@@ -192,14 +192,14 @@ const reportInFlight = (): void => {
 const processIssue = async (issue: Issue): Promise<boolean> => {
   const comments = await tracker.getComments(issue);
   const action = decideAction(issue, comments);
-  logger.info(`[gene:flow] [${issue.identifier}] "${issue.title}" → ${summarizeAction(action)}`);
+  logger.info(`${logger.tag.flow} [${issue.identifier}] "${issue.title}" → ${summarizeAction(action)}`);
 
   if (action.kind === "nothing") {
     return false;
   }
 
   if (isWithinDebounceWindow(lastActivityIso(issue, comments))) {
-    logger.info(`[gene:flow] [${issue.identifier}] debouncing recent activity — will retry next poll`);
+    logger.info(`${logger.tag.flow} [${issue.identifier}] debouncing recent activity — will retry next poll`);
     return true;
   }
 
@@ -214,7 +214,7 @@ const processIssue = async (issue: Issue): Promise<boolean> => {
   const target = resolveTarget(issue, comments);
   if (!target) {
     logger.warn(
-      `[gene:flow] [${issue.identifier}] no repo link in the issue and no default repo for ` +
+      `${logger.tag.flow} [${issue.identifier}] no repo link in the issue and no default repo for ` +
       `team "${issue.teamKey}" — skipping (add a link to the issue, or map the team via GENE_REPO_MAP)`
     );
     return false;
@@ -265,12 +265,12 @@ const dispatchAgent = async (
   extras: DispatchExtras = {}
 ): Promise<boolean> => {
   if (inFlight.has(issue.id)) {
-    logger.info(`[gene:flow] [${issue.identifier}] already running in this daemon — skipping`);
+    logger.info(`${logger.tag.flow} [${issue.identifier}] already running in this daemon — skipping`);
     return true;
   }
   if (isAtConcurrencyCap()) {
     logger.info(
-      `[gene:flow] [${issue.identifier}] at concurrency cap (${inFlight.size}/${env.MAX_CONCURRENT}) — deferring`
+      `${logger.tag.flow} [${issue.identifier}] at concurrency cap (${inFlight.size}/${env.MAX_CONCURRENT}) — deferring`
     );
     return true;
   }
@@ -301,7 +301,7 @@ const dispatchAgent = async (
       reviewContext: extras.reviewContext
     });
     logger.info(
-      `[gene:flow] [${issue.identifier}] (dry-run) would dispatch ${intent} → ${targetLabel(target)} ` +
+      `${logger.tag.flow} [${issue.identifier}] (dry-run) would dispatch ${intent} → ${targetLabel(target)} ` +
       `[${forge.name}] (branch "${workBranch}", base "${baseBranch}", prompt ${prompt.length} chars)`
     );
     return true;
@@ -325,7 +325,7 @@ const dispatchAgent = async (
     );
     const drift = await commitsBehind(worktreePath, baseBranch);
     if (drift > 0) {
-      logger.info(`[gene:flow] [${issue.identifier}] ${drift} commit(s) behind origin/${baseBranch}`);
+      logger.info(`${logger.tag.flow} [${issue.identifier}] ${drift} commit(s) behind origin/${baseBranch}`);
     }
 
     let attachmentRelativePaths: string[] = [];
@@ -334,7 +334,7 @@ const dispatchAgent = async (
       attachmentRelativePaths = staged.map(s => s.relativePath);
     } catch (error) {
       logger.warn(
-        `[gene:flow] [${issue.identifier}] failed to stage attachments:`,
+        `${logger.tag.flow} [${issue.identifier}] failed to stage attachments:`,
         error instanceof Error ? error.message : error
       );
     }
@@ -360,19 +360,19 @@ const dispatchAgent = async (
   })
     .then(result => {
       if (result === "skipped") {
-        logger.info(`[gene:flow] [${issue.identifier}] another run holds the lock — skipping`);
+        logger.info(`${logger.tag.flow} [${issue.identifier}] another run holds the lock — skipping`);
       }
     })
     .catch(error => {
       logger.error(
-        `[gene:flow] [${issue.identifier}] spawn failed:`,
+        `${logger.tag.flow} [${issue.identifier}] spawn failed:`,
         error instanceof Error ? error.message : error
       );
     })
     .finally(() => {
       inFlight.delete(issue.id);
       logger.info(
-        `[gene:flow] [${issue.identifier}] spawn complete (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
+        `${logger.tag.flow} [${issue.identifier}] spawn complete (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
       );
     });
 
@@ -383,7 +383,7 @@ const dispatchAgent = async (
     identifier: issue.identifier
   });
   logger.info(
-    `[gene:flow] [${issue.identifier}] spawned in background (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
+    `${logger.tag.flow} [${issue.identifier}] spawned in background (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
   );
   return true;
 };
@@ -406,7 +406,7 @@ const processReview = async (
     outcome = await evaluateReview(issue, comments, target, forge);
   } catch (error) {
     logger.warn(
-      `[gene:flow] [${issue.identifier}] review check failed:`,
+      `${logger.tag.flow} [${issue.identifier}] review check failed:`,
       error instanceof Error ? error.message : error,
       { cause: error }
     );
@@ -414,11 +414,11 @@ const processReview = async (
   }
 
   if (!outcome.act) {
-    logger.info(`[gene:flow] [${issue.identifier}] in review — ${outcome.reason}`);
+    logger.info(`${logger.tag.flow} [${issue.identifier}] in review — ${outcome.reason}`);
     return false;
   }
 
-  logger.info(`[gene:flow] [${issue.identifier}] in review — ${outcome.reason}; dispatching a fix`);
+  logger.info(`${logger.tag.flow} [${issue.identifier}] in review — ${outcome.reason}; dispatching a fix`);
   await record(issue, "review", outcome.reason);
   return dispatchAgent(issue, comments, target, forge, "address-review", {
     reviewContext: outcome.context,
@@ -445,7 +445,7 @@ const tryContinueAttachedDraft = async (
     outcome = await evaluateDraftPickup(issue, comments, target, forge);
   } catch (error) {
     logger.warn(
-      `[gene:flow] [${issue.identifier}] draft-pickup check failed:`,
+      `${logger.tag.flow} [${issue.identifier}] draft-pickup check failed:`,
       error instanceof Error ? error.message : error
     );
     return false;
@@ -456,10 +456,10 @@ const tryContinueAttachedDraft = async (
   if (!outcome.act) {
     // An attached change request exists but CI is mid-flight: wait, don't start a
     // parallel fresh run on the issue's own branch.
-    logger.info(`[gene:flow] [${issue.identifier}] attached change request — ${outcome.reason}`);
+    logger.info(`${logger.tag.flow} [${issue.identifier}] attached change request — ${outcome.reason}`);
     return true;
   }
-  logger.info(`[gene:flow] [${issue.identifier}] attached change request — ${outcome.reason}; continuing it`);
+  logger.info(`${logger.tag.flow} [${issue.identifier}] attached change request — ${outcome.reason}; continuing it`);
   await record(issue, "draft", outcome.reason);
   return dispatchAgent(issue, comments, target, forge, "continue-draft", {
     reviewContext: outcome.context,
@@ -491,7 +491,7 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   const skipped = all.filter(i => !tracker.isAssignedToOwner(i));
   if (skipped.length > 0) {
     logger.info(
-      `[gene:flow] skipping ${skipped.length} ${env.LABEL} issue(s) not assigned to ${tracker.ownerLabel()}: ` +
+      `${logger.tag.flow} skipping ${skipped.length} ${env.LABEL} issue(s) not assigned to ${tracker.ownerLabel()}: ` +
       skipped.map(i => `${i.identifier} (${i.assigneeName ?? "unassigned"})`).join(", ")
     );
   }
@@ -503,7 +503,7 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   const other = mine.length - trigger.length - active.length - blocked.length - review.length;
 
   logger.info(
-    `[gene:flow] scan @ ${scannedAt} — ${mine.length} ${env.LABEL} issue(s) assigned to ${tracker.ownerLabel()}: ` +
+    `${logger.tag.flow} scan @ ${scannedAt} — ${mine.length} ${env.LABEL} issue(s) assigned to ${tracker.ownerLabel()}: ` +
     `${WATCHED_STATES.trigger}=${trigger.length}, ${WATCHED_STATES.active}=${active.length}, ` +
     `${WATCHED_STATES.blocked}=${blocked.length}, ${WATCHED_STATES.review}=${review.length}, other=${other}`
   );
@@ -520,7 +520,7 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
 
   if (actionableCount > 0) {
     logger.info(
-      `[gene:flow] deferring ${WATCHED_STATES.trigger} scan — ${actionableCount} ongoing item(s) need attention`
+      `${logger.tag.flow} deferring ${WATCHED_STATES.trigger} scan — ${actionableCount} ongoing item(s) need attention`
     );
     return true;
   }
@@ -535,7 +535,7 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 
 const runForever = async (issueFilter?: string): Promise<void> => {
   logger.info(
-    `[gene:flow] starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
+    `${logger.tag.flow} starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
     `debounce=${env.DEBOUNCE_MS}ms, maxConcurrent=${env.MAX_CONCURRENT}, dryRun=${env.DRY_RUN}` +
     (issueFilter ? `, filter=${issueFilter}` : "") + ")"
   );
@@ -550,12 +550,12 @@ const runForever = async (issueFilter?: string): Promise<void> => {
         // Filtered run, issue not in the labelled set yet (typo, label not applied,
         // or a transient empty list). Keep polling rather than giving up.
         logger.info(
-          `[gene:flow] issue "${issueFilter}" not found among ${env.LABEL} issues yet — ` +
+          `${logger.tag.flow} issue "${issueFilter}" not found among ${env.LABEL} issues yet — ` +
           `waiting (next poll in ${Math.round(env.POLL_INTERVAL_MS / 1000)}s)`
         );
       }
     } catch (error) {
-      logger.error("[gene:flow] scan failed:", error instanceof Error ? error.message : error, { cause: error });
+      logger.error(`${logger.tag.flow} scan failed:`, error instanceof Error ? error.message : error, { cause: error });
     }
     await sleep(env.POLL_INTERVAL_MS);
   }
@@ -570,11 +570,11 @@ const handleShutdown = (signal: string): void => {
   const owned = listOwnedLocks();
   if (owned.length > 0) {
     logger.info(
-      `[gene:flow] received ${signal} — ${owned.length} issue(s) still in flight: ${owned.join(", ")}. ` +
+      `${logger.tag.flow} received ${signal} — ${owned.length} issue(s) still in flight: ${owned.join(", ")}. ` +
       `Left in "${env.ACTIVE_STATE}"; re-trigger or \`npm run gene:reset -- <ID>\` as needed.`
     );
   } else {
-    logger.info(`[gene:flow] received ${signal} — nothing in flight, exiting`);
+    logger.info(`${logger.tag.flow} received ${signal} — nothing in flight, exiting`);
   }
   process.exit(0);
 };
@@ -592,13 +592,13 @@ const parseIssueFilter = (argv: string[]): string | undefined => {
   const identifier = colon === -1 ? raw : raw.slice(colon + 1);
   if (prefix && prefix !== env.TRACKER) {
     logger.error(
-      `[gene:flow] filter "${raw}": tracker "${prefix}" ≠ GENE_TRACKER=${env.TRACKER}. This run drives ` +
+      `${logger.tag.flow} filter "${raw}": tracker "${prefix}" ≠ GENE_TRACKER=${env.TRACKER}. This run drives ` +
       `${env.TRACKER}; use "${env.TRACKER}:${identifier}" (or set GENE_TRACKER=${prefix} and re-run).`
     );
     process.exit(1);
   }
   if (!identifier) {
-    logger.error(`[gene:flow] filter "${raw}": missing issue identifier (expected [tracker:]IDENTIFIER)`);
+    logger.error(`${logger.tag.flow} filter "${raw}": missing issue identifier (expected [tracker:]IDENTIFIER)`);
     process.exit(1);
   }
   return identifier;
@@ -611,7 +611,7 @@ const main = async (): Promise<void> => {
     const found = await scanOnce(issueFilter);
     if (!found) {
       // Fail fast in once-mode: the operator named a ticket that isn't there.
-      logger.error(`[gene:flow] unable to find issue with identifier "${issueFilter}"`);
+      logger.error(`${logger.tag.flow} unable to find issue with identifier "${issueFilter}"`);
       await closeDb();
       process.exit(1);
     }
@@ -628,6 +628,6 @@ const main = async (): Promise<void> => {
 };
 
 main().catch(error => {
-  logger.error("[gene:flow] fatal:", error instanceof Error ? error.message : error, { cause: error });
+  logger.error(`${logger.tag.flow} fatal:`, error instanceof Error ? error.message : error, { cause: error });
   process.exit(1);
 });

@@ -105,7 +105,7 @@ export const findOpenChangeRequest = async (
     attachmentUrls = (await tracker.getAttachments(issue)).map(a => a.url);
   } catch (error) {
     logger.warn(
-      `[gene] [${issue.identifier}] could not read ${tracker.name} attachments:`,
+      `${logger.tag.review} [${issue.identifier}] could not read ${tracker.name} attachments:`,
       error instanceof Error ? error.message : error
     );
   }

@@ -60,13 +60,13 @@ export const acquireLock = (issueId: string): Lock | null => {
       Date.now() - existing.acquiredAt > MAX_LOCK_AGE_MS;
     if (!stale) {
       logger.info(
-        `[gene:lock] [${issueId}] lock held by pid ${existing?.pid} since ${new Date(
+        `${logger.tag.lock} [${issueId}] lock held by pid ${existing?.pid} since ${new Date(
           existing?.acquiredAt ?? 0
         ).toISOString()} — skipping`
       );
       return null;
     }
-    logger.warn(`[gene:lock] [${issueId}] reclaiming stale lock (pid ${existing?.pid ?? "?"})`);
+    logger.warn(`${logger.tag.lock} [${issueId}] reclaiming stale lock (pid ${existing?.pid ?? "?"})`);
     try {
       unlinkSync(file);
     } catch {

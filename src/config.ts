@@ -10,6 +10,7 @@
  */
 
 import path from "node:path";
+import logger from "./logger.ts";
 
 const problems: string[] = [];
 
@@ -161,11 +162,11 @@ if (env.TRACKER === "trello" && !env.TRELLO_BOARD) {
 
 if (problems.length > 0) {
   /* eslint-disable no-console */
-  console.error("[gene:config] invalid environment configuration:");
+  logger.error(`${logger.tag.config} invalid environment configuration:`);
   for (const problem of problems) {
-    console.error(`  - ${problem}`);
+    logger.error(`  - ${problem}`);
   }
-  console.error("\nSet values in .env.development (gitignored). See .env.example.");
+  logger.error("\nSet values in .env.development (gitignored). See .env.example.");
   /* eslint-enable no-console */
   process.exit(1);
 }

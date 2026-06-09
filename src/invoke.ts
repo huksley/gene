@@ -25,6 +25,7 @@ import { localPathFor, type RepoTarget } from "./repos.ts";
 import { tracker } from "./tracker/index.ts";
 import type { Issue } from "./tracker/index.ts";
 import type { Forge } from "./forge/index.ts";
+import chalk from "chalk";
 
 /**
  * Tools the agent is permitted regardless of tracker/forge. The active tracker and
@@ -172,7 +173,7 @@ const summarizeToolUse = (block: ContentBlock): string => {
 };
 
 const renderEvent = (issueId: string, event: StreamEvent): void => {
-  const prefix = `[gene:invoke] [${issueId}]`;
+  const prefix = `${logger.tag.invoke} [${chalk.blueBright(issueId)}]`;
   if (event.type === "system" && event.subtype === "init") {
     logger.info(`${prefix} ▶ session started`);
     return;
@@ -180,9 +181,9 @@ const renderEvent = (issueId: string, event: StreamEvent): void => {
   if (event.type === "assistant" && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) {
       if (block.type === "text" && block.text) {
-        logger.info(`${prefix} 💬 ${truncate(block.text)}`);
+        logger.info(`${prefix} → ${truncate(block.text)}`);
       } else if (block.type === "tool_use") {
-        logger.info(`${prefix} 🛠 ${summarizeToolUse(block)}`);
+        logger.info(`${prefix} ↳ ${summarizeToolUse(block)}`);
       }
       // thinking blocks are skipped — too verbose for the daemon log
     }
@@ -193,7 +194,7 @@ const renderEvent = (issueId: string, event: StreamEvent): void => {
       if (block.type === "tool_result" && block.is_error) {
         const text =
           typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-        logger.warn(`${prefix} ⚠ tool error: ${truncate(text)}`);
+        logger.warn(`${prefix} ⚠ ${truncate(text)}`);
       }
     }
     return;
@@ -201,10 +202,10 @@ const renderEvent = (issueId: string, event: StreamEvent): void => {
   if (event.type === "result") {
     const seconds = event.duration_ms ? (event.duration_ms / 1000).toFixed(1) : "?";
     if (event.subtype === "success") {
-      logger.info(`${prefix} ✅ done in ${seconds}s`);
+      logger.info(`${prefix} ✓ done in ${seconds}s`);
     } else {
       logger.error(
-        `${prefix} ❌ ${event.subtype ?? "error"} in ${seconds}s: ${truncate(event.result ?? "")}`
+        `${prefix} ✗ ${event.subtype ?? "error"} in ${seconds}s: ${truncate(event.result ?? "")}`
       );
     }
   }
@@ -339,12 +340,12 @@ const runClaudeOnce = (
       killTimer = setTimeout(() => {
         timedOut = true;
         logger.warn(
-          `[gene:invoke] [${issue.identifier}] exceeded GENE_AGENT_MAX_PROCESSING_TIME ` +
+          `${logger.tag.invoke} [${issue.identifier}] exceeded GENE_AGENT_MAX_PROCESSING_TIME ` +
           `(${env.AGENT_MAX_PROCESSING_TIME}s) — terminating (pid ${proc.pid})`
         );
         signalChild("SIGTERM");
         hardKillTimer = setTimeout(() => {
-          logger.warn(`[gene:invoke] [${issue.identifier}] still alive after SIGTERM — sending SIGKILL`);
+          logger.warn(`${logger.tag.invoke} [${issue.identifier}] still alive after SIGTERM — sending SIGKILL`);
           signalChild("SIGKILL");
         }, KILL_GRACE_MS);
       }, env.AGENT_MAX_PROCESSING_TIME * 1000);
@@ -372,7 +373,7 @@ const runClaudeOnce = (
         }
         renderEvent(issue.identifier, event);
       } catch {
-        logger.info(`[gene:invoke] [${issue.identifier}] raw: ${truncate(line, 200)}`);
+        logger.info(`${logger.tag.invoke} [${issue.identifier}] raw: ${truncate(line, 200)}`);
       }
     });
     // A spawn `error` (e.g. the claude binary is missing) is not transient — let it
@@ -400,7 +401,7 @@ export const invokeAgent = async (
 
   if (env.DRY_RUN) {
     logger.info(
-      `[gene:invoke] [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
+      `${logger.tag.invoke} [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
       `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
     );
     return { kind: "dry-run", worktreePath, exitCode: 0 };
@@ -434,8 +435,8 @@ export const invokeAgent = async (
   for (let attempt = 1; attempt <= totalAttempts; attempt++) {
     attemptsMade = attempt;
     const suffix = totalAttempts > 1 ? ` (attempt ${attempt}/${totalAttempts})` : "";
-    logger.info(`[gene:invoke] [${id}] spawning agent in ${worktreePath}${suffix}`);
-    logger.info(`[gene:invoke] [${id}]   prompt: ${prompt.length} chars`);
+    logger.info(`${logger.tag.invoke} [${id}] spawning agent in ${worktreePath}${suffix}`);
+    logger.info(`${logger.tag.invoke} [${id}]   prompt: ${prompt.length} chars`);
 
     ({ exitCode, resultSubtype, resultText, durationMs, timedOut } = await runClaudeOnce(
       issue,
@@ -463,7 +464,7 @@ export const invokeAgent = async (
       ? `timed out after ${env.AGENT_MAX_PROCESSING_TIME}s`
       : `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""} — likely transient`;
     logger.warn(
-      `[gene:invoke] [${id}] agent ${why}; retrying in ${Math.round(delay / 1000)}s ` +
+      `${logger.tag.invoke} [${id}] agent ${why}; retrying in ${Math.round(delay / 1000)}s ` +
       `(attempt ${attempt + 1}/${totalAttempts})`
     );
     await sleep(delay);
@@ -486,7 +487,7 @@ export const invokeAgent = async (
   if (exitCode !== 0) {
     const tried = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
     logger.error(
-      `[gene:invoke] [${id}] agent exited ${exitCode}${tried} — issue left in "${env.ACTIVE_STATE}"; ` +
+      `${logger.tag.invoke} [${id}] agent exited ${exitCode}${tried} — issue left in "${env.ACTIVE_STATE}"; ` +
       `inspect, then re-trigger or \`npm run reset -- ${id}\``
     );
   }

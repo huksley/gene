@@ -85,14 +85,14 @@ const forgeForClone = async (localPath: string) => {
 const main = async (): Promise<void> => {
   const identifier = process.argv[2];
   if (!identifier || identifier.startsWith("--")) {
-    logger.error("[gene:reset] Usage: npm run reset -- <ISSUE-ID> [--close-mr]");
+    logger.error(`${logger.tag.reset} Usage: npm run reset -- <ISSUE-ID> [--close-mr]`);
     process.exit(1);
   }
   const closeMr = process.argv.includes("--close-mr");
 
   const clones = findClones();
   logger.info(
-    `[gene:reset] target: ${identifier} — scanning ${clones.length} local clone(s) for its worktree/branches`
+    `${logger.tag.reset} target: ${identifier} — scanning ${clones.length} local clone(s) for its worktree/branches`
   );
 
   let cleanedAnything = false;
@@ -105,11 +105,11 @@ const main = async (): Promise<void> => {
     }
     cleanedAnything = true;
     logger.info(
-      `[gene:reset] ${repoPath}: ${hasWorktree ? "worktree + " : ""}${branches.length} branch(es)`
+      `${logger.tag.reset} ${repoPath}: ${hasWorktree ? "worktree + " : ""}${branches.length} branch(es)`
     );
 
     if (hasWorktree) {
-      logger.info(`[gene:reset]   removing worktree ${worktreePath}`);
+      logger.info(`${logger.tag.reset}   removing worktree ${worktreePath}`);
       await removeWorktree(localPath, worktreePath);
       if (existsSync(worktreePath)) {
         rmSync(worktreePath, { recursive: true, force: true });
@@ -118,26 +118,26 @@ const main = async (): Promise<void> => {
     }
 
     for (const branch of branches) {
-      logger.info(`[gene:reset]   deleting branch ${branch}`);
+      logger.info(`${logger.tag.reset}   deleting branch ${branch}`);
       await deleteBranch(localPath, branch);
     }
 
     if (closeMr && branches.length > 0) {
       const forge = await forgeForClone(localPath);
       if (!forge) {
-        logger.warn(`[gene:reset]   could not infer forge for ${repoPath} — skipping change-request close`);
+        logger.warn(`${logger.tag.reset}   could not infer forge for ${repoPath} — skipping change-request close`);
       } else {
         for (const branch of branches) {
           if (env.DRY_RUN) {
-            logger.info(`[gene:reset]   (dry-run) would close ${forge.changeRequestTerm} for ${branch}`);
+            logger.info(`${logger.tag.reset}   (dry-run) would close ${forge.changeRequestTerm} for ${branch}`);
             continue;
           }
           try {
             await forge.closeChangeRequestForBranch(localPath, branch);
-            logger.info(`[gene:reset]   closed ${forge.changeRequestTerm} for ${branch}`);
+            logger.info(`${logger.tag.reset}   closed ${forge.changeRequestTerm} for ${branch}`);
           } catch (error) {
             logger.warn(
-              `[gene:reset]   could not close ${forge.changeRequestTerm} for ${branch}:`,
+              `${logger.tag.reset}   could not close ${forge.changeRequestTerm} for ${branch}:`,
               error instanceof Error ? error.message : error
             );
           }
@@ -147,13 +147,13 @@ const main = async (): Promise<void> => {
   }
 
   if (!cleanedAnything) {
-    logger.info(`[gene:reset] no local worktree/branches found for ${identifier} (nothing to clean locally)`);
+    logger.info(`${logger.tag.reset} no local worktree/branches found for ${identifier} (nothing to clean locally)`);
   }
 
   // Drop the lock so the next scan can re-acquire immediately.
   const lockFile = path.join(LOCK_DIR, `${identifier}.lock`);
   if (existsSync(lockFile)) {
-    logger.info(`[gene:reset] removing lock ${lockFile}`);
+    logger.info(`${logger.tag.reset} removing lock ${lockFile}`);
     unlinkSync(lockFile);
   }
 
@@ -163,13 +163,13 @@ const main = async (): Promise<void> => {
     await tracker.moveToState(issue, env.TRIGGER_STATE);
   } else {
     logger.warn(
-      `[gene:reset] could not find ${identifier} on ${tracker.name} — skipping state move (local cleanup done)`
+      `${logger.tag.reset} could not find ${identifier} on ${tracker.name} — skipping state move (local cleanup done)`
     );
   }
 
   logger.info(
-    `[gene:reset] ✓ done — ${identifier} reset to "${env.TRIGGER_STATE}" (${env.LABEL} label kept). ` +
-      "The next scan will pick it up fresh."
+    `${logger.tag.reset} ✓ done — ${identifier} reset to "${env.TRIGGER_STATE}" (${env.LABEL} label kept). ` +
+    "The next scan will pick it up fresh."
   );
 
   // Record the reset in the issue's activity log. Local cleanup always runs; the
@@ -190,6 +190,6 @@ const main = async (): Promise<void> => {
 };
 
 main().catch(error => {
-  logger.error("[gene:reset] fatal:", error instanceof Error ? error.message : error);
+  logger.error(`${logger.tag.reset} fatal:`, error instanceof Error ? error.message : error);
   process.exit(1);
 });
