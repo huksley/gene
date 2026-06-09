@@ -10,7 +10,7 @@
  * Clones are kept under `repos/<repoPath>/` (gitignored) and reused — the daemon
  * branches per-issue worktrees off them rather than re-cloning.
  *
- * Prerequisite: `glab auth login --hostname gitlab.datacrunch.io` (and/or `gh
+ * Prerequisite: `glab auth login --hostname $GITLAB_HOST` (and/or `gh
  * auth login` for GitHub targets).
  */
 

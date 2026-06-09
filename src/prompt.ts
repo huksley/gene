@@ -75,6 +75,12 @@ const detectDirectives = (comments: Comment[]): string => {
   }\``;
 };
 
+/**
+ * Draft mode (GENE_DRAFT_CHANGE_REQUEST): Gene opens change requests as drafts and
+ * never marks them ready — a human reviews, marks ready, and merges. Off by default.
+ */
+const DRAFT_MODE = env.DRAFT_CHANGE_REQUEST;
+
 const intentInstructions: Record<PromptIntent, string> = {
   "start-processing":
     "This issue just entered the Gene queue (Todo). Read the description carefully. " +
@@ -101,9 +107,13 @@ const intentInstructions: Record<PromptIntent, string> = {
     "First understand where it stands: run `git log " +
     "--oneline` and review the diff against the base branch, then read the review comments and CI result " +
     "below. Then CONTINUE the work — address failing CI and reviewer feedback, and finish whatever the " +
-    "change request is still missing relative to the issue. When it's complete and CI is green, mark it " +
-    "ready for review (un-draft it) and move the issue to the review state. If you're blocked or need a " +
-    "decision, comment and move to the blocked state instead."
+    "change request is still missing relative to the issue. " +
+    (DRAFT_MODE
+      ? "When it's complete and CI is green, LEAVE it as a draft — a human marks it ready for review and " +
+        "merges — and move the issue to the review state. "
+      : "When it's complete and CI is green, mark it ready for review (un-draft it) and move the issue to " +
+        "the review state. ") +
+    "If you're blocked or need a decision, comment and move to the blocked state instead."
 };
 
 const renderScope = (subdir: string | undefined): string => {
@@ -128,6 +138,12 @@ const capitalize = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.sli
 const readyCommand = (forge: Forge, iid: string): string =>
   forge.name === "github" ? `gh pr ready ${iid}` : `glab mr update ${iid} --ready`;
 
+/** The draft→ready guidance, conditional on draft mode (in draft mode a human readies). */
+const draftHandling = (forge: Forge, iid: string): string =>
+  DRAFT_MODE
+    ? "Keep it as a **draft** — a human will mark it ready for review and merge; do NOT un-draft it."
+    : `When the work is complete and CI is green, mark it ready for review: \`${readyCommand(forge, iid)}\`.`;
+
 const renderReviewContext = (rc: ReviewContext | undefined, forge: Forge): string => {
   if (!rc) {
     return "";
@@ -144,10 +160,7 @@ const renderReviewContext = (rc: ReviewContext | undefined, forge: Forge): strin
     );
   }
   if (rc.isDraft) {
-    bullets.push(
-      `- This ${rc.crTerm} is a **draft**. When the work is complete and CI is green, mark it ready for ` +
-        `review: \`${readyCommand(forge, rc.iid)}\`.`
-    );
+    bullets.push(`- This ${rc.crTerm} is a **draft**. ${draftHandling(forge, rc.iid)}`);
   }
   const comments =
     rc.newComments.length === 0

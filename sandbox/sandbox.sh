@@ -351,15 +351,15 @@ do_run() {
     [ -n "$CLAUDE_CFG_MOUNT" ] && opts+=(-v "$CLAUDE_CFG_MOUNT")
   fi
 
-  # Authenticated real work (--inherit) almost always targets internal hosts
-  # (e.g. gitlab.datacrunch.io over Tailscale), so turn on internal networking
-  # alongside it — unless the user explicitly asked for isolation.
+  # Authenticated real work (--inherit) might target internal hosts
+  # so turn on internal networking alongside it (--internal) — unless the user
+  # explicitly asked for isolation.
   if [ -n "$inherit" ] && [ -z "$internal_set" ]; then internal=1; fi
 
   if [ -n "$internal" ]; then
     # msb's default egress is deny-all-but-public, and it drops DNS answers that
     # resolve to private IPs (rebind protection) — which blocks internal hosts
-    # like gitlab.datacrunch.io (a 10.x reached via a Tailscale subnet route).
+    # like gitlab.example.com (i.e. a 10.x reached via a Tailscale subnet route).
     # Unrestricting egress + disabling rebind protection lets the sandbox use the
     # host's full reach; msb's DNS forwarder already points at the host resolver.
     opts+=(--net-default-egress allow --no-dns-rebind-protection)
@@ -404,7 +404,7 @@ Sandboxes run as the unprivileged user 'gene' (uid 1000) with 2G memory by defau
 run flags:
   -i, --inherit       bring host tool auth/context into the sandbox (see below)
       --internal      reach private/internal hosts (RFC1918, Tailscale subnet
-                      routes) — e.g. gitlab.datacrunch.io; implied by --inherit
+                      routes) — e.g. gitlab.example.com; implied by --inherit
       --isolated      force public-egress-only, even with --inherit (--no-internal)
   -n, --name NAME     name the sandbox (named sandboxes are kept, not auto-removed)
   -k, --keep          keep the sandbox after the command exits

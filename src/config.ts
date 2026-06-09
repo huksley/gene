@@ -82,6 +82,8 @@ export const env = {
   // Linear backend (read when GENE_TRACKER=linear).
   LINEAR_API_KEY: optional("LINEAR_API_KEY"),
   LINEAR_WORKSPACE: optional("LINEAR_WORKSPACE"),
+  // Comment patterns that must NOT wake Gene up (see ignore.ts for the syntax).
+  LINEAR_IGNORE_COMMENTS: optional("LINEAR_IGNORE_COMMENTS"),
 
   // Trello backend (read when GENE_TRACKER=trello). Trello needs BOTH a key and a
   // token on every call. The daemon talks REST via the bundled trello/ wrapper; the
@@ -92,6 +94,8 @@ export const env = {
   // Optional JSON map of state-name → list-id, overriding name-based list lookup
   // (use when the board's list names differ from the *_STATE values, or to pin ids).
   TRELLO_LIST_MAP: optional("TRELLO_LIST_MAP"),
+  // Comment patterns that must NOT wake Gene up (see ignore.ts for the syntax).
+  TRELLO_IGNORE_COMMENTS: optional("TRELLO_IGNORE_COMMENTS"),
 
   // Tracker semantics — namespaced by the active tracker (LINEAR_* / TRELLO_*).
   LABEL: str(`${TP}LABEL`, "Gene"),
@@ -105,15 +109,25 @@ export const env = {
   REVIEW_STATE: str(`${TP}REVIEW_STATE`, "In Review"),
   AGENT_MARKER: str("GENE_AGENT_MARKER", "#gene-ai"),
   REQUIRE_SECTIONS: list("GENE_REQUIRE_SECTIONS"),
-
-  GITLAB_HOST: str("GITLAB_HOST", "gitlab.datacrunch.io"),
+  GITLAB_HOST: str("GITLAB_HOST", ""),
+  // Review-comment patterns that must NOT trigger a re-dispatch (see ignore.ts).
+  // Unlike the tracker settings above these are NOT prefix-namespaced: the forge is
+  // chosen per-issue, so both keys may be consulted in one run (ignore.ts picks by
+  // forge name) — hence they're read directly rather than via the active TP prefix.
+  GITLAB_IGNORE_COMMENTS: optional("GITLAB_IGNORE_COMMENTS"),
+  GITHUB_IGNORE_COMMENTS: optional("GITHUB_IGNORE_COMMENTS"),
   REPO_MAP: optional("GENE_REPO_MAP"),
+  REPO_URL: optional("GENE_REPO_URL"),
 
   REPOS_DIR: str("GENE_REPOS_DIR", "repos"),
   POLL_INTERVAL_MS: int("GENE_POLL_INTERVAL_MS", 60_000),
   DEBOUNCE_MS: int("GENE_DEBOUNCE_MS", 30_000),
   MAX_CONCURRENT: Math.max(1, int("GENE_MAX_CONCURRENT", 2)),
   DRY_RUN: bool("GENE_DRY_RUN", true),
+  // Open every change request as a draft; a human reviews, marks it ready, and
+  // merges. When on, Gene never un-drafts a CR itself (its own or a human-attached
+  // one) — the "ready" transition becomes a human gate. Forge-neutral (both forges).
+  DRAFT_CHANGE_REQUEST: bool("GENE_DRAFT_CHANGE_REQUEST", false),
   CLAUDE_BIN: str("GENE_CLAUDE_BIN", "claude"),
 
   // A transient API/socket error mid-run makes `claude -p` exit non-zero. Retry the

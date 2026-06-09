@@ -105,12 +105,14 @@ export class GithubForge implements Forge {
   }
 
   promptSnippet(ctx: ChangeRequestContext): string {
+    const draft = env.DRAFT_CHANGE_REQUEST;
     return [
-      "Open a **GitHub pull request** with the `gh` CLI from inside the worktree:",
+      `Open a **GitHub pull request**${draft ? " as a **draft**" : ""} with the \`gh\` CLI from inside the worktree:`,
       "",
       "```bash",
       `git push -u origin "${ctx.branch}"`,
       "gh pr create \\",
+      ...(draft ? ["  --draft \\"] : []),
       `  --base "${ctx.baseBranch}" \\`,
       `  --head "${ctx.branch}" \\`,
       '  --title "<concise, imperative title>" \\',
@@ -123,6 +125,11 @@ export class GithubForge implements Forge {
       "```",
       "",
       `- The branch \`${ctx.branch}\` matches the Linear issue's branch name, so the PR auto-links to ${ctx.issueId}. Also keep the \`Linear: ${ctx.issueUrl}\` line in the body.`,
+      ...(draft
+        ? [
+            "- Opened as a **draft** on purpose — a human reviews it, marks it ready (`gh pr ready`), and merges. Do NOT mark it ready yourself."
+          ]
+        : []),
       "- **Never merge the PR** — a human reviews and merges. Do not push to the default branch."
     ].join("\n");
   }

@@ -46,7 +46,7 @@ or on Trello the card's **list** (the daemon scans by state *name*, so both look
 | Picked up | orchestrator → **In Progress**, start comment, lock taken |
 | Picked up — change request already attached | agent **continues** the open MR/PR (on its own branch) instead of starting fresh |
 | Agent asks a question / proposes a plan | agent comments + → **Blocked** |
-| Agent opens a change request | agent comments (MR/PR link) + → **In Review** |
+| Agent opens a change request | agent comments (MR/PR link) + → **In Review** (as a **draft** if `GENE_DRAFT_CHANGE_REQUEST`) |
 | CI fails or a reviewer comments | daemon re-dispatches the agent to address it (back to **In Review**) |
 | Human merges | manual → **Done** (out of scope) |
 
@@ -67,6 +67,18 @@ so author identity can't tell them apart. Every comment Gene writes carries a ma
 comments as Gene's, and a human comment newer than Gene's last one is the trigger
 to resume / handle feedback.
 
+**Ignored comments (`ignore.ts`).** Some comments shouldn't count as a trigger —
+slash/bang commands meant for another bot (`/review`), or a tracker's own status
+chatter. Patterns to ignore are set per source — `LINEAR_`/`TRELLO_IGNORE_COMMENTS`
+for issue comments, `GITLAB_`/`GITHUB_IGNORE_COMMENTS` for review comments on the
+MR/PR — as a comma-separated list where each item is a case-insensitive **substring**
+or a `/regexp/flags` (full test; commas inside the slashes are kept). Built-ins are
+always on — `!review` and `/review` everywhere, plus `Review` on Linear — and your
+patterns add to them. A matching issue comment isn't treated as new human feedback;
+a matching review comment neither re-dispatches the agent nor reaches its prompt.
+(Substrings are broad — `Review` also matches "please review" — so anchor a `/…/`
+to narrow if needed.)
+
 **In-Review handling (`review.ts`).** Once a change request is open, the daemon
 polls the forge for two signals before it touches new Todo work: a **failing
 pipeline / Actions run**, and **new review comments** on the MR/PR (the same
@@ -86,7 +98,8 @@ The agent checks out *that* branch, reads the diff, the CI result and any review
 comments, addresses the pipeline failures / feedback below, finishes whatever the
 change request is still missing, and — once the work is complete and CI is green —
 marks the draft **ready for review** and moves the issue to **In Review** (or back
-to **Blocked** if it needs a decision). This is the same machinery as In-Review
+to **Blocked** if it needs a decision). With `GENE_DRAFT_CHANGE_REQUEST` set, it
+leaves the draft as-is for a human to mark ready instead. This is the same machinery as In-Review
 handling, just with "there's queued work here" rather than "wait for a new signal".
 
 **Activity log (`db.ts`).** Alongside the review cursor, the daemon records a
@@ -116,13 +129,14 @@ https://gitlab.com/example/example-repo/-/tree/main/path/to/dir           → gi
 https://github.com/example/example-repo                                   → github, whole repo
 ```
 
-Issues with **no link** fall back to a per-team default repo (built-in: `CLOUD →
-datacrunch/nest.datacrunch.io`), overridable via the `GENE_REPO_MAP` env var (a
-JSON object of `team key → repo URL`). All resolution logic lives in `src/repos.ts`.
+Issues with **no link** fall back to a per-team default repo, overridable via the `GENE_REPO_URL` env var or 
+the `GENE_REPO_MAP` env var (a JSON object of `team key → repo URL`).
+All resolution logic lives in `src/repos.ts`.
 
-## Two-repo model
+## Multi-repo model
 
 - **geneai** (this repo) — the orchestrator. All pipeline code is in `src/`.
+
 - **target repos** — cloned under `repos/<repoPath>/` (gitignored) and kept.
   A repo is cloned **on demand** the first time an issue targets it; `npm run clone`
   pre-clones the team defaults so the common path is warm. Per-issue worktrees are
@@ -143,7 +157,7 @@ bundled `trello/` wrapper, which only wants `TRELLO_API_KEY` + `TRELLO_TOKEN`.
 
 ```bash
 # 1. Authenticate the CLIs (one-time, interactive — run with a leading `!` here)
-glab auth login --hostname gitlab.datacrunch.io   # accept "use glab as a git credential helper"
+glab auth login --hostname gitlab.example.com      # accept "use glab as a git credential helper"
 gh auth login                                      # only if any issue targets a GitHub repo
 linear login                                       # Linear backend: if not already logged in
 claude  /login                                     # OAuth / Max session
@@ -276,10 +290,16 @@ document them in `.env.example`.
   list); the `Gene` label is an ownership tag and is never removed.
 - Agent identity is established by a **comment marker** (both trackers post as a
   single user, so author id can't distinguish Gene from a human).
+- **Ignore patterns** drop comments that shouldn't trigger Gene (other bots'
+  `/review`, status chatter) — substring or `/regex/` per source, plus built-ins
+  (`ignore.ts`).
 - **Pluggable tracker**: Linear or Trello behind one `Tracker` interface, chosen by
   `GENE_TRACKER` — a singleton, mirroring the per-issue forge layer.
 - **Per-issue targeting**: the forge and repo come from a link in the issue, so a
   single team spans multiple repos and both forges without per-repo config.
+- **Draft change requests** (optional, `GENE_DRAFT_CHANGE_REQUEST`): Gene opens
+  every MR/PR as a draft and never marks it ready — a human reviews, marks it ready,
+  and merges. Off by default; works on both GitLab and GitHub.
 - **Two-repo** model (orchestrator vs cloned targets); worktrees branch off the clone.
 - Native Node 24 TS — **no build**, `.ts` imports, `--env-file`; **one runtime dep**
   (PGlite, embedded Postgres for state).

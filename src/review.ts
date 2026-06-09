@@ -26,6 +26,7 @@
  */
 
 import { getDb } from "./db.ts";
+import { commentIsIgnored } from "./ignore.ts";
 import { tracker } from "./tracker/index.ts";
 import type { Forge, ChangeRequestReview, ReviewComment } from "./forge/index.ts";
 import { findChangeRequestRefs, refMatchesTarget, type RepoTarget } from "./repos.ts";
@@ -158,7 +159,12 @@ const decideReviewOutcome = async (
 
   const cursor = await readCursor(issueId);
   const newComments = review.comments.filter(
-    c => !c.isAgent && (cursor.handledCommentAt === undefined || c.createdAt > cursor.handledCommentAt)
+    c =>
+      !c.isAgent &&
+      (cursor.handledCommentAt === undefined || c.createdAt > cursor.handledCommentAt) &&
+      // Ignore-listed review comments don't re-trigger, and (since toContext feeds the
+      // prompt from newComments) are also kept out of what the agent is asked to address.
+      !commentIsIgnored(forge.name, c.body)
   );
   const ciNewlyFailed = review.ci.status === "failed" && cursor.handledFailedSha !== review.headSha;
 

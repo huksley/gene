@@ -98,7 +98,7 @@ into it so `claude`, `gh`, `glab`, `linear`, and `ntn` are logged in:
 
 `msb`'s default egress is **deny-all-but-public**, and it drops DNS answers that
 resolve to private IPs (rebind protection). So a bare `run` can reach the public
-internet but **not** internal names like `gitlab.datacrunch.io` (a `10.x` address
+internet but **not** internal names like `gitlab.example.com` (i.e. a `10.x` address
 reached via a Tailscale subnet route) — those fail to both resolve and connect.
 
 `--internal` lifts both restrictions (`--net-default-egress allow

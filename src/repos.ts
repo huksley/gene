@@ -5,7 +5,7 @@
  * in its description (or, failing that, a comment) — the FIRST such link wins.
  * The forge is inferred from the host, and a monorepo subdirectory is read from
  * a `…/tree/<branch>/<path>` URL when present. Issues with no link fall back to a
- * configured per-team default (e.g. CLOUD → nest.datacrunch.io), so existing
+ * configured per-team default (as per GENE_REPO_MAP), so existing
  * single-repo issues keep working untouched.
  *
  * Examples that resolve correctly:
@@ -23,9 +23,9 @@ export type ForgeName = "gitlab" | "github";
 export type RepoTarget = {
   /** Which forge hosts this repo — drives the CLI (glab/gh) and prompt snippet. */
   forge: ForgeName;
-  /** Forge host, e.g. "gitlab.datacrunch.io" / "github.com". */
+  /** Forge host, e.g. $GITLAB_HOST / "github.com". */
   host: string;
-  /** Project / "owner/repo" path, e.g. "datacrunch/nest.datacrunch.io". */
+  /** Project or "owner/repo" path, e.g. "example/example-repo". */
   repoPath: string;
   /** Monorepo subdirectory to scope work to (from a /tree/ URL), if any. */
   subdir?: string;
@@ -215,14 +215,9 @@ export const findChangeRequestRefs = (text: string): ChangeRequestRef[] => {
 export const refMatchesTarget = (ref: ChangeRequestRef, target: RepoTarget): boolean =>
   ref.forge === target.forge && ref.host === target.host && ref.repoPath === target.repoPath;
 
-/** Per-team default repo URLs, used when an issue carries no link. */
-const DEFAULT_TARGET_URLS: Record<string, string> = {
-  CLOUD: `https://${env.GITLAB_HOST}/datacrunch/nest.datacrunch.io`
-};
-
 /** Merge in any `GENE_REPO_MAP` override — a JSON object of team → repo URL. */
 const buildDefaults = (): Record<string, string> => {
-  const map: Record<string, string> = { ...DEFAULT_TARGET_URLS };
+  const map: Record<string, string> = {};
   if (!env.REPO_MAP) {
     return map;
   }
@@ -235,7 +230,7 @@ const buildDefaults = (): Record<string, string> => {
     );
   }
   if (override === null || typeof override !== "object" || Array.isArray(override)) {
-    throw new Error("GENE_REPO_MAP must be a JSON object keyed by team key, e.g. {\"CLOUD\":\"https://…\"}");
+    throw new Error("GENE_REPO_MAP must be a JSON object keyed by team key, e.g. {\"TEAM\": \"https://…\"}");
   }
   for (const [team, value] of Object.entries(override as Record<string, unknown>)) {
     if (typeof value !== "string" || !value.trim()) {
@@ -254,10 +249,12 @@ export const defaultTargetFor = (teamKey: string): RepoTarget | null => {
   if (!url) {
     return null;
   }
+
   const target = parseRepoUrl(url);
   if (!target) {
     throw new Error(`Default repo URL for team "${teamKey}" is not a valid GitLab/GitHub URL: ${url}`);
   }
+
   return target;
 };
 
@@ -277,13 +274,24 @@ export const resolveTarget = (issue: Issue, comments: Comment[] = []): RepoTarge
   if (fromDescription) {
     return fromDescription;
   }
+
   for (const comment of comments) {
     const fromComment = findTargetInText(comment.body);
     if (fromComment) {
       return fromComment;
     }
   }
-  return defaultTargetFor(issue.teamKey);
+
+  const perTeamDefault = defaultTargetFor(issue.teamKey);
+  if (perTeamDefault) {
+    return perTeamDefault;
+  }
+
+  if (env.REPO_URL) {
+    return parseRepoUrl(env.REPO_URL);
+  }
+
+  return null;
 };
 
 /** A short "host/repoPath[ /subdir]" label for logs and the prompt. */

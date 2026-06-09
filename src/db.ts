@@ -58,10 +58,11 @@ const augmentOpenError = (error: unknown): Error => {
   if (storeIsLocked()) {
     return new Error(
       `could not open the state store at ${PGDATA_DIR} — it is locked by another PGlite instance. ` +
-        "PGlite is single-process, so only one of the daemon and a one-shot command (log / reset / once) " +
-        "can hold it at a time. Stop the running Gene daemon, then retry. " +
-        `(If no daemon is running, the lock is stale — remove ${path.join(PGDATA_DIR, "postmaster.pid")}.) ` +
-        `[original: ${original}]`
+      "PGlite is single-process, so only one of the daemon and a one-shot command (log / reset / once) " +
+      "can hold it at a time. Stop the running Gene daemon, then retry. " +
+      `(If no daemon is running, the lock is stale — remove ${path.join(PGDATA_DIR, "postmaster.pid")}.) ` +
+      `[original: ${original}]`,
+      { cause: error }
     );
   }
   return error instanceof Error ? error : new Error(original);
@@ -75,7 +76,7 @@ export const getDb = async (): Promise<PGlite> => {
       const db = new PGlite(PGDATA_DIR);
       await db.waitReady;
       await db.exec(SCHEMA);
-      logger.info(`[gene:db] state store ready at ${PGDATA_DIR}`);
+      logger.info(`[gene:db] opened state store at ${PGDATA_DIR}`);
       return db;
     })().catch(error => {
       dbPromise = null; // allow a later retry rather than wedging on a transient failure
@@ -102,7 +103,7 @@ export type IssueLogEntry = {
 };
 
 /** One row read back from the activity log. */
-export type IssueLogRow = { createdAt: string; event: string; detail: string };
+export type IssueLogRow = { createdAt: string; event: string; detail: string; tracker: string; identifier: string };
 
 /**
  * Append one entry to an issue's activity log. Best-effort: recording is
@@ -127,19 +128,21 @@ export const logEvent = async (entry: IssueLogEntry): Promise<void> => {
 };
 
 /** Read an issue's activity log, oldest-first. Identifier match is case-insensitive. */
-export const readIssueLog = async (tracker: string, identifier: string): Promise<IssueLogRow[]> => {
+export const readIssueLog = async (tracker?: string, identifier?: string): Promise<IssueLogRow[]> => {
   const db = await getDb();
-  const res = await db.query<{ created_at: Date | string; event: string; detail: string }>(
-    `SELECT created_at, event, detail
-       FROM issue_log
-      WHERE tracker = $1 AND lower(identifier) = lower($2)
+  const res = await db.query<{ created_at: Date | string; event: string; detail: string; tracker: string; identifier: string }>(
+    `SELECT created_at, event, detail, tracker, identifier
+        FROM issue_log
+      WHERE ($1 IS NULL OR tracker = $1) AND ($2 IS NULL OR lower(identifier) = lower($2))
       ORDER BY id ASC`,
-    [tracker, identifier]
+    [tracker ?? null, identifier ?? null]
   );
   return res.rows.map(row => ({
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
     event: row.event,
-    detail: row.detail
+    detail: row.detail,
+    tracker: row.tracker,
+    identifier: row.identifier
   }));
 };
 

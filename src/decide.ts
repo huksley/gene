@@ -16,6 +16,7 @@
  */
 
 import { env, WATCHED_STATES } from "./config.ts";
+import { commentIsIgnored } from "./ignore.ts";
 import type { Comment, Issue } from "./tracker/index.ts";
 
 export type Action =
@@ -61,7 +62,11 @@ const userCommentsAfter = (
   afterIso: string | undefined
 ): Comment[] =>
   comments.filter(
-    comment => !comment.isAgent && (afterIso === undefined || comment.createdAt > afterIso)
+    comment =>
+      !comment.isAgent &&
+      (afterIso === undefined || comment.createdAt > afterIso) &&
+      // Ignore-listed comments (e.g. another bot's `/review`) don't count as feedback.
+      !commentIsIgnored(env.TRACKER, comment.body)
   );
 
 export const decideAction = (issue: Issue, comments: Comment[]): Action => {

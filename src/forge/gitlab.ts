@@ -1,7 +1,6 @@
 /**
  * GitLab forge implementation, driven by the `glab` CLI (+ git). Self-managed
- * hosts (gitlab.datacrunch.io) are targeted via the GITLAB_HOST env var, which
- * glab honours for non-default instances.
+ * hosts are targeted by the $GITLAB_HOST env var, which glab honours.
  */
 
 import { existsSync } from "node:fs";
@@ -59,7 +58,7 @@ export class GitlabForge implements Forge {
     if (code !== 0) {
       throw new Error(
         `glab repo clone ${repo.repoPath} failed (exit ${code}). ` +
-          `Run \`glab auth login --hostname ${repo.host}\` first.`
+        `Run \`glab auth login --hostname ${repo.host}\` first.`
       );
     }
   }
@@ -73,12 +72,14 @@ export class GitlabForge implements Forge {
   }
 
   promptSnippet(ctx: ChangeRequestContext): string {
+    const draft = env.DRAFT_CHANGE_REQUEST;
     return [
-      "Open a **GitLab merge request** with the `glab` CLI from inside the worktree:",
+      `Open a **GitLab merge request**${draft ? " as a **draft**" : ""} with the \`glab\` CLI from inside the worktree:`,
       "",
       "```bash",
       `git push -u origin "${ctx.branch}"`,
       "glab mr create \\",
+      ...(draft ? ["  --draft \\"] : []),
       `  --source-branch "${ctx.branch}" \\`,
       `  --target-branch "${ctx.baseBranch}" \\`,
       '  --title "<concise, imperative title>" \\',
@@ -93,6 +94,11 @@ export class GitlabForge implements Forge {
       "```",
       "",
       `- The branch \`${ctx.branch}\` matches the Linear issue's branch name, so the MR auto-links to ${ctx.issueId}. Also keep the \`Linear: ${ctx.issueUrl}\` line in the description.`,
+      ...(draft
+        ? [
+          "- Opened as a **draft** on purpose — a human reviews it, marks it ready, and merges. Do NOT mark it ready (`glab mr update --ready`) yourself."
+        ]
+        : []),
       "- **Never merge the MR** — a human reviews and merges. Do not push to the default branch.",
       "- `glab` auto-detects the host from the worktree's git remote; no extra config needed."
     ].join("\n");
@@ -144,17 +150,17 @@ export class GitlabForge implements Forge {
     const notes = await this.api(repo, `projects/${enc}/merge_requests/${mr.iid}/notes?sort=asc&per_page=100`);
     const comments: ReviewComment[] = Array.isArray(notes)
       ? notes
-          .filter((n: any) => !n.system) // drop "changed status to…" system notes
-          .map((n: any) => {
-            const body = String(n.body ?? "");
-            return {
-              id: String(n.id),
-              author: n.author?.username ?? "?",
-              body,
-              createdAt: String(n.created_at ?? ""),
-              isAgent: body.includes(env.AGENT_MARKER)
-            };
-          })
+        .filter((n: any) => !n.system) // drop "changed status to…" system notes
+        .map((n: any) => {
+          const body = String(n.body ?? "");
+          return {
+            id: String(n.id),
+            author: n.author?.username ?? "?",
+            body,
+            createdAt: String(n.created_at ?? ""),
+            isAgent: body.includes(env.AGENT_MARKER)
+          };
+        })
       : [];
 
     return {

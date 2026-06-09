@@ -23,24 +23,13 @@ const print = (line = ""): void => {
 
 const main = async (): Promise<void> => {
   const arg = process.argv[2];
-  if (!arg || arg.startsWith("--")) {
-    logger.error(USAGE);
-    process.exit(1);
-  }
 
-  // Accept "system:identifier" (linear:CLOUD-1094) or a bare identifier — in which
-  // case the system falls back to the configured GENE_TRACKER.
-  const sep = arg.indexOf(":");
-  const system = sep > 0 ? arg.slice(0, sep).toLowerCase() : env.TRACKER;
-  const identifier = (sep > 0 ? arg.slice(sep + 1) : arg).trim();
-  if (!identifier) {
-    logger.error(USAGE);
-    process.exit(1);
-  }
-
+  const sep = arg && arg !== "--" ? arg.indexOf(":") : undefined;
+  let system = sep !== undefined && sep > 0 ? arg.slice(0, sep).toLowerCase() : undefined;
+  let identifier = sep !== undefined ? (sep > 0 ? arg.slice(sep + 1) : arg).trim() : undefined;
   const rows = await readIssueLog(system, identifier);
   if (rows.length === 0) {
-    print(`${system}:${identifier} — no activity logged yet`);
+    print(`No activity logged yet`);
     return;
   }
 
