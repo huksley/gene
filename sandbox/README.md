@@ -56,7 +56,8 @@ locally, not from a registry.
 | `-k`, `--keep`        | keep the VM after the command exits                                       |
 | `-d`, `--detach`      | start in the background and print the name                                |
 | `-v`, `--volume SPEC` | mount `host:guest[:opts]` (repeatable; read-write unless `:ro`)           |
-| `--pwd`               | mount the current dir at `/workspace/<basename>` and make it the workdir  |
+| `--dir DIR`           | mount host `DIR` at `/workspace/<basename>` and make it the workdir       |
+| `--pwd`               | shortcut for `--dir "$PWD"` (mount the current dir)                       |
 | `-w`, `--workdir DIR` | working directory inside the VM (default `/workspace`)                    |
 | `-c`, `--cpus N`      | number of vCPUs                                                           |
 | `-m`, `--memory SIZE` | memory, e.g. `4G` (default `2G`)                                           |
@@ -107,14 +108,17 @@ Tailscale. No nameserver config is needed — `msb`'s DNS forwarder already uses
 host resolver. (`GENE_SANDBOX_INTERNAL=1` makes it the default; `--inherit` enables
 it automatically; `--isolated` forces public-only.)
 
-### `--pwd` — run inside your repo
+### `--dir DIR` / `--pwd` — run inside your repo
 
-Mounts the host's current directory at `/workspace/<basename>` (deliberately **not**
-at `/workspace`, so the repo keeps its name) and makes it the workdir unless `-w`
-says otherwise. With `--inherit`, that exact dir is the one pre-trusted for `claude`.
+Mounts a host directory at `/workspace/<basename>` (deliberately **not** at
+`/workspace`, so the repo keeps its name) and makes it the workdir unless `-w` says
+otherwise. With `--inherit`, that exact dir is the one pre-trusted for `claude`.
+`--dir DIR` takes any path (a relative one is resolved to absolute, and must exist);
+`--pwd` is the shortcut for `--dir "$PWD"`.
 
 ```sh
 ./sandbox.sh run --pwd -- bash -lc 'npm test'              # mount cwd, cd into it, test
+./sandbox.sh run --dir ~/src/myrepo --inherit -- claude -p 'fix the bug'
 ./sandbox.sh run --pwd --inherit -- claude -p 'fix the failing test'
 ```
 

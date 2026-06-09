@@ -39,7 +39,7 @@ const main = async (): Promise<void> => {
   for (const row of rows) {
     // Keep one event per line — collapse any newlines a stored detail may carry.
     const detail = row.detail.replace(/\s*\n\s*/g, " ");
-    print(`  ${row.createdAt}  ${row.event.padEnd(eventWidth)}  ${detail}`);
+    print(`  ${row.createdAt} ${row.tracker}:${row.identifier} ${row.event.padEnd(eventWidth)}  ${detail}`);
   }
 };
 

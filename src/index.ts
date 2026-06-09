@@ -369,7 +369,8 @@ const processReview = async (
   } catch (error) {
     logger.warn(
       `[gene] [${issue.identifier}] review check failed:`,
-      error instanceof Error ? error.message : error
+      error instanceof Error ? error.message : error,
+      { cause: error }
     );
     return false;
   }
@@ -520,7 +521,7 @@ const main = async (): Promise<void> => {
     await scanOnce();
     // Let any live spawns kicked off this scan finish before exiting.
     await Promise.allSettled([...inFlight.values()]);
-    // Release the PGlite handles, else its WASM runtime keeps the process alive.
+    // Close the Postgres pool, else its open sockets keep the process alive.
     await closeDb();
     return;
   }

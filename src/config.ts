@@ -1,6 +1,6 @@
 /**
  * Environment + constants for the Gene pipeline. Hand-rolled (no zod) to keep
- * runtime dependencies minimal — PGlite (embedded Postgres for state, see db.ts)
+ * runtime dependencies minimal — the `pg` Postgres client (state store, see db.ts)
  * is the only one — and let Node execute the TypeScript directly. Invalid values
  * collect into a list and exit(1) with a friendly message rather than throwing
  * deep in a module.
@@ -133,8 +133,11 @@ export const env = {
   // A transient API/socket error mid-run makes `claude -p` exit non-zero. Retry the
   // spawn this many times (exponential backoff from AGENT_RETRY_DELAY_MS); the
   // worktree persists between attempts so a retry resumes prior work. 0 disables it.
-  AGENT_MAX_RETRIES: int("GENE_AGENT_MAX_RETRIES", 2),
-  AGENT_RETRY_DELAY_MS: int("GENE_AGENT_RETRY_DELAY_MS", 5_000)
+  AGENT_MAX_RETRIES: int("GENE_AGENT_MAX_RETRIES", 5),
+  AGENT_RETRY_DELAY_MS: int("GENE_AGENT_RETRY_DELAY_MS", 5_000),
+
+  // Use Claude API-billing
+  CLAUDE_API_BILLING: bool("GENE_CLAUDE_API_BILLING", false),
 } as const;
 
 // Trello needs a board to watch; fail fast with a friendly message rather than
@@ -157,12 +160,10 @@ if (problems.length > 0) {
 /** Repo root = this project (the orchestrator). */
 export const REPO_ROOT = process.cwd();
 
-/** Pipeline runtime state (locks, etc.) — gitignored. */
+/** Pipeline runtime state (locks, etc.) — gitignored. The persistent state store
+ * lives in Postgres now (see db.ts), not on disk here. */
 export const GENE_DIR = path.join(REPO_ROOT, ".gene");
 export const LOCK_DIR = path.join(GENE_DIR, "locks");
-
-/** Embedded Postgres (PGlite) data directory — the daemon's persistent state. */
-export const PGDATA_DIR = path.join(GENE_DIR, "pgdata");
 
 /** Absolute directory under which target repos are cloned and kept. */
 export const REPOS_ROOT = path.isAbsolute(env.REPOS_DIR)

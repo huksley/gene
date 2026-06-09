@@ -283,7 +283,7 @@ do_versions() {
 do_run() {
   local name="" keep="" detach="" inherit="" workdir="${GENE_SANDBOX_WORKDIR:-/workspace}"
   local cpus="${GENE_SANDBOX_CPUS:-}" mem="$MEM_DEFAULT" user="$GUEST_USER"
-  local internal="" internal_set="" pwd_mount="" workdir_set="${GENE_SANDBOX_WORKDIR:+1}"
+  local internal="" internal_set="" mount_dir="" workdir_set="${GENE_SANDBOX_WORKDIR:+1}"
   local -a vols=()
   [ -n "${GENE_SANDBOX_VOLUME:-}" ] && vols+=("$GENE_SANDBOX_VOLUME")
   [ -n "${GENE_SANDBOX_INHERIT:-}" ] && inherit=1
@@ -298,7 +298,8 @@ do_run() {
       --internal|--net-host)    internal=1; internal_set=1; shift;;
       --isolated|--no-internal) internal=""; internal_set=1; shift;;
       -v|--volume)  vols+=("$2"); shift 2;;
-      --pwd)        pwd_mount=1; shift;;
+      --dir)        mount_dir="$2"; shift 2;;
+      --pwd)        mount_dir="$PWD"; shift;;
       -w|--workdir) workdir="$2"; workdir_set=1; shift 2;;
       -c|--cpus)    cpus="$2"; shift 2;;
       -m|--memory)  mem="$2"; shift 2;;
@@ -311,16 +312,19 @@ do_run() {
   done
   local -a cmd=("$@")
 
-  # --pwd: mount the host's current directory into the sandbox at
-  # /workspace/<basename> (NOT at /workspace itself) and — unless -w was given —
-  # make it the workdir. So you land in your project, and with --inherit that dir
-  # is the one pre-trusted for claude. The mount auto-creates /workspace/<basename>.
-  if [ -n "$pwd_mount" ]; then
-    local pwd_base; pwd_base="$(basename "$PWD")"
-    [ -n "$pwd_base" ] && [ "$pwd_base" != "/" ] || die "--pwd: cannot derive a directory name from PWD ($PWD)"
-    local pwd_dst="/workspace/$pwd_base"
-    vols+=("$PWD:$pwd_dst")
-    if [ -z "$workdir_set" ]; then workdir="$pwd_dst"; info "pwd    mounting $PWD -> $pwd_dst (workdir)"; else info "pwd    mounting $PWD -> $pwd_dst"; fi
+  # --dir DIR: mount a host directory into the sandbox at /workspace/<basename>
+  # (NOT at /workspace itself) and — unless -w was given — make it the workdir. So
+  # you land in your project, and with --inherit that dir is the one pre-trusted for
+  # claude. The mount auto-creates /workspace/<basename>. --pwd is --dir "$PWD".
+  # DIR may be relative; it's resolved to an absolute path (and must exist).
+  if [ -n "$mount_dir" ]; then
+    local dir_abs dir_base dir_dst
+    dir_abs="$(cd "$mount_dir" 2>/dev/null && pwd)" || die "--dir: not a directory: $mount_dir"
+    dir_base="$(basename "$dir_abs")"
+    [ -n "$dir_base" ] && [ "$dir_base" != "/" ] || die "--dir: cannot derive a directory name from: $mount_dir"
+    dir_dst="/workspace/$dir_base"
+    vols+=("$dir_abs:$dir_dst")
+    if [ -z "$workdir_set" ]; then workdir="$dir_dst"; info "dir    mounting $dir_abs -> $dir_dst (workdir)"; else info "dir    mounting $dir_abs -> $dir_dst"; fi
   fi
 
   [ -n "$name" ] || name="geneai-$$"
@@ -410,8 +414,9 @@ run flags:
   -k, --keep          keep the sandbox after the command exits
   -d, --detach        start in the background and print the name
   -v, --volume SPEC   mount host:guest[:opts] into the sandbox (repeatable)
-      --pwd           mount the current dir at /workspace/<basename> and make it
-                      the workdir (so claude --inherit pre-trusts it); not /workspace
+      --dir DIR       mount host DIR at /workspace/<basename> and make it the workdir
+                      (so claude --inherit pre-trusts it); not at /workspace itself
+      --pwd           shortcut for --dir "$PWD" (mount the current directory)
   -w, --workdir DIR   working directory inside the sandbox (default: /workspace)
   -c, --cpus N        number of vCPUs
   -m, --memory SIZE   memory, e.g. 2G            (default: 2G)
@@ -453,6 +458,7 @@ Examples:
   ./sandbox.sh run --inherit --isolated -- claude --version            # creds, no internal net
   GENE_SANDBOX_INHERIT_RO=1 ./sandbox.sh run --inherit                 # read-only auth
   ./sandbox.sh run --pwd -- bash -lc 'npm test'         # mount cwd at /workspace/<name>, cd there
+  ./sandbox.sh run --dir ~/src/myrepo --inherit -- claude -p 'fix the bug'  # mount that repo + trust it
   ./sandbox.sh run --pwd --inherit -- claude -p 'fix the failing test'   # cwd mounted + trusted
   ./sandbox.sh run -v "$PWD:/workspace" -- bash -lc 'cd /workspace && npm test'
 

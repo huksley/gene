@@ -185,7 +185,7 @@ const main = async (): Promise<void> => {
     detail: `${stateNote}; ${localNote}${closeMr ? "; --close-mr" : ""}`
   });
 
-  // logEvent opened PGlite; release it so this one-shot CLI can exit.
+  // logEvent opened a Postgres pool; close it so this one-shot CLI can exit.
   await closeDb();
 };
 

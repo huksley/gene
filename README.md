@@ -103,13 +103,13 @@ leaves the draft as-is for a human to mark ready instead. This is the same machi
 handling, just with "there's queued work here" rather than "wait for a new signal".
 
 **Activity log (`db.ts`).** Alongside the review cursor, the daemon records a
-per-issue **activity log** in the embedded store, keyed by `(tracker, issue id)`:
+per-issue **activity log** in the state store, keyed by `(tracker, issue id)`:
 each dispatch, the agent's start / finish (with its own final summary), review
 re-dispatches, draft pickups, and resets (dry-run entries are flagged). Inspect one
 issue's history with `npm run log -- <system>:<id>` (e.g. `linear:CLOUD-1094`; a bare
-id defaults the system to `GENE_TRACKER`). Because PGlite is single-process, the
-daemon and a one-shot command (`log` / `reset` / `once`) can't hold the store at the
-same time — stop the daemon before running them.
+id defaults the system to `GENE_TRACKER`). The store is a real Postgres, so a
+one-shot command (`log` / `reset`) reads it fine while the daemon is running — both
+just point at the same server (the local one on port 5433 by default).
 
 ## Repo targeting (per issue)
 
@@ -141,14 +141,15 @@ All resolution logic lives in `src/repos.ts`.
   A repo is cloned **on demand** the first time an issue targets it; `npm run clone`
   pre-clones the team defaults so the common path is warm. Per-issue worktrees are
   created at `repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base.
-  Runtime state — locks and the PGlite state store (`pgdata/`) — lives in `.gene/`
-  (gitignored).
+  Runtime locks live in `.gene/` (gitignored); the persistent state store is a local
+  **Postgres** with its data under `data/pg/` (gitignored), started by `npm run pg`.
 
 ## Setup
 
 Prerequisites: Node 24 (via [Volta](https://volta.sh) — pinned in `package.json`),
-the `claude`, `git`, and `glab` and/or `gh` CLIs on `PATH`, and — for the **Linear**
-backend — the `linear` CLI. The **Trello** backend needs no extra CLI: it uses the
+**PostgreSQL** (`brew install postgresql@16` — the daemon's state store; `npm run pg`
+init-and-runs it locally on port 5433), the `claude`, `git`, and `glab` and/or `gh`
+CLIs on `PATH`, and — for the **Linear** backend — the `linear` CLI. The **Trello** backend needs no extra CLI: it uses the
 bundled `trello/` wrapper, which only wants `TRELLO_API_KEY` + `TRELLO_TOKEN`.
 
 > Prefer isolation? The whole toolchain is packaged as a microVM — see
@@ -179,12 +180,13 @@ default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to
 ## Usage
 
 ```bash
-npm start               # run the daemon forever (poll loop)
-npm run once            # a single scan, then exit  (great with GENE_DRY_RUN=true)
+npm start               # Postgres + the daemon (poll loop), together via concurrently
+npm run once            # Postgres + a single scan, then exit  (great with GENE_DRY_RUN=true)
+npm run pg              # just the local Postgres (port 5433) — leave up for the commands below
 npm run clone           # pre-clone the team default repo(s)
-npm run reset -- CLOUD-1094            # reset one issue back to Todo
+npm run reset -- CLOUD-1094            # reset one issue back to Todo   (needs Postgres up)
 npm run reset -- CLOUD-1094 --close-mr # ...and close its open MR/PR
-npm run log -- linear:CLOUD-1094       # show one issue's activity log (what Gene did for it)
+npm run log -- linear:CLOUD-1094       # show one issue's activity log (needs Postgres up)
 npm run typecheck       # tsc --noEmit
 ```
 
@@ -200,9 +202,9 @@ Node 24 runs the `.ts` files directly (type-stripping — no build step), so:
 - no TypeScript-only runtime constructs (enums, namespaces, constructor parameter
   properties) — strip-only mode rejects them;
 - env is loaded by `node --env-file-if-exists=.env.development` (in the npm scripts);
-- the only runtime dependency is **PGlite** (`@electric-sql/pglite`) — an embedded
-  Postgres for the daemon's persistent state (`db.ts`); env parsing stays hand-rolled
-  in `config.ts`.
+- the only runtime dependency is **`pg`** — the daemon's persistent state lives in a
+  local **Postgres** (`db.ts`), brought up by `npm run pg`; env parsing stays
+  hand-rolled in `config.ts`.
 
 ## File map
 
@@ -210,7 +212,7 @@ Node 24 runs the `.ts` files directly (type-stripping — no build step), so:
 src/
   index.ts        daemon: scan → decide → dispatch (--once supported)
   config.ts       env + constants (hand-rolled, no zod)
-  db.ts           embedded Postgres (PGlite) state: review cursor + issue activity log
+  db.ts           Postgres state store: review cursor + issue activity log
   logger.ts       timestamped server logger
   decide.ts       pure (issue, comments) → Action
   review.ts       In-Review watchdog + draft pickup: find the open MR/PR, decide re-dispatch
@@ -302,5 +304,5 @@ document them in `.env.example`.
   and merges. Off by default; works on both GitLab and GitHub.
 - **Two-repo** model (orchestrator vs cloned targets); worktrees branch off the clone.
 - Native Node 24 TS — **no build**, `.ts` imports, `--env-file`; **one runtime dep**
-  (PGlite, embedded Postgres for state).
+  (`pg`, talking to a local Postgres for state).
 - Description **section enforcement is off** by default (real tickets are free-form).

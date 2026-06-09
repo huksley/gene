@@ -1,26 +1,27 @@
 /**
- * The daemon's persistent state, in an embedded Postgres (PGlite).
+ * The daemon's persistent state, in a local Postgres.
  *
  * Most of Gene's "state" lives in Linear (the issue + its comments) and the forge
  * (the open change request). What's left is bookkeeping the daemon needs across
- * restarts but that has no natural home in either — today that's the In-Review
- * cursor (review.ts): which CI failure / review comment we've already dispatched
- * an agent for, so the watchdog acts once per signal instead of on every poll.
+ * restarts but that has no natural home in either: the In-Review cursor (review.ts)
+ * — which CI failure / review comment we've already dispatched an agent for, so the
+ * watchdog acts once per signal instead of on every poll — and a per-issue activity
+ * log.
  *
- * PGlite is a single-process WASM Postgres; we persist it under `.gene/pgdata`
- * (gitignored). The connection is lazily created and memoised for the process.
+ * We talk to a real Postgres over TCP (run it with `npm run pg` — port 5433, data
+ * under `data/pg`; see pg.conf). Connection details come from the standard PG* env
+ * vars (or a single DATABASE_URL), defaulting to that local dev server. The pool is
+ * opened lazily and memoised for the process; unlike the previous embedded engine,
+ * the daemon and a one-shot command (`log` / `reset`) can hold it at the same time.
  *
  * NB: per-issue *locks* deliberately stay file-based (lock.ts) — they coordinate
- * across separate OS processes via PID + stale reclamation, which an in-process
- * database can't do. This store is for single-daemon bookkeeping only.
+ * across separate OS processes via PID + stale reclamation. This store is for
+ * cross-restart bookkeeping only.
  */
 
-import { mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { PGlite } from "@electric-sql/pglite";
+import os from "node:os";
+import { Pool } from "pg";
 import logger from "./logger.ts";
-import { GENE_DIR, PGDATA_DIR } from "./config.ts";
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS review_cursor (
@@ -41,46 +42,76 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS issue_log_lookup ON issue_log (tracker, identifier, id);
 `;
 
-let dbPromise: Promise<PGlite> | null = null;
+let dbPromise: Promise<Pool> | null = null;
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Does the data dir hold a PG lock file? PGlite is single-process: a second opener
- * (e.g. `npm run log` while the daemon runs) aborts in WASM with an opaque
- * "Aborted()". PGlite writes postmaster.pid under the WASM getpid() — a fixed
- * sentinel (-42), so it can't be mapped back to a host PID; the file's mere
- * presence is what tells a locked store apart from real corruption.
+ * Connection errors worth retrying: the daemon and `npm run pg` are started together
+ * (concurrently), so on a cold boot the first query can race Postgres still coming up
+ * (and `initdb` on the very first run). Anything else — bad credentials, a missing
+ * database — is a real misconfiguration and fails fast.
  */
-const storeIsLocked = (): boolean => existsSync(path.join(PGDATA_DIR, "postmaster.pid"));
-
-/** Turn an opaque open failure into an actionable message when the store is locked. */
-const augmentOpenError = (error: unknown): Error => {
-  const original = error instanceof Error ? error.message : String(error);
-  if (storeIsLocked()) {
-    return new Error(
-      `could not open the state store at ${PGDATA_DIR} — it is locked by another PGlite instance. ` +
-      "PGlite is single-process, so only one of the daemon and a one-shot command (log / reset / once) " +
-      "can hold it at a time. Stop the running Gene daemon, then retry. " +
-      `(If no daemon is running, the lock is stale — remove ${path.join(PGDATA_DIR, "postmaster.pid")}.) ` +
-      `[original: ${original}]`,
-      { cause: error }
-    );
-  }
-  return error instanceof Error ? error : new Error(original);
+const isStartupError = (error: unknown): boolean => {
+  const code = (error as { code?: string } | null)?.code;
+  return (
+    code === "ECONNREFUSED" || // nothing listening on the port yet
+    code === "ECONNRESET" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "57P03" // cannot_connect_now — server is still starting up
+  );
 };
 
-/** Lazily open (and migrate) the database; the same instance is reused thereafter. */
-export const getDb = async (): Promise<PGlite> => {
+/** Open the pool, wait for the server to accept queries, then apply the schema. */
+const open = async (): Promise<Pool> => {
+  const url = process.env.DATABASE_URL;
+  // Discrete config defaults to the local dev server in pg.conf (127.0.0.1:5433).
+  // `initdb` makes the bootstrap superuser = the OS user and trust-auths localhost,
+  // so no password is needed out of the box; PGPASSWORD/PGUSER override when it is.
+  const discrete = {
+    host: process.env.PGHOST ?? "127.0.0.1",
+    port: Number(process.env.PGPORT ?? 5433),
+    database: process.env.PGDATABASE ?? "postgres",
+    user: process.env.PGUSER ?? os.userInfo().username,
+    ...(process.env.PGPASSWORD ? { password: process.env.PGPASSWORD } : {})
+  };
+  const pool = new Pool(url ? { connectionString: url } : discrete);
+  // A server-dropped idle client surfaces as a pool 'error'; log and swallow it so a
+  // transient disconnect can't crash the daemon (the next query reconnects).
+  pool.on("error", error =>
+    logger.warn("[gene:db] idle client error:", error instanceof Error ? error.message : error)
+  );
+
+  const deadline = Date.now() + 30_000;
+  let delay = 250;
+  for (; ;) {
+    try {
+      await pool.query("SELECT 1");
+      break;
+    } catch (error) {
+      if (!isStartupError(error) || Date.now() > deadline) {
+        await pool.end().catch(() => { });
+        throw error;
+      }
+      await sleep(delay);
+      delay = Math.min(delay * 2, 2_000);
+    }
+  }
+
+  await pool.query(SCHEMA);
+  const where = url ? "via DATABASE_URL" : `${discrete.host}:${discrete.port}/${discrete.database}`;
+  logger.info(`[gene:db] connected to Postgres (${where})`);
+  return pool;
+};
+
+/** Lazily open (and migrate) the pool; the same instance is reused thereafter. */
+export const getDb = async (): Promise<Pool> => {
   if (!dbPromise) {
-    dbPromise = (async () => {
-      await mkdir(GENE_DIR, { recursive: true });
-      const db = new PGlite(PGDATA_DIR);
-      await db.waitReady;
-      await db.exec(SCHEMA);
-      logger.info(`[gene:db] opened state store at ${PGDATA_DIR}`);
-      return db;
-    })().catch(error => {
+    logger.info(`[gene:db] opening pool to ${process.env.DATABASE_URL ?? "local dev server"}`);
+    dbPromise = open().catch(error => {
       dbPromise = null; // allow a later retry rather than wedging on a transient failure
-      throw augmentOpenError(error);
+      throw error;
     });
   }
   return dbPromise;
@@ -133,7 +164,7 @@ export const readIssueLog = async (tracker?: string, identifier?: string): Promi
   const res = await db.query<{ created_at: Date | string; event: string; detail: string; tracker: string; identifier: string }>(
     `SELECT created_at, event, detail, tracker, identifier
         FROM issue_log
-      WHERE ($1 IS NULL OR tracker = $1) AND ($2 IS NULL OR lower(identifier) = lower($2))
+      WHERE ($1::text IS NULL OR tracker = $1) AND ($2::text IS NULL OR lower(identifier) = lower($2))
       ORDER BY id ASC`,
     [tracker ?? null, identifier ?? null]
   );
@@ -147,9 +178,9 @@ export const readIssueLog = async (tracker?: string, identifier?: string): Promi
 };
 
 /**
- * Close the database if it was ever opened. PGlite's WASM runtime keeps handles
- * on the event loop, so a one-shot `--once` run won't exit until this is called.
- * Idempotent and never throws — a close failure shouldn't wedge shutdown.
+ * Close the pool if it was ever opened, so a one-shot `--once` / `log` / `reset` run
+ * can exit instead of lingering on open sockets. Idempotent and never throws — a
+ * close failure shouldn't wedge shutdown.
  */
 export const closeDb = async (): Promise<void> => {
   if (!dbPromise) {
@@ -159,7 +190,7 @@ export const closeDb = async (): Promise<void> => {
   dbPromise = null;
   try {
     const db = await pending;
-    await db.close();
+    await db.end();
   } catch {
     // Failed to open, or already closed — nothing left to release.
   }

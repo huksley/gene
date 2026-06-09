@@ -8,8 +8,12 @@
     "node": "24.16.0"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env.development src/index.ts",
-    "once": "node --env-file-if-exists=.env.development src/index.ts --once",
+    "prepg": "if [ ! -d data/pg ]; then mkdir -p data/pg; initdb -D data/pg; fi",
+    "pg": "trap 'kill 0' SIGINT; postgres -D data/pg --config-file=pg.conf",
+    "gene": "node --env-file-if-exists=.env.development src/index.ts",
+    "gene:once": "node --env-file-if-exists=.env.development src/index.ts --once",
+    "start": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene\"",
+    "once": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene:once\"",
     "clone": "node --env-file-if-exists=.env.development src/clone.ts",
     "reset": "node --env-file-if-exists=.env.development src/reset.ts",
     "log": "node --env-file-if-exists=.env.development src/log.ts",
@@ -18,9 +22,11 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.20.0",
+    "concurrently": "^10.0.3",
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.1"
+    "pg": "^8.21.0"
   }
 }

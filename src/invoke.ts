@@ -6,8 +6,8 @@
  *   `origin/<baseBranch>`, so new worktrees start from the latest upstream tip.
  *   The branch is the issue's `branchName` (on Linear that auto-links the MR).
  * - Captures stream-json stdout and renders one-line summaries to the daemon log.
- * - Strips ANTHROPIC_API_KEY from the child env so `claude` uses OAuth (Max plan)
- *   rather than billing an API key.
+ * - If GENE_CLAUDE_API_BILLING is true, passes the ANTHROPIC_API_KEY to the agent's environment
+ *   environment to enable API-billing.
  * - Honours GENE_DRY_RUN: logs the would-be spawn instead of running the agent
  *   (the agent makes real tracker/forge writes, so it must never run in dry-run).
  */
@@ -290,16 +290,20 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
   if (env.DRY_RUN) {
     logger.info(
       `[gene] [${id}] (dry-run) would spawn ${env.CLAUDE_BIN} in ${worktreePath} ` +
-        `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
+      `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
     );
     return { kind: "dry-run", worktreePath, exitCode: 0 };
   }
 
-  // Strip ANTHROPIC_API_KEY so `claude` falls through to OAuth (Max plan) rather
+  // If GENE_CLAUDE_API_BILLING is true, passes the ANTHROPIC_API_KEY to the agent's environment
   // than billing the API-key account. The tracker's credentials (LINEAR_API_KEY /
   // TRELLO_API_KEY + TRELLO_TOKEN) and the rest are inherited.
   const childEnv = { ...process.env };
-  delete childEnv.ANTHROPIC_API_KEY;
+  if (env.CLAUDE_API_BILLING) {
+    childEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  } else {
+    delete childEnv.ANTHROPIC_API_KEY;
+  }
 
   const recordAgent = (event: string, detail: string): Promise<void> =>
     logEvent({ tracker: tracker.name, identifier: id, event, detail });
@@ -314,7 +318,7 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
   await recordAgent(
     "agent-start",
     `dispatching ${env.CLAUDE_BIN} in ${worktreePath}` +
-      (totalAttempts > 1 ? ` (up to ${totalAttempts} attempts)` : "")
+    (totalAttempts > 1 ? ` (up to ${totalAttempts} attempts)` : "")
   );
 
   for (let attempt = 1; attempt <= totalAttempts; attempt++) {
@@ -337,8 +341,8 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
     const delay = env.AGENT_RETRY_DELAY_MS * 2 ** (attempt - 1);
     logger.warn(
       `[gene] [${id}] agent exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""} — ` +
-        `likely transient; retrying in ${Math.round(delay / 1000)}s ` +
-        `(attempt ${attempt + 1}/${totalAttempts})`
+      `likely transient; retrying in ${Math.round(delay / 1000)}s ` +
+      `(attempt ${attempt + 1}/${totalAttempts})`
     );
     await sleep(delay);
   }
@@ -360,7 +364,7 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
     const tried = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
     logger.error(
       `[gene] [${id}] agent exited ${exitCode}${tried} — issue left in "${env.ACTIVE_STATE}"; ` +
-        `inspect, then re-trigger or \`npm run reset -- ${id}\``
+      `inspect, then re-trigger or \`npm run reset -- ${id}\``
     );
   }
   return { kind: "spawned", worktreePath, exitCode };
