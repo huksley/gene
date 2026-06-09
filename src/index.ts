@@ -146,13 +146,39 @@ const isWithinDebounceWindow = (iso: string): boolean => {
   return Date.now() - t < env.DEBOUNCE_MS;
 };
 
+interface InFlightContext {
+  promise?: Promise<unknown>;
+  pid?: number;
+  startedAt?: number;
+  /** Human-readable ticket id (e.g. "ENG-123"), for the in-flight heartbeat. */
+  identifier?: string;
+}
+
 /**
  * Local tracker of running agent spawns, keyed by issue UUID. The on-disk lock
  * (lock.ts) is the authoritative race guard; this map is a faster local check
  * and enforces the concurrency cap.
  */
-const inFlight = new Map<string, Promise<unknown>>();
+const inFlight = new Map<string, InFlightContext>();
 const isAtConcurrencyCap = (): boolean => inFlight.size >= env.MAX_CONCURRENT;
+
+/**
+ * Heartbeat line: the agents running right now — ticket, OS pid, and elapsed wall
+ * time each. Lets a long poll interval with background spawns show progress instead
+ * of looking hung. No-op while idle so a quiet daemon stays quiet in the log.
+ */
+const reportInFlight = (): void => {
+  if (inFlight.size === 0) {
+    return;
+  }
+  const now = Date.now();
+  const lines = [...inFlight.values()].map(ctx => {
+    const pid = ctx.pid === undefined ? "starting" : `pid ${ctx.pid}`;
+    const elapsed = ctx.startedAt === undefined ? "?" : `${Math.round((now - ctx.startedAt) / 1000)}s`;
+    return `${ctx.identifier ?? "?"} (${pid}, ${elapsed})`;
+  });
+  logger.info(`[gene] in flight ${inFlight.size}/${env.MAX_CONCURRENT}: ${lines.join(" · ")}`);
+};
 
 /**
  * Returns true if the issue needed any action this cycle (anything but
@@ -323,7 +349,10 @@ const dispatchAgent = async (
       subdir: target.subdir,
       reviewContext: extras.reviewContext
     });
-    return invokeAgent({ issue, prompt, worktreePath, forge });
+
+    return invokeAgent({ issue, prompt, worktreePath, forge }, (pid: number) => {
+      inFlight.set(issue.id, { ...inFlight.get(issue.id), pid });
+    });
   })
     .then(result => {
       if (result === "skipped") {
@@ -343,7 +372,12 @@ const dispatchAgent = async (
       );
     });
 
-  inFlight.set(issue.id, spawnPromise);
+  inFlight.set(issue.id, {
+    ...inFlight.get(issue.id),
+    promise: spawnPromise,
+    startedAt: Date.now(),
+    identifier: issue.identifier
+  });
   logger.info(
     `[gene] [${issue.identifier}] spawned in background (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
   );
@@ -485,6 +519,10 @@ const runForever = async (): Promise<void> => {
     `[gene] starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
     `debounce=${env.DEBOUNCE_MS}ms, maxConcurrent=${env.MAX_CONCURRENT}, dryRun=${env.DRY_RUN})`
   );
+  // Surface in-flight agents between scans on the same cadence as the poll loop;
+  // unref() so the heartbeat alone never holds the process open at shutdown.
+  const heartbeat = setInterval(reportInFlight, env.POLL_INTERVAL_MS);
+  heartbeat.unref();
   while (true) {
     try {
       await scanOnce();
@@ -519,8 +557,13 @@ process.on("SIGTERM", () => handleShutdown("SIGTERM"));
 const main = async (): Promise<void> => {
   if (process.argv.includes("--once")) {
     await scanOnce();
-    // Let any live spawns kicked off this scan finish before exiting.
-    await Promise.allSettled([...inFlight.values()]);
+    // Let any live spawns kicked off this scan finish before exiting. The map holds
+    // context objects now, so pull out the promises (a just-registered entry may not
+    // have one yet) before awaiting.
+    const pending = [...inFlight.values()]
+      .map(ctx => ctx.promise)
+      .filter((p): p is Promise<unknown> => p !== undefined);
+    await Promise.allSettled(pending);
     // Close the Postgres pool, else its open sockets keep the process alive.
     await closeDb();
     return;

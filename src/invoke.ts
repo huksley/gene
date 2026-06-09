@@ -18,7 +18,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import logger from "./logger.ts";
-import { env, WORKTREES_ROOT } from "./config.ts";
+import { env, REPO_ROOT, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
 import { addWorktree, fetch } from "./git.ts";
 import { logEvent } from "./db.ts";
 import { localPathFor, type RepoTarget } from "./repos.ts";
@@ -223,43 +223,141 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 const isRetriable = (exitCode: number, resultSubtype: string | undefined): boolean =>
   exitCode !== 0 && resultSubtype !== "error_max_turns";
 
+/** Grace between SIGTERM and SIGKILL when a run overruns GENE_AGENT_MAX_PROCESSING_TIME. */
+const KILL_GRACE_MS = 10_000;
+
+/** Path to the microsandbox driver (used only when GENE_SANDBOX is set). */
+const SANDBOX_SCRIPT = path.join(REPO_ROOT, "sandbox", "sandbox.sh");
+
+/** The `claude -p` CLI args — identical whether we spawn it directly or sandboxed. */
+const agentArgs = (prompt: string, allowedTools: string[]): string[] => [
+  "-p",
+  prompt,
+  "--permission-mode",
+  "acceptEdits",
+  "--output-format",
+  "stream-json",
+  "--include-partial-messages",
+  "--verbose",
+  "--allowedTools",
+  ...allowedTools
+];
+
+/**
+ * How to launch one agent run. Directly that's `claude -p …` in the worktree.
+ * With GENE_SANDBOX it's the same command, run inside a microsandbox VM via
+ * sandbox/sandbox.sh:
+ *
+ *   sandbox.sh run --inherit -v <REPOS_ROOT>:<REPOS_ROOT> -w <worktree> -- claude -p …
+ *
+ * We bind-mount the repos root at its *host path* (not via `--dir`, which remaps
+ * it to /workspace/<name>): a git worktree's `.git` is an absolute-path link into
+ * its parent clone, so only same-path mounting keeps git — and therefore gh/glab —
+ * working inside the VM. `-w <worktree>` lands the agent in that dir (and, under
+ * --inherit, pre-trusts it for claude). `--inherit` carries the host's
+ * claude/gh/glab/linear/trello auth into the otherwise-isolated VM (and implies
+ * --internal, so on-prem forges over Tailscale stay reachable). All GENE_SANDBOX_*
+ * knobs flow through from the daemon's environment.
+ */
+const spawnPlan = (
+  worktreePath: string,
+  prompt: string,
+  allowedTools: string[]
+): { command: string; args: string[] } => {
+  const agent = agentArgs(prompt, allowedTools);
+  if (!env.SANDBOX) {
+    return { command: env.CLAUDE_BIN, args: agent };
+  }
+  return {
+    command: SANDBOX_SCRIPT,
+    args: [
+      "run",
+      "--inherit",
+      "-v",
+      `${REPOS_ROOT}:${REPOS_ROOT}`,
+      "-w",
+      worktreePath,
+      "--",
+      env.CLAUDE_BIN,
+      ...agent
+    ]
+  };
+};
+
 /** One `claude -p` run. Resolves with the exit code + the result event's subtype. */
 const runClaudeOnce = (
   issue: Issue,
   prompt: string,
   worktreePath: string,
   allowedTools: string[],
-  childEnv: NodeJS.ProcessEnv
+  childEnv: NodeJS.ProcessEnv,
+  updatePid?: (pid: number) => void
 ): Promise<{
   exitCode: number;
   resultSubtype: string | undefined;
   resultText: string | undefined;
   durationMs: number | undefined;
+  timedOut: boolean;
 }> =>
   new Promise((resolve, reject) => {
     let resultSubtype: string | undefined;
     let resultText: string | undefined;
     let durationMs: number | undefined;
-    const proc = spawn(
-      env.CLAUDE_BIN,
-      [
-        "-p",
-        prompt,
-        "--permission-mode",
-        "acceptEdits",
-        "--output-format",
-        "stream-json",
-        "--include-partial-messages",
-        "--verbose",
-        "--allowedTools",
-        ...allowedTools
-      ],
-      {
-        cwd: worktreePath,
-        stdio: ["ignore", "pipe", "inherit"],
-        env: childEnv
+    let timedOut = false;
+    const { command, args } = spawnPlan(worktreePath, prompt, allowedTools);
+    // In sandbox mode the child (sandbox.sh) spawns msb + the VM beneath it, so
+    // detach it into its own process group — a timeout can then tear down the whole
+    // subtree via the negative pid, not just the wrapper. Direct runs are a single
+    // process and stay in our group (so a terminal Ctrl-C still reaches them).
+    const proc = spawn(command, args, {
+      cwd: worktreePath,
+      stdio: ["ignore", "pipe", "inherit"],
+      env: childEnv,
+      detached: env.SANDBOX
+    });
+    if (updatePid && proc.pid) {
+      updatePid(proc.pid);
+    }
+
+    // Wall-clock cap (GENE_AGENT_MAX_PROCESSING_TIME seconds, 0 = off): SIGTERM the
+    // run, then SIGKILL if it lingers past KILL_GRACE_MS. The non-zero exit that
+    // follows is treated as retriable by the caller, so the run may be restarted.
+    const signalChild = (sig: NodeJS.Signals): void => {
+      try {
+        if (env.SANDBOX && proc.pid) {
+          process.kill(-proc.pid, sig); // negative pid → the detached process group
+        } else {
+          proc.kill(sig);
+        }
+      } catch {
+        // already exited — nothing to signal
       }
-    );
+    };
+    let killTimer: NodeJS.Timeout | undefined;
+    let hardKillTimer: NodeJS.Timeout | undefined;
+    if (env.AGENT_MAX_PROCESSING_TIME > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        logger.warn(
+          `[gene] [${issue.identifier}] exceeded GENE_AGENT_MAX_PROCESSING_TIME ` +
+          `(${env.AGENT_MAX_PROCESSING_TIME}s) — terminating (pid ${proc.pid})`
+        );
+        signalChild("SIGTERM");
+        hardKillTimer = setTimeout(() => {
+          logger.warn(`[gene] [${issue.identifier}] still alive after SIGTERM — sending SIGKILL`);
+          signalChild("SIGKILL");
+        }, KILL_GRACE_MS);
+      }, env.AGENT_MAX_PROCESSING_TIME * 1000);
+    }
+    const clearTimers = (): void => {
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      if (hardKillTimer) {
+        clearTimeout(hardKillTimer);
+      }
+    };
+
     const lines = readline.createInterface({ input: proc.stdout!, crlfDelay: Infinity });
     lines.on("line", line => {
       if (!line.trim()) {
@@ -279,19 +377,30 @@ const runClaudeOnce = (
     });
     // A spawn `error` (e.g. the claude binary is missing) is not transient — let it
     // reject so the caller surfaces it rather than retrying a doomed command.
-    proc.on("error", reject);
-    proc.on("exit", code => resolve({ exitCode: code ?? -1, resultSubtype, resultText, durationMs }));
+    proc.on("error", error => {
+      clearTimers();
+      reject(error);
+    });
+    proc.on("exit", code => {
+      clearTimers();
+      resolve({ exitCode: code ?? -1, resultSubtype, resultText, durationMs, timedOut });
+    });
   });
 
-export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> => {
+export const invokeAgent = async (
+  inputs: InvokeInputs,
+  updatePid?: (pid: number) => void
+): Promise<InvokeResult> => {
   const { issue, prompt, worktreePath, forge } = inputs;
   const id = issue.identifier;
   const allowedTools = [...BASE_ALLOWED_TOOLS, ...tracker.allowedTools(), ...forge.allowedTools()];
   allowedTools.push(...env.ALLOWED_TOOLS);
 
+  const agentLabel = env.SANDBOX ? `sandboxed ${env.CLAUDE_BIN}` : env.CLAUDE_BIN;
+
   if (env.DRY_RUN) {
     logger.info(
-      `[gene] [${id}] (dry-run) would spawn ${env.CLAUDE_BIN} in ${worktreePath} ` +
+      `[gene] [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
       `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
     );
     return { kind: "dry-run", worktreePath, exitCode: 0 };
@@ -313,11 +422,12 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
   let resultSubtype: string | undefined;
   let resultText: string | undefined;
   let durationMs: number | undefined;
+  let timedOut = false;
   let attemptsMade = 0;
 
   await recordAgent(
     "agent-start",
-    `dispatching ${env.CLAUDE_BIN} in ${worktreePath}` +
+    `dispatching ${agentLabel} in ${worktreePath}` +
     (totalAttempts > 1 ? ` (up to ${totalAttempts} attempts)` : "")
   );
 
@@ -327,21 +437,33 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
     logger.info(`[gene] [${id}] spawning agent in ${worktreePath}${suffix}`);
     logger.info(`[gene] [${id}]   prompt: ${prompt.length} chars`);
 
-    ({ exitCode, resultSubtype, resultText, durationMs } = await runClaudeOnce(
+    ({ exitCode, resultSubtype, resultText, durationMs, timedOut } = await runClaudeOnce(
       issue,
       prompt,
       worktreePath,
       allowedTools,
-      childEnv
+      childEnv,
+      updatePid
     ));
 
-    if (!isRetriable(exitCode, resultSubtype) || attempt === totalAttempts) {
+    if (timedOut) {
+      await recordAgent(
+        "agent-timeout",
+        `killed after ${env.AGENT_MAX_PROCESSING_TIME}s (attempt ${attempt}/${totalAttempts})`
+      );
+    }
+
+    // A timed-out run is always worth restarting — it was cut off mid-work, not
+    // finished — so OR it in with the transient-failure heuristic for normal exits.
+    if ((!timedOut && !isRetriable(exitCode, resultSubtype)) || attempt === totalAttempts) {
       break;
     }
     const delay = env.AGENT_RETRY_DELAY_MS * 2 ** (attempt - 1);
+    const why = timedOut
+      ? `timed out after ${env.AGENT_MAX_PROCESSING_TIME}s`
+      : `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""} — likely transient`;
     logger.warn(
-      `[gene] [${id}] agent exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""} — ` +
-      `likely transient; retrying in ${Math.round(delay / 1000)}s ` +
+      `[gene] [${id}] agent ${why}; retrying in ${Math.round(delay / 1000)}s ` +
       `(attempt ${attempt + 1}/${totalAttempts})`
     );
     await sleep(delay);
@@ -354,9 +476,10 @@ export const invokeAgent = async (inputs: InvokeInputs): Promise<InvokeResult> =
     await recordAgent("agent-done", `completed in ${seconds}s${summary}`);
   } else {
     const triedNote = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
+    const timeoutNote = timedOut ? ` (timed out at ${env.AGENT_MAX_PROCESSING_TIME}s)` : "";
     await recordAgent(
       "agent-error",
-      `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""}${triedNote}${summary}`
+      `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""}${timeoutNote}${triedNote}${summary}`
     );
   }
 

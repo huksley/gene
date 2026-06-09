@@ -22,7 +22,7 @@ CONTEXT="${GENE_SANDBOX_CONTEXT:-$SCRIPT_DIR}"
 # The image runs as this unprivileged user (baked into the Dockerfile as uid 1000).
 GUEST_USER="${GENE_SANDBOX_USER:-gene}"
 GUEST_HOME="${GENE_SANDBOX_HOME:-/home/$GUEST_USER}"
-MEM_DEFAULT="${GENE_SANDBOX_MEMORY:-2G}"
+MEM_DEFAULT="${GENE_SANDBOX_MEMORY:-4G}"
 
 # ── logging: everything goes to stderr so stdout stays clean for reports/cmds ──
 if [ -t 2 ]; then B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'; else B= G= Y= R= N=; fi
@@ -37,7 +37,7 @@ strip_ansi() { sed $'s/\x1b\\[[0-9;]*m//g'; }
 read -r -d '' REPORT <<'EOF' || true
 set +e
 echo "tools:"
-for t in node npm git gh glab linear claude ntn; do
+for t in node npm git gh glab linear claude ntn docker; do
   p="$(command -v "$t" 2>/dev/null)"
   if [ -n "$p" ]; then
     printf "  %-8s %s\n" "$t" "$("$t" --version 2>&1 | head -n1)"

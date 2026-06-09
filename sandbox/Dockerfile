@@ -19,14 +19,27 @@ FROM ubuntu:24.04
 LABEL org.opencontainers.image.title="geneai-sandbox-base" \
       org.opencontainers.image.description="Base sandbox image for the Gene AI pipeline (claude, gh, glab, linear, ntn)"
 
-# Build-time only — does not persist into the running container.
-ARG DEBIAN_FRONTEND=noninteractive
-
 # Pin-able tool versions (override with `--build-arg`).
 ARG NODE_MAJOR=24
 ARG GLAB_VERSION=1.102.0
 ARG CLAUDE_VERSION=2.1.168
 ARG NTN_VERSION=latest
+
+# ── Telemetry / nag suppression ───────────────────────────────────────────────
+# Opt the toolchain out of metrics, update-notifier nags, and "thanks for
+# installing" banners, and force apt fully non-interactive. Set as ENV (not ARG)
+# so they apply during this build *and* persist for the `claude -p` agents at
+# runtime; DEBIAN_FRONTEND=noninteractive replaces the former build-only ARG, so
+# apt never prompts — whether building the image or running it as a sandbox.
+ENV SEMGREP_SEND_METRICS=off \
+    COLLECT_LEARNINGS_OPT_OUT=true \
+    STORYBOOK_DISABLE_TELEMETRY=1 \
+    NEXT_TELEMETRY_DISABLED=1 \
+    SLS_TELEMETRY_DISABLED=1 \
+    SLS_NOTIFICATIONS_MODE=off \
+    DISABLE_OPENCOLLECTIVE=true \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
+    DEBIAN_FRONTEND=noninteractive
 
 # ── OS packages ───────────────────────────────────────────────────────────────
 # curl + unzip are the requested base; git is required by the worktree pipeline;
@@ -45,6 +58,14 @@ RUN set -eux; \
         jq \
         less; \
     rm -rf /var/lib/apt/lists/*
+
+# ── git: trust bind-mounted worktrees ──────────────────────────────────────────
+# The daemon bind-mounts host git worktrees into the VM at their real paths; the
+# files keep the host's uid, which differs from the guest `gene` user, so git's
+# "dubious ownership" guard would otherwise refuse every command (status, commit,
+# push). This is a throwaway single-purpose sandbox, so trust any repo path,
+# system-wide (applies to every user, including gene).
+RUN git config --system --add safe.directory '*'
 
 # ── apt repos: GitHub CLI · Node.js (NodeSource) ──────────────────────────────
 RUN set -eux; \
@@ -115,6 +136,25 @@ RUN set -eux; \
 # (binaries, claude's version data, anything they touched) to the unprivileged user.
 RUN set -eux; chown -R gene:gene /home/gene /workspace
 
+# ── docker (Docker CE) — engine + CLI + buildx/compose, for builds in-sandbox ──
+# Docker's signed apt repo, then the engine, CLI, containerd, and the buildx/
+# compose plugins; finally add `gene` to the docker group so the unprivileged
+# user can reach the daemon socket. The daemon is NOT started here — `docker
+# build` has no init — so dockerd must be launched at runtime (the microVM has to
+# run privileged, with cgroup/overlay support) before `docker` works in-sandbox.
+RUN set -eux; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
+    chmod a+r /etc/apt/keyrings/docker.asc; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
+    rm -rf /var/lib/apt/lists/*; \
+    getent group docker || groupadd docker; \
+    usermod -aG docker gene
+
 # ── Runtime environment ───────────────────────────────────────────────────────
 # Keep long-lived agent connections alive and make Node/Bun networking resilient
 # inside the sandbox. Claude Code's native binary is Bun-compiled, so it honours
@@ -143,7 +183,8 @@ RUN set -eux; \
     glab --version; \
     linear --version; \
     claude --version; \
-    ntn --version
+    ntn --version; \
+    docker --version
 
 WORKDIR /workspace
 CMD ["bash"]

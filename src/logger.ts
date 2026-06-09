@@ -28,7 +28,7 @@ class Level {
   }
 
   toString(): string {
-    return `${new Date().toISOString()} ${this._level}`;
+    return `${new Date().toLocaleTimeString()} ${this._level}`;
   }
 
   [Symbol.toPrimitive](hint: string): string | undefined {

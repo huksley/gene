@@ -136,8 +136,18 @@ export const env = {
   AGENT_MAX_RETRIES: int("GENE_AGENT_MAX_RETRIES", 5),
   AGENT_RETRY_DELAY_MS: int("GENE_AGENT_RETRY_DELAY_MS", 5_000),
 
+  // Hard cap on a single agent run's wall-clock time, in SECONDS (default 1800 =
+  // 30 min). When a run exceeds it the spawn is killed (SIGTERM, then SIGKILL) and,
+  // if it still has retries left (AGENT_MAX_RETRIES), restarted. 0 disables it.
+  AGENT_MAX_PROCESSING_TIME: int("GENE_AGENT_MAX_PROCESSING_TIME", 1800),
+
   // Use Claude API-billing
   CLAUDE_API_BILLING: bool("GENE_CLAUDE_API_BILLING", false),
+
+  // Run each spawned agent inside the microsandbox VM (sandbox/sandbox.sh run)
+  // rather than directly on the host. Off by default; build the image first with
+  // `sandbox/sandbox.sh base`. invoke.ts mounts the worktree and wires host auth in.
+  SANDBOX: bool("GENE_SANDBOX", false),
 
   // Comma-separated list of additional tools to allow the agent to use.
   ALLOWED_TOOLS: list("GENE_ALLOWED_TOOLS"),
