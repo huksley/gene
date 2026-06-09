@@ -34,9 +34,13 @@ import logger from "./logger.ts";
 
 /** What the agent needs to know to address/continue the change request (fed into the prompt). */
 export type ReviewContext = {
+  /** Human term for a change request on this forge ("merge request" / "pull request"). */
   crTerm: string;
+  /** Web URL of the MR/PR. */
   crUrl: string;
+  /** MR iid / PR number, as a string (identifies the change request to the forge CLI). */
   iid: string;
+  /** <boolean> `true` while the change request is still a draft / work-in-progress. */
   isDraft: boolean;
   /** The change request's own branches — the worktree checks out the source branch. */
   sourceBranch: string;
@@ -100,7 +104,7 @@ export const findOpenChangeRequest = async (
     attachmentUrls = (await tracker.getAttachments(issue)).map(a => a.url);
   } catch (error) {
     logger.warn(
-      `[gene]   [${issue.identifier}] could not read ${tracker.name} attachments:`,
+      `[gene] [${issue.identifier}] could not read ${tracker.name} attachments:`,
       error instanceof Error ? error.message : error
     );
   }

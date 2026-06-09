@@ -107,7 +107,7 @@ const postStartComment = async (issue: Issue, intent: PromptIntent): Promise<voi
     await tracker.postComment(issue, startMessages[intent]);
   } catch (error) {
     logger.warn(
-      `[gene]   [${issue.identifier}] could not post start comment:`,
+      `[gene] [${issue.identifier}] could not post start comment:`,
       error instanceof Error ? error.message : error
     );
   }
@@ -118,7 +118,7 @@ const postClarificationAndBlock = async (issue: Issue, missing: string[]): Promi
     await tracker.postComment(issue, buildClarificationComment(missing));
   } catch (error) {
     logger.error(
-      `[gene]   [${issue.identifier}] failed to post clarification:`,
+      `[gene] [${issue.identifier}] failed to post clarification:`,
       error instanceof Error ? error.message : error
     );
     return;
@@ -127,7 +127,7 @@ const postClarificationAndBlock = async (issue: Issue, missing: string[]): Promi
     await tracker.moveToState(issue, env.BLOCKED_STATE);
   } catch (error) {
     logger.warn(
-      `[gene]   [${issue.identifier}] could not move to "${env.BLOCKED_STATE}":`,
+      `[gene] [${issue.identifier}] could not move to "${env.BLOCKED_STATE}":`,
       error instanceof Error ? error.message : error
     );
   }
@@ -162,14 +162,14 @@ const isAtConcurrencyCap = (): boolean => inFlight.size >= env.MAX_CONCURRENT;
 const processIssue = async (issue: Issue): Promise<boolean> => {
   const comments = await tracker.getComments(issue);
   const action = decideAction(issue, comments);
-  logger.info(`[gene]   [${issue.identifier}] "${issue.title}" → ${summarizeAction(action)}`);
+  logger.info(`[gene] [${issue.identifier}] "${issue.title}" → ${summarizeAction(action)}`);
 
   if (action.kind === "nothing") {
     return false;
   }
 
   if (isWithinDebounceWindow(lastActivityIso(issue, comments))) {
-    logger.info(`[gene]   [${issue.identifier}] debouncing recent activity — will retry next poll`);
+    logger.info(`[gene] [${issue.identifier}] debouncing recent activity — will retry next poll`);
     return true;
   }
 
@@ -184,7 +184,7 @@ const processIssue = async (issue: Issue): Promise<boolean> => {
   const target = resolveTarget(issue, comments);
   if (!target) {
     logger.warn(
-      `[gene]   [${issue.identifier}] no GitLab/GitHub link in the issue and no default repo for ` +
+      `[gene] [${issue.identifier}] no GitLab/GitHub link in the issue and no default repo for ` +
       `team "${issue.teamKey}" — skipping (add a link to the issue, or map the team via GENE_REPO_MAP)`
     );
     return false;
@@ -235,12 +235,12 @@ const dispatchAgent = async (
   extras: DispatchExtras = {}
 ): Promise<boolean> => {
   if (inFlight.has(issue.id)) {
-    logger.info(`[gene]   [${issue.identifier}] already running in this daemon — skipping`);
+    logger.info(`[gene] [${issue.identifier}] already running in this daemon — skipping`);
     return true;
   }
   if (isAtConcurrencyCap()) {
     logger.info(
-      `[gene]   [${issue.identifier}] at concurrency cap (${inFlight.size}/${env.MAX_CONCURRENT}) — deferring`
+      `[gene] [${issue.identifier}] at concurrency cap (${inFlight.size}/${env.MAX_CONCURRENT}) — deferring`
     );
     return true;
   }
@@ -271,7 +271,7 @@ const dispatchAgent = async (
       reviewContext: extras.reviewContext
     });
     logger.info(
-      `[gene]   [${issue.identifier}] (dry-run) would dispatch ${intent} → ${targetLabel(target)} ` +
+      `[gene] [${issue.identifier}] (dry-run) would dispatch ${intent} → ${targetLabel(target)} ` +
       `[${forge.name}] (branch "${workBranch}", base "${baseBranch}", prompt ${prompt.length} chars)`
     );
     return true;
@@ -295,7 +295,7 @@ const dispatchAgent = async (
     );
     const drift = await commitsBehind(worktreePath, baseBranch);
     if (drift > 0) {
-      logger.info(`[gene]   [${issue.identifier}] ${drift} commit(s) behind origin/${baseBranch}`);
+      logger.info(`[gene] [${issue.identifier}] ${drift} commit(s) behind origin/${baseBranch}`);
     }
 
     let attachmentRelativePaths: string[] = [];
@@ -304,7 +304,7 @@ const dispatchAgent = async (
       attachmentRelativePaths = staged.map(s => s.relativePath);
     } catch (error) {
       logger.warn(
-        `[gene]   [${issue.identifier}] failed to stage attachments:`,
+        `[gene] [${issue.identifier}] failed to stage attachments:`,
         error instanceof Error ? error.message : error
       );
     }
@@ -327,25 +327,25 @@ const dispatchAgent = async (
   })
     .then(result => {
       if (result === "skipped") {
-        logger.info(`[gene]   [${issue.identifier}] another run holds the lock — skipping`);
+        logger.info(`[gene] [${issue.identifier}] another run holds the lock — skipping`);
       }
     })
     .catch(error => {
       logger.error(
-        `[gene]   [${issue.identifier}] spawn failed:`,
+        `[gene] [${issue.identifier}] spawn failed:`,
         error instanceof Error ? error.message : error
       );
     })
     .finally(() => {
       inFlight.delete(issue.id);
       logger.info(
-        `[gene]   [${issue.identifier}] spawn complete (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
+        `[gene] [${issue.identifier}] spawn complete (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
       );
     });
 
   inFlight.set(issue.id, spawnPromise);
   logger.info(
-    `[gene]   [${issue.identifier}] spawned in background (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
+    `[gene] [${issue.identifier}] spawned in background (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
   );
   return true;
 };
@@ -368,18 +368,18 @@ const processReview = async (
     outcome = await evaluateReview(issue, comments, target, forge);
   } catch (error) {
     logger.warn(
-      `[gene]   [${issue.identifier}] review check failed:`,
+      `[gene] [${issue.identifier}] review check failed:`,
       error instanceof Error ? error.message : error
     );
     return false;
   }
 
   if (!outcome.act) {
-    logger.info(`[gene]   [${issue.identifier}] in review — ${outcome.reason}`);
+    logger.info(`[gene] [${issue.identifier}] in review — ${outcome.reason}`);
     return false;
   }
 
-  logger.info(`[gene]   [${issue.identifier}] in review — ${outcome.reason}; dispatching a fix`);
+  logger.info(`[gene] [${issue.identifier}] in review — ${outcome.reason}; dispatching a fix`);
   await record(issue, "review", outcome.reason);
   return dispatchAgent(issue, comments, target, forge, "address-review", {
     reviewContext: outcome.context,
@@ -406,7 +406,7 @@ const tryContinueAttachedDraft = async (
     outcome = await evaluateDraftPickup(issue, comments, target, forge);
   } catch (error) {
     logger.warn(
-      `[gene]   [${issue.identifier}] draft-pickup check failed:`,
+      `[gene] [${issue.identifier}] draft-pickup check failed:`,
       error instanceof Error ? error.message : error
     );
     return false;
@@ -417,10 +417,10 @@ const tryContinueAttachedDraft = async (
   if (!outcome.act) {
     // An attached change request exists but CI is mid-flight: wait, don't start a
     // parallel fresh run on the issue's own branch.
-    logger.info(`[gene]   [${issue.identifier}] attached change request — ${outcome.reason}`);
+    logger.info(`[gene] [${issue.identifier}] attached change request — ${outcome.reason}`);
     return true;
   }
-  logger.info(`[gene]   [${issue.identifier}] attached change request — ${outcome.reason}; continuing it`);
+  logger.info(`[gene] [${issue.identifier}] attached change request — ${outcome.reason}; continuing it`);
   await record(issue, "draft", outcome.reason);
   return dispatchAgent(issue, comments, target, forge, "continue-draft", {
     reviewContext: outcome.context,
@@ -438,7 +438,7 @@ const scanOnce = async (): Promise<void> => {
   const skipped = all.filter(i => !tracker.isAssignedToOwner(i));
   if (skipped.length > 0) {
     logger.info(
-      `[gene]   skipping ${skipped.length} ${env.LABEL} issue(s) not assigned to ${tracker.ownerLabel()}: ` +
+      `[gene] skipping ${skipped.length} ${env.LABEL} issue(s) not assigned to ${tracker.ownerLabel()}: ` +
       skipped.map(i => `${i.identifier} (${i.assigneeName ?? "unassigned"})`).join(", ")
     );
   }
@@ -467,7 +467,7 @@ const scanOnce = async (): Promise<void> => {
 
   if (actionableCount > 0) {
     logger.info(
-      `[gene]   deferring ${WATCHED_STATES.trigger} scan — ${actionableCount} ongoing item(s) need attention`
+      `[gene] deferring ${WATCHED_STATES.trigger} scan — ${actionableCount} ongoing item(s) need attention`
     );
     return;
   }
