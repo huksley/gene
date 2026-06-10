@@ -576,6 +576,9 @@ const handleShutdown = (signal: string): void => {
   } else {
     logger.info(`${logger.tag.flow} received ${signal} — nothing in flight, exiting`);
   }
+  closeDb().catch(error => {
+    logger.error(`${logger.tag.flow} failed to close database:`, error instanceof Error ? error.message : error, { cause: error });
+  });
   process.exit(0);
 };
 

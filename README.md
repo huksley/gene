@@ -216,7 +216,7 @@ src/
   logger.ts       timestamped server logger
   decide.ts       pure (issue, comments) → Action
   review.ts       In-Review watchdog + draft pickup: find the open MR/PR, decide re-dispatch
-  directives.ts   `@gene approve|redo|stop|retry` parser
+  directives.ts   `!gene approve|redo|stop|retry` parser
   prompt.ts       builds the agent's prompt (the full contract it runs under)
   invoke.ts       worktree management + spawns `claude -p`, renders stream-json
   lock.ts         per-issue file lock (keyed by ISSUE-ID), stale-PID reclamation

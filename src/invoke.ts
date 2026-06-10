@@ -36,6 +36,8 @@ const BASE_ALLOWED_TOOLS = [
   // Project tooling
   "Bash(git *)",
   "Bash(npm *)",
+  "Bash(yarn *)",
+  "Bash(pnpm *)",
   "Bash(npx *)",
   "Bash(jq *)",
   // Read-only discovery + text manipulation
@@ -156,6 +158,19 @@ type StreamEvent = {
   is_error?: boolean;
 };
 
+/**
+ * A persisted, JSON-serialisable view of one stream event — the structured
+ * sibling of the one-line summaries renderEvent prints. `toAgentEvents` is the
+ * single source of truth for which events matter; renderEvent logs them and
+ * runClaudeOnce collects them for the activity log's `data` column.
+ */
+type AgentEvent =
+  | { type: "session" }
+  | { type: "text"; text: string }
+  | { type: "tool_use"; tool: string; summary: string }
+  | { type: "tool_error"; detail: string }
+  | { type: "result"; subtype: string; durationMs?: number; result?: string };
+
 const summarizeToolUse = (block: ContentBlock): string => {
   const name = block.name ?? "Tool";
   const input = block.input ?? {};
@@ -172,41 +187,71 @@ const summarizeToolUse = (block: ContentBlock): string => {
   return keyArg ? `${name}(${truncate(String(keyArg), TOOL_ARG_MAX)})` : name;
 };
 
-const renderEvent = (issueId: string, event: StreamEvent): void => {
-  const prefix = `${logger.tag.invoke} [${chalk.blueBright(issueId)}]`;
+/**
+ * Distil one raw stream event into the records worth keeping — the single place
+ * that decides what matters. renderEvent logs these and runClaudeOnce persists
+ * them. Returns [] for events we ignore (thinking, partial messages), so both
+ * consumers skip them uniformly.
+ */
+const toAgentEvents = (event: StreamEvent): AgentEvent[] => {
   if (event.type === "system" && event.subtype === "init") {
-    logger.info(`${prefix} ▶ session started`);
-    return;
+    return [{ type: "session" }];
   }
   if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+    const out: AgentEvent[] = [];
     for (const block of event.message.content) {
       if (block.type === "text" && block.text) {
-        logger.info(`${prefix} → ${truncate(block.text)}`);
+        out.push({ type: "text", text: block.text });
       } else if (block.type === "tool_use") {
-        logger.info(`${prefix} ↳ ${summarizeToolUse(block)}`);
+        out.push({ type: "tool_use", tool: block.name ?? "Tool", summary: summarizeToolUse(block) });
       }
       // thinking blocks are skipped — too verbose for the daemon log
     }
-    return;
+    return out;
   }
   if (event.type === "user" && Array.isArray(event.message?.content)) {
+    const out: AgentEvent[] = [];
     for (const block of event.message.content) {
       if (block.type === "tool_result" && block.is_error) {
-        const text =
+        const detail =
           typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-        logger.warn(`${prefix} ⚠ ${truncate(text)}`);
+        out.push({ type: "tool_error", detail });
       }
     }
-    return;
+    return out;
   }
   if (event.type === "result") {
-    const seconds = event.duration_ms ? (event.duration_ms / 1000).toFixed(1) : "?";
-    if (event.subtype === "success") {
-      logger.info(`${prefix} ✓ done in ${seconds}s`);
-    } else {
-      logger.error(
-        `${prefix} ✗ ${event.subtype ?? "error"} in ${seconds}s: ${truncate(event.result ?? "")}`
-      );
+    return [{ type: "result", subtype: event.subtype ?? "error", durationMs: event.duration_ms, result: event.result }];
+  }
+  return [];
+};
+
+/** Log the distilled records for one stream event as one-line daemon summaries. */
+const renderEvent = (issueId: string, events: AgentEvent[]): void => {
+  const prefix = `${logger.tag.invoke} [${chalk.blueBright(issueId)}]`;
+  for (const event of events) {
+    switch (event.type) {
+      case "session":
+        logger.info(`${prefix} ▶ session started`);
+        break;
+      case "text":
+        logger.info(`${prefix} → ${truncate(event.text)}`);
+        break;
+      case "tool_use":
+        logger.info(`${prefix} ↳ ${event.summary}`);
+        break;
+      case "tool_error":
+        logger.warn(`${prefix} ⚠ ${truncate(event.detail)}`);
+        break;
+      case "result": {
+        const seconds = event.durationMs ? (event.durationMs / 1000).toFixed(1) : "?";
+        if (event.subtype === "success") {
+          logger.info(`${prefix} ✓ done in ${seconds}s`);
+        } else {
+          logger.error(`${prefix} ✗ ${event.subtype} in ${seconds}s: ${truncate(event.result ?? "")}`);
+        }
+        break;
+      }
     }
   }
 };
@@ -231,7 +276,7 @@ const KILL_GRACE_MS = 10_000;
 const SANDBOX_SCRIPT = path.join(REPO_ROOT, "sandbox", "sandbox.sh");
 
 /** The `claude -p` CLI args — identical whether we spawn it directly or sandboxed. */
-const agentArgs = (prompt: string, allowedTools: string[]): string[] => [
+const getAgentArgs = (prompt: string, allowedTools: string[]): string[] => [
   "-p",
   prompt,
   "--permission-mode",
@@ -241,7 +286,12 @@ const agentArgs = (prompt: string, allowedTools: string[]): string[] => [
   "--include-partial-messages",
   "--verbose",
   "--allowedTools",
-  ...allowedTools
+  ...allowedTools,
+  "--add-dir",
+  "/tmp",
+  // Add /private/tmp if it exists and we're not sandboxed (i.e. on MacOS)
+  ...(!env.SANDBOX && existsSync("/private/tmp") ?
+    ["--add-dir", "/private/tmp"] : [])
 ];
 
 /**
@@ -260,15 +310,17 @@ const agentArgs = (prompt: string, allowedTools: string[]): string[] => [
  * --internal, so on-prem forges over Tailscale stay reachable). All GENE_SANDBOX_*
  * knobs flow through from the daemon's environment.
  */
-const spawnPlan = (
+const getSpawnCommand = (
   worktreePath: string,
   prompt: string,
   allowedTools: string[]
 ): { command: string; args: string[] } => {
-  const agent = agentArgs(prompt, allowedTools);
+  const agent = getAgentArgs(prompt, allowedTools);
+
   if (!env.SANDBOX) {
     return { command: env.CLAUDE_BIN, args: agent };
   }
+
   return {
     command: SANDBOX_SCRIPT,
     args: [
@@ -299,13 +351,15 @@ const runClaudeOnce = (
   resultText: string | undefined;
   durationMs: number | undefined;
   timedOut: boolean;
+  events: AgentEvent[];
 }> =>
   new Promise((resolve, reject) => {
     let resultSubtype: string | undefined;
     let resultText: string | undefined;
     let durationMs: number | undefined;
     let timedOut = false;
-    const { command, args } = spawnPlan(worktreePath, prompt, allowedTools);
+    const events: AgentEvent[] = [];
+    const { command, args } = getSpawnCommand(worktreePath, prompt, allowedTools);
     // In sandbox mode the child (sandbox.sh) spawns msb + the VM beneath it, so
     // detach it into its own process group — a timeout can then tear down the whole
     // subtree via the negative pid, not just the wrapper. Direct runs are a single
@@ -316,6 +370,7 @@ const runClaudeOnce = (
       env: childEnv,
       detached: env.SANDBOX
     });
+
     if (updatePid && proc.pid) {
       updatePid(proc.pid);
     }
@@ -371,20 +426,24 @@ const runClaudeOnce = (
           resultText = event.result;
           durationMs = event.duration_ms;
         }
-        renderEvent(issue.identifier, event);
+        const records = toAgentEvents(event);
+        events.push(...records);
+        renderEvent(issue.identifier, records);
       } catch {
         logger.info(`${logger.tag.invoke} [${issue.identifier}] raw: ${truncate(line, 200)}`);
       }
     });
+
     // A spawn `error` (e.g. the claude binary is missing) is not transient — let it
     // reject so the caller surfaces it rather than retrying a doomed command.
     proc.on("error", error => {
       clearTimers();
       reject(error);
     });
+
     proc.on("exit", code => {
       clearTimers();
-      resolve({ exitCode: code ?? -1, resultSubtype, resultText, durationMs, timedOut });
+      resolve({ exitCode: code ?? -1, resultSubtype, resultText, durationMs, timedOut, events });
     });
   });
 
@@ -415,8 +474,8 @@ export const invokeAgent = async (
     delete childEnv.ANTHROPIC_API_KEY;
   }
 
-  const recordAgent = (event: string, detail: string): Promise<void> =>
-    logEvent({ tracker: tracker.name, identifier: id, event, detail });
+  const recordAgent = (event: string, detail: string, data?: unknown): Promise<void> =>
+    logEvent({ tracker: tracker.name, identifier: id, event, detail, data });
 
   const totalAttempts = env.AGENT_MAX_RETRIES + 1;
   let exitCode = -1;
@@ -425,6 +484,7 @@ export const invokeAgent = async (
   let durationMs: number | undefined;
   let timedOut = false;
   let attemptsMade = 0;
+  let events: AgentEvent[] = [];
 
   await recordAgent(
     "agent-start",
@@ -438,7 +498,7 @@ export const invokeAgent = async (
     logger.info(`${logger.tag.invoke} [${id}] spawning agent in ${worktreePath}${suffix}`);
     logger.info(`${logger.tag.invoke} [${id}]   prompt: ${prompt.length} chars`);
 
-    ({ exitCode, resultSubtype, resultText, durationMs, timedOut } = await runClaudeOnce(
+    ({ exitCode, resultSubtype, resultText, durationMs, timedOut, events } = await runClaudeOnce(
       issue,
       prompt,
       worktreePath,
@@ -474,13 +534,14 @@ export const invokeAgent = async (
   const seconds = durationMs ? (durationMs / 1000).toFixed(1) : "?";
   const summary = resultText ? ` — ${truncate(resultText, 2000)}` : "";
   if (exitCode === 0) {
-    await recordAgent("agent-done", `completed in ${seconds}s${summary}`);
+    await recordAgent("agent-done", `completed in ${seconds}s${summary}`, events);
   } else {
     const triedNote = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
     const timeoutNote = timedOut ? ` (timed out at ${env.AGENT_MAX_PROCESSING_TIME}s)` : "";
     await recordAgent(
       "agent-error",
-      `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""}${timeoutNote}${triedNote}${summary}`
+      `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""}${timeoutNote}${triedNote}${summary}`,
+      events
     );
   }
 

@@ -70,9 +70,8 @@ const detectDirectives = (comments: Comment[]): string => {
   if (!directive) {
     return "(none in latest user comment — interpret intent from prose)";
   }
-  return `Latest user comment contains directive: \`@gene ${directive.command}${
-    directive.argument ? ` ${directive.argument}` : ""
-  }\``;
+  return `Latest user comment contains directive: \`${env.COMMAND_BASE} ${directive.command}${directive.argument ? ` ${directive.argument}` : ""
+    }\``;
 };
 
 /**
@@ -86,7 +85,7 @@ const intentInstructions: Record<PromptIntent, string> = {
     "This issue just entered the Gene queue (Todo). Read the description carefully. " +
     "If the scope is small and unambiguous (typo fix, single-line removal, isolated copy change), " +
     "you may execute directly. Otherwise, propose a plan first and exit, waiting for the user's " +
-    "approval via a `@gene approve` directive or a free-form 'go ahead' / 'yes' reply.",
+    `approval via a \`${env.COMMAND_BASE} approve\` directive or a free-form 'go ahead' / 'yes' reply.`,
   "resume-from-block":
     "The issue was previously Blocked — you asked a clarifying question or proposed a plan and the " +
     "user has now replied. Read the latest user comment, decide whether you have enough to proceed, " +
@@ -110,9 +109,9 @@ const intentInstructions: Record<PromptIntent, string> = {
     "change request is still missing relative to the issue. " +
     (DRAFT_MODE
       ? "When it's complete and CI is green, LEAVE it as a draft — a human marks it ready for review and " +
-        "merges — and move the issue to the review state. "
+      "merges — and move the issue to the review state. "
       : "When it's complete and CI is green, mark it ready for review (un-draft it) and move the issue to " +
-        "the review state. ") +
+      "the review state. ") +
     "If you're blocked or need a decision, comment and move to the blocked state instead."
 };
 
@@ -156,7 +155,7 @@ const renderReviewContext = (rc: ReviewContext | undefined, forge: Forge): strin
   if (rc.ci.status === "failed") {
     bullets.push(
       "- Inspect the failing pipeline/checks to see the actual errors — open the CI URL above" +
-        (forge.name === "github" ? " or run `gh run view` / `gh pr checks`." : " or run `glab ci view`.")
+      (forge.name === "github" ? " or run `gh run view` / `gh pr checks`." : " or run `glab ci view`.")
     );
   }
   if (rc.isDraft) {
@@ -166,8 +165,8 @@ const renderReviewContext = (rc: ReviewContext | undefined, forge: Forge): strin
     rc.newComments.length === 0
       ? "(no new review comments — continue from the change request's current state and the CI result above)"
       : rc.newComments
-          .map(c => `[${formatTimestamp(c.createdAt)}] 👤 ${c.author}:\n${cleanBody(c.body)}`)
-          .join("\n\n");
+        .map(c => `[${formatTimestamp(c.createdAt)}] 👤 ${c.author}:\n${cleanBody(c.body)}`)
+        .join("\n\n");
   return [
     "",
     `# ${term} to continue — address this`,

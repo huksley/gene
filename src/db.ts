@@ -39,7 +39,14 @@ const SCHEMA = `
     detail      TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
   );
+
   CREATE INDEX IF NOT EXISTS issue_log_lookup ON issue_log (tracker, identifier, id);
+
+  -- Structured, JSON-serialisable companion to issue_log.detail: the agent's
+  -- response stream (assistant text, tool-use summaries, errors, final result),
+  -- attached to agent-done / agent-error rows. Added via ALTER so databases
+  -- created before this column gain it on the next open.
+  ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS data JSONB;
 `;
 
 let dbPromise: Promise<Pool> | null = null;
@@ -131,6 +138,11 @@ export type IssueLogEntry = {
   event: string;
   /** Human-readable description of what happened. */
   detail?: string;
+  /**
+   * Optional structured payload stored in the `data` JSONB column — used to keep
+   * the agent's full response stream alongside the human-readable `detail`.
+   */
+  data?: unknown;
 };
 
 /** One row read back from the activity log. */
@@ -144,12 +156,18 @@ export type IssueLogRow = { createdAt: string; event: string; detail: string; tr
 export const logEvent = async (entry: IssueLogEntry): Promise<void> => {
   try {
     const db = await getDb();
-    await db.query("INSERT INTO issue_log (tracker, identifier, event, detail) VALUES ($1, $2, $3, $4)", [
-      entry.tracker,
-      entry.identifier,
-      entry.event,
-      entry.detail ?? ""
-    ]);
+    await db.query(
+      "INSERT INTO issue_log (tracker, identifier, event, detail, data) VALUES ($1, $2, $3, $4, $5::jsonb)",
+      [
+        entry.tracker,
+        entry.identifier,
+        entry.event,
+        entry.detail ?? "",
+        // pg renders a JS array as a Postgres array literal, not JSON, so
+        // stringify ourselves and let the ::jsonb cast parse it; undefined → NULL.
+        entry.data === undefined ? null : JSON.stringify(entry.data)
+      ]
+    );
   } catch (error) {
     logger.warn(
       `${logger.tag.db} could not record activity log entry:`,

@@ -19,6 +19,20 @@ const str = (key: string, fallback: string): string => {
   return raw === undefined || raw.trim() === "" ? fallback : raw.trim();
 };
 
+/**
+ * A single directive/marker token: an optional leading sigil (! @ # /) then
+ * letters, digits, `-` or `_`. Rejects spaces and other special symbols so the
+ * value is unambiguous to match and safe to splice into a RegExp (directives.ts).
+ */
+const term = (key: string, fallback: string): string => {
+  const raw = process.env[key];
+  const val = raw === undefined || raw.trim() === "" ? fallback : raw.trim();
+  if (!/^[!@#/]?[\w-]+$/.test(val)) {
+    problems.push(`${key}: expected a single term (optional !@#/ sigil, then letters/digits/-/_), got "${val}"`);
+  }
+  return val;
+};
+
 const optional = (key: string): string | undefined => {
   const raw = process.env[key];
   return raw === undefined || raw.trim() === "" ? undefined : raw.trim();
@@ -108,7 +122,8 @@ export const env = {
   ACTIVE_STATE: str(`${TP}ACTIVE_STATE`, "In Progress"),
   BLOCKED_STATE: str(`${TP}BLOCKED_STATE`, "Blocked"),
   REVIEW_STATE: str(`${TP}REVIEW_STATE`, "In Review"),
-  AGENT_MARKER: str("GENE_AGENT_MARKER", "#gene-ai"),
+  AGENT_MARKER: term("GENE_AGENT_MARKER", "#gene-ai"),
+  COMMAND_BASE: term("GENE_COMMAND_BASE", "!gene"),
   REQUIRE_SECTIONS: list("GENE_REQUIRE_SECTIONS"),
   GITLAB_HOST: str("GITLAB_HOST", ""),
   // Review-comment patterns that must NOT trigger a re-dispatch (see ignore.ts).
