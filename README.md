@@ -140,7 +140,9 @@ All resolution logic lives in `src/repos.ts`.
 - **target repos** — cloned under `repos/<repoPath>/` (gitignored) and kept.
   A repo is cloned **on demand** the first time an issue targets it; `npm run clone`
   pre-clones the team defaults so the common path is warm. Per-issue worktrees are
-  created at `repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base.
+  created at `repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base. The
+  branch name follows `GENE_BRANCH_TEMPLATE` (default `{prefix}/{identifier}-{slug}`;
+  see `.env.example`).
   Runtime locks live in `.gene/` (gitignored); the persistent state store is a local
   **Postgres** with its data under `data/pg/` (gitignored), started by `npm run pg`.
 

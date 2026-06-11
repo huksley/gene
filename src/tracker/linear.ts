@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import logger from "../logger.ts";
 import { env } from "../config.ts";
+import { buildBranchName, prefixFromLinearBranch } from "../branch.ts";
 import { run, runOrThrow } from "../exec.ts";
 import { fetchRetryTimeout } from "../fetch.ts";
 import type { Attachment, Comment, Issue, Tracker } from "./index.ts";
@@ -84,7 +85,11 @@ const toIssue = (raw: RawIssue): Issue => ({
   title: raw.title ?? "(untitled)",
   description: raw.description ?? "",
   url: raw.url,
-  branchName: raw.branchName,
+  branchName: buildBranchName({
+    prefix: prefixFromLinearBranch(raw.branchName),
+    identifier: raw.identifier,
+    title: raw.title ?? ""
+  }),
   stateName: raw.state?.name ?? "",
   updatedAt: raw.updatedAt,
   assigneeName: raw.assignee?.displayName ?? null,

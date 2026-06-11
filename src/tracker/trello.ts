@@ -18,6 +18,7 @@
 
 import logger from "../logger.ts";
 import { env, REPO_ROOT } from "../config.ts";
+import { buildBranchName, fallbackPrefix } from "../branch.ts";
 import { fetchRetryTimeout } from "../fetch.ts";
 import { createTrelloClient } from "../../trello/index.ts";
 import type {
@@ -164,7 +165,7 @@ const toIssue = (card: TrelloCard): Issue => {
     title: card.name,
     description: card.desc,
     url: card.url,
-    branchName: `gene/${identifier}`,
+    branchName: buildBranchName({ prefix: fallbackPrefix(), identifier, title: card.name }),
     stateName: listName(card.idList),
     updatedAt: card.dateLastActivity ?? "",
     assigneeName: usernames.length > 0 ? usernames.join(", ") : null,

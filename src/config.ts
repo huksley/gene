@@ -124,6 +124,11 @@ export const env = {
   REVIEW_STATE: str(`${TP}REVIEW_STATE`, "In Review"),
   AGENT_MARKER: term("GENE_AGENT_MARKER", "#gene-ai"),
   COMMAND_BASE: term("GENE_COMMAND_BASE", "!gene"),
+  // Template for the branch Gene works on. Placeholders: {prefix}, {identifier},
+  // {slug} (the issue title, slugified). {prefix} comes from the tracker when it
+  // supplies one (Linear's suggested branch), else GENE_COMMAND_BASE stripped to
+  // alphanumerics ("!gene" → "gene"). See branch.ts.
+  BRANCH_TEMPLATE: str("GENE_BRANCH_TEMPLATE", "{prefix}/{identifier}-{slug}"),
   REQUIRE_SECTIONS: list("GENE_REQUIRE_SECTIONS"),
   GITLAB_HOST: str("GITLAB_HOST", ""),
   // Review-comment patterns that must NOT trigger a re-dispatch (see ignore.ts).
