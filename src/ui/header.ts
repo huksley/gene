@@ -94,7 +94,11 @@ export class Header {
       this.scanLine.content = t`${fg(palette.bad)("Scan error:")} ${fg(palette.warn)(truncate(d.lastError, Math.max(10, width - 14)))}`;
     } else if (d.lastScan) {
       const s = d.lastScan;
-      this.scanLine.content = t`${fg(palette.muted)("Scan:")} Todo ${fg(palette.text)(String(s.trigger))} ${dim("·")} In Progress ${fg(palette.text)(String(s.active))} ${dim("·")} Blocked ${fg(palette.text)(String(s.blocked))} ${dim("·")} In Review ${fg(palette.text)(String(s.review))} ${dim("·")} other ${fg(palette.text)(String(s.other))}`;
+      // When auto-Done is configured, give Done its own lane (labelled with the
+      // configured state name) instead of folding those tickets into "other".
+      this.scanLine.content = d.doneState
+        ? t`${fg(palette.muted)("Scan:")} Todo ${fg(palette.text)(String(s.trigger))} ${dim("·")} In Progress ${fg(palette.text)(String(s.active))} ${dim("·")} Blocked ${fg(palette.text)(String(s.blocked))} ${dim("·")} In Review ${fg(palette.text)(String(s.review))} ${dim("·")} ${d.doneState} ${fg(palette.good)(String(s.done))} ${dim("·")} other ${fg(palette.text)(String(s.other))}`
+        : t`${fg(palette.muted)("Scan:")} Todo ${fg(palette.text)(String(s.trigger))} ${dim("·")} In Progress ${fg(palette.text)(String(s.active))} ${dim("·")} Blocked ${fg(palette.text)(String(s.blocked))} ${dim("·")} In Review ${fg(palette.text)(String(s.review))} ${dim("·")} other ${fg(palette.text)(String(s.other))}`;
     } else {
       this.scanLine.content = t`${fg(palette.muted)("Scan:")} ${fg(palette.dim)("(pending first scan)")}`;
     }

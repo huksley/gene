@@ -29,6 +29,7 @@ import type {
   TrelloMember
 } from "../../trello/index.ts";
 import type { Attachment, Comment, Issue, Tracker } from "./index.ts";
+import { ensureTrelloWebhook, startTrelloWebhookListener } from "./trello/webhook.ts";
 
 const TRELLO_API_BASE = "https://api.trello.com/1";
 
@@ -369,5 +370,34 @@ export class TrelloTracker implements Tracker {
 
   allowedTools(): string[] {
     return ["Bash(node *)"];
+  }
+
+  /**
+   * Real-time reactivity via a Trello board webhook. Disabled (poll-only) unless
+   * GENE_WEBHOOK_URL + TRELLO_API_SECRET (and the API key/token) are set. Registers
+   * the webhook if missing, then starts the HTTP listener; returns a stop function.
+   * Registration failure is non-fatal — the daemon keeps polling.
+   */
+  async startWatch(onActivity: () => void): Promise<() => void> {
+    const noop = (): void => {};
+    if (!env.WEBHOOK_URL || !env.TRELLO_API_SECRET || !env.TRELLO_API_KEY || !env.TRELLO_TOKEN) {
+      logger.info("[trello] webhook disabled (set GENE_WEBHOOK_URL + TRELLO_API_SECRET to enable) — poll-only");
+      return noop;
+    }
+    try {
+      await ensureTrelloWebhook(boardId(), env.WEBHOOK_URL);
+    } catch (error) {
+      logger.warn(
+        "[trello] could not register webhook (continuing poll-only):",
+        error instanceof Error ? error.message : error
+      );
+      return noop;
+    }
+    return startTrelloWebhookListener({
+      port: env.WEBHOOK_PORT,
+      callbackUrl: env.WEBHOOK_URL,
+      secret: env.TRELLO_API_SECRET,
+      onActivity
+    });
   }
 }

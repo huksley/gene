@@ -105,6 +105,9 @@ export const env = {
   // spawned agent uses the bundled trello CLI — both read these from the environment.
   TRELLO_API_KEY: optional("TRELLO_API_KEY"),
   TRELLO_TOKEN: optional("TRELLO_TOKEN"),
+  // Trello OAuth secret (distinct from the user token) used to verify webhook
+  // HMAC signatures. From trello.com/power-ups/admin under your API key.
+  TRELLO_API_SECRET: optional("TRELLO_API_SECRET"),
   TRELLO_BOARD: optional("TRELLO_BOARD"),
   // Optional JSON map of state-name → list-id, overriding name-based list lookup
   // (use when the board's list names differ from the *_STATE values, or to pin ids).
@@ -122,6 +125,11 @@ export const env = {
   ACTIVE_STATE: str(`${TP}ACTIVE_STATE`, "In Progress"),
   BLOCKED_STATE: str(`${TP}BLOCKED_STATE`, "Blocked"),
   REVIEW_STATE: str(`${TP}REVIEW_STATE`, "In Review"),
+  // Terminal state to auto-move an In-Review issue into once its change request
+  // merges. Unset ⇒ disabled (merge→Done stays a manual human step). Tracker-
+  // namespaced like the other *_STATE values. NOT in WATCHED_STATES — Done is
+  // terminal and never scanned.
+  DONE_STATE: optional(`${TP}DONE_STATE`),
   AGENT_MARKER: term("GENE_AGENT_MARKER", "#gene-ai"),
   COMMAND_BASE: term("GENE_COMMAND_BASE", "!gene"),
   // Template for the branch Gene works on. Placeholders: {prefix}, {identifier},
@@ -143,6 +151,12 @@ export const env = {
   REPOS_DIR: str("GENE_REPOS_DIR", "repos"),
   POLL_INTERVAL_MS: int("GENE_POLL_INTERVAL_MS", 60_000),
   DEBOUNCE_MS: int("GENE_DEBOUNCE_MS", 30_000),
+  // Public callback URL Trello calls (e.g. a cloudflared tunnel pointing at the
+  // local listener). Unset ⇒ webhook disabled, poll-only. Must be the EXACT URL
+  // registered with Trello (it is part of the HMAC the signature is verified against).
+  WEBHOOK_URL: optional("GENE_WEBHOOK_URL"),
+  // Local port the webhook HTTP listener binds (your tunnel forwards here).
+  WEBHOOK_PORT: int("GENE_WEBHOOK_PORT", 8473),
   MAX_CONCURRENT: Math.max(1, int("GENE_MAX_CONCURRENT", 2)),
   DRY_RUN: bool("GENE_DRY_RUN", true),
   // Open every change request as a draft; a human reviews, marks it ready, and

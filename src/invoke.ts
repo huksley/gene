@@ -27,6 +27,7 @@ import { localPathFor, type RepoTarget } from "./repos.ts";
 import { tracker } from "./tracker/index.ts";
 import type { Issue } from "./tracker/index.ts";
 import type { Forge } from "./forge/index.ts";
+import { isRetriable, matchesTransient } from "./agent-retry.ts";
 import chalk from "chalk";
 
 /**
@@ -84,7 +85,17 @@ export type InvokeInputs = {
   forge: Forge;
 };
 
-export type InvokeResult = { kind: "spawned" | "dry-run"; worktreePath: string; exitCode: number };
+export type InvokeResult = {
+  kind: "spawned" | "dry-run";
+  worktreePath: string;
+  exitCode: number;
+  /** True when a terminal `result`/`success` event was seen — a clean finish. */
+  sawSuccessResult: boolean;
+  /** True when the agent's stream showed a transient API/transport drop. */
+  transientFailure: boolean;
+  /** First transient error text seen (truncated), for the surfaced comment. */
+  transientReason: string | null;
+};
 
 /** Absolute worktree path for an issue: `<repos>/.worktrees/<repoPath>/<IDENTIFIER>`. */
 export const worktreePathFor = (target: RepoTarget, issue: Issue): string =>
@@ -281,17 +292,6 @@ const toTokenUsage = (usage?: Usage): TokenUsage | undefined => {
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * Should we retry a spawn that just ended this way? A non-zero exit is almost
- * always a crash or a transient API/socket error — `claude -p` exits 0 even when
- * it deliberately blocks or gives up on a task, so a non-zero code signals the run
- * itself broke. The one non-zero case not worth retrying is hitting the turn limit;
- * re-running would just burn the same budget. The worktree persists between
- * attempts, so a retry resumes from whatever the previous attempt already wrote.
- */
-const isRetriable = (exitCode: number, resultSubtype: string | undefined): boolean =>
-  exitCode !== 0 && resultSubtype !== "error_max_turns";
-
 /** Grace between SIGTERM and SIGKILL when a run overruns GENE_AGENT_MAX_PROCESSING_TIME. */
 const KILL_GRACE_MS = 10_000;
 
@@ -374,6 +374,8 @@ const runClaudeOnce = (
   resultText: string | undefined;
   durationMs: number | undefined;
   timedOut: boolean;
+  transientFailure: boolean;
+  transientReason: string | null;
   events: AgentEvent[];
 }> =>
   new Promise((resolve, reject) => {
@@ -381,6 +383,8 @@ const runClaudeOnce = (
     let resultText: string | undefined;
     let durationMs: number | undefined;
     let timedOut = false;
+    let transientFailure = false;
+    let transientReason: string | null = null;
     const events: AgentEvent[] = [];
     const { command, args } = getSpawnCommand(worktreePath, prompt, allowedTools);
     // In sandbox mode the child (sandbox.sh) spawns msb + the VM beneath it, so
@@ -456,6 +460,17 @@ const runClaudeOnce = (
           resultText = event.result;
           durationMs = event.duration_ms;
         }
+        // A dropped API socket surfaces as assistant text but still exits 0 — flag
+        // it so the run is retried/surfaced rather than recorded as a clean finish.
+        if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+          for (const block of event.message.content) {
+            if (block.type === "text" && typeof block.text === "string" && matchesTransient(block.text)) {
+              transientFailure = true;
+              transientReason ??= block.text.slice(0, 300);
+              logger.warn(`${logger.tag.invoke} [${issue.identifier}] transient API error in stream: ${truncate(block.text)}`);
+            }
+          }
+        }
         const records = toAgentEvents(event);
         events.push(...records);
         renderEvent(issue.identifier, records);
@@ -482,7 +497,16 @@ const runClaudeOnce = (
 
     proc.on("exit", code => {
       clearTimers();
-      resolve({ exitCode: code ?? -1, resultSubtype, resultText, durationMs, timedOut, events });
+      resolve({
+        exitCode: code ?? -1,
+        resultSubtype,
+        resultText,
+        durationMs,
+        timedOut,
+        transientFailure,
+        transientReason,
+        events
+      });
     });
   });
 
@@ -502,7 +526,7 @@ export const invokeAgent = async (
       `${logger.tag.invoke} [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
       `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
     );
-    return { kind: "dry-run", worktreePath, exitCode: 0 };
+    return { kind: "dry-run", worktreePath, exitCode: 0, sawSuccessResult: true, transientFailure: false, transientReason: null };
   }
 
   // If GENE_CLAUDE_API_BILLING is true, passes the ANTHROPIC_API_KEY to the agent's environment
@@ -522,6 +546,8 @@ export const invokeAgent = async (
   let resultText: string | undefined;
   let durationMs: number | undefined;
   let timedOut = false;
+  let transientFailure = false;
+  let transientReason: string | null = null;
   let attemptsMade = 0;
   let events: AgentEvent[] = [];
 
@@ -537,14 +563,8 @@ export const invokeAgent = async (
     logger.info(`${logger.tag.invoke} [${id}] spawning agent in ${worktreePath}${suffix}`);
     logger.info(`${logger.tag.invoke} [${id}]   prompt: ${prompt.length} chars`);
 
-    ({ exitCode, resultSubtype, resultText, durationMs, timedOut, events } = await runClaudeOnce(
-      issue,
-      prompt,
-      worktreePath,
-      allowedTools,
-      childEnv,
-      updatePid
-    ));
+    ({ exitCode, resultSubtype, resultText, durationMs, timedOut, transientFailure, transientReason, events } =
+      await runClaudeOnce(issue, prompt, worktreePath, allowedTools, childEnv, updatePid));
 
     // Operator cancelled this run from the TUI: the child was already signalled, so
     // the non-zero exit it produced must NOT be retried (isRetriable would treat it
@@ -563,7 +583,7 @@ export const invokeAgent = async (
 
     // A timed-out run is always worth restarting — it was cut off mid-work, not
     // finished — so OR it in with the transient-failure heuristic for normal exits.
-    if ((!timedOut && !isRetriable(exitCode, resultSubtype)) || attempt === totalAttempts) {
+    if ((!timedOut && !isRetriable(exitCode, resultSubtype, transientFailure)) || attempt === totalAttempts) {
       break;
     }
     const delay = env.AGENT_RETRY_DELAY_MS * 2 ** (attempt - 1);
@@ -580,11 +600,23 @@ export const invokeAgent = async (
   // Record what the agent actually did — its own final summary is the best account.
   const seconds = durationMs ? (durationMs / 1000).toFixed(1) : "?";
   const summary = resultText ? ` — ${truncate(resultText, 2000)}` : "";
+  const sawSuccessResult = resultSubtype === "success";
+  // Exit 0 but the run never produced a success result (silent crash) or dropped
+  // its API socket mid-stream (transient): not a clean finish.
+  const stalled = exitCode === 0 && (transientFailure || !sawSuccessResult);
   if (monitor.isCancelled(id)) {
     // Cancelled from the TUI: the child was killed mid-run and deliberately not
     // retried. Record it as its own outcome so the log doesn't read like a crash.
     await recordAgent("agent-cancelled", `cancelled by operator after ${seconds}s${summary}`, events);
     monitor.agentFinished(id, "cancelled", durationMs);
+  } else if (stalled) {
+    await recordAgent(
+      "agent-stalled",
+      `ended without a clean result after ${seconds}s` +
+        `${transientFailure ? " (transient API drop)" : " (no success result)"}${summary}`,
+      events
+    );
+    monitor.agentFinished(id, "error", durationMs);
   } else if (exitCode === 0) {
     await recordAgent("agent-done", `completed in ${seconds}s${summary}`, events);
     monitor.agentFinished(id, "done", durationMs);
@@ -606,5 +638,5 @@ export const invokeAgent = async (
       `inspect, then re-trigger or \`npm run reset -- ${id}\``
     );
   }
-  return { kind: "spawned", worktreePath, exitCode };
+  return { kind: "spawned", worktreePath, exitCode, sawSuccessResult, transientFailure, transientReason };
 };

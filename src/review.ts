@@ -89,16 +89,18 @@ export const writeCursor = async (issueId: string, cursor: ReviewCursor): Promis
 };
 
 /**
- * Find the open change request for an issue. Prefers an MR/PR attached/linked to
- * the issue (tracker attachment, then description, then comments — matched to the
- * resolved target repo and looked up by iid, so a human's branch name is fine);
- * falls back to an MR/PR on the issue's own branch. Null if none is open.
+ * Resolve the change request for an issue and return the first one matching
+ * `accept`. Prefers an MR/PR attached/linked to the issue (tracker attachment,
+ * then description, then comments — matched to the resolved target repo and looked
+ * up by iid, so a human's branch name is fine); falls back to an MR/PR on the
+ * issue's own branch. Null if none matches.
  */
-export const findOpenChangeRequest = async (
+const resolveChangeRequest = async (
   issue: Issue,
   comments: Comment[],
   target: RepoTarget,
-  forge: Forge
+  forge: Forge,
+  accept: (review: ChangeRequestReview) => boolean
 ): Promise<ChangeRequestReview | null> => {
   let attachmentUrls: string[] = [];
   try {
@@ -119,15 +121,33 @@ export const findOpenChangeRequest = async (
       }
       seen.add(ref.iid);
       const review = await forge.getReviewByIid(target, ref.iid);
-      if (review && review.state === "open") {
+      if (review && accept(review)) {
         return review;
       }
     }
   }
 
   const byBranch = await forge.getReviewStatus(target, issue.branchName);
-  return byBranch && byBranch.state === "open" ? byBranch : null;
+  return byBranch && accept(byBranch) ? byBranch : null;
 };
+
+/** The issue's currently-open change request, or null. */
+export const findOpenChangeRequest = (
+  issue: Issue,
+  comments: Comment[],
+  target: RepoTarget,
+  forge: Forge
+): Promise<ChangeRequestReview | null> =>
+  resolveChangeRequest(issue, comments, target, forge, review => review.state === "open");
+
+/** The issue's change request if it has already merged, or null. */
+export const findMergedChangeRequest = (
+  issue: Issue,
+  comments: Comment[],
+  target: RepoTarget,
+  forge: Forge
+): Promise<ChangeRequestReview | null> =>
+  resolveChangeRequest(issue, comments, target, forge, review => review.state === "merged");
 
 const toContext = (forge: Forge, review: ChangeRequestReview, newComments: ReviewComment[]): ReviewContext => ({
   crTerm: forge.changeRequestTerm,

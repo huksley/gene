@@ -85,6 +85,13 @@ export interface Tracker {
   writeBackSnippet(issue: Issue): string;
   /** Extra `--allowedTools` entries the agent needs for this backend (e.g. `Bash(trello *)`). */
   allowedTools(): string[];
+
+  /**
+   * Optionally start reacting to backend activity in real time (a webhook), so the
+   * daemon can wake before the next poll. Calls `onActivity` on each relevant event
+   * and resolves to a stop function. A poll-only tracker omits this entirely.
+   */
+  startWatch?(onActivity: () => void): Promise<() => void>;
 }
 
 /** Construct the tracker for a backend name (mirrors selectForge). */

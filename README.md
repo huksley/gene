@@ -48,7 +48,7 @@ or on Trello the card's **list** (the daemon scans by state *name*, so both look
 | Agent asks a question / proposes a plan | agent comments + → **Blocked** |
 | Agent opens a change request | agent comments (MR/PR link) + → **In Review** (as a **draft** if `GENE_DRAFT_CHANGE_REQUEST`) |
 | CI fails or a reviewer comments | daemon re-dispatches the agent to address it (back to **In Review**) |
-| Human merges | manual → **Done** (out of scope) |
+| Human merges | manual → **Done** — or set `<TP>_DONE_STATE` to auto-move on merge |
 
 The `Gene` label is an **ownership tag and is never removed by the pipeline.**
 Each scan watches `Gene` issues in **{Todo, In Progress, Blocked, In Review}** and
@@ -87,6 +87,28 @@ agent to push a fix and reply. CI that's still **running**, or nothing new since
 the last check, is a no-op — the daemon just moves on. A per-issue cursor (the
 handled head SHA + newest comment, stored in Postgres via `db.ts`) ensures each
 signal triggers exactly one dispatch, not one per poll.
+
+**Auto-progress to Done on merge (`review.ts`, opt-in).** Set `<TP>_DONE_STATE`
+(e.g. `TRELLO_DONE_STATE=Done` / `LINEAR_DONE_STATE=Done`) and the daemon moves an
+In-Review issue to that state — with a comment — as soon as its change request
+merges, instead of waiting for a human to drag it across. Left unset, merge→Done
+stays a manual step (the default).
+
+**Stalled runs surface as Blocked.** `claude -p` exits `0` even if its connection
+to the model API drops mid-stream or it dies before emitting a final result. The
+daemon detects both (a transient-transport signature in the stream, or a missing
+success result), retries within the agent's retry budget, and — if it still didn't
+finish — posts a "I stopped before finishing — reply to resume" comment and moves
+the issue to **Blocked** rather than letting it stall silently In Progress. The
+worktree is preserved, so a reply resumes from where it left off.
+
+**Low-latency reactivity (optional Trello webhook).** By default the daemon reacts
+within `GENE_POLL_INTERVAL_MS`. On Trello you can drop that to seconds: set
+`GENE_WEBHOOK_URL` (a public tunnel pointing at the local listener on
+`GENE_WEBHOOK_PORT`, default `8473`) plus `TRELLO_API_SECRET`, register the board
+webhook with `npm run webhook`, and board activity wakes the poll loop immediately.
+It's a per-tracker capability (`Tracker.startWatch`); without it the daemon just
+polls — correctness never depends on the webhook.
 
 **Draft pickup (`review.ts`).** If a Todo issue **already has an open change
 request** — a human opened a **draft** MR/PR and handed it to Gene, or a previous

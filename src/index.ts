@@ -27,9 +27,9 @@ import type { Comment, Issue } from "./tracker/index.ts";
 import { resolveTarget, targetLabel, localPathFor, type RepoTarget } from "./repos.ts";
 import { selectForge, type Forge } from "./forge/index.ts";
 import { commitsBehind, detectDefaultBranch } from "./git.ts";
-import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest } from "./invoke.ts";
+import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
-import { evaluateDraftPickup, evaluateReview, writeCursor, type ReviewContext } from "./review.ts";
+import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
 import { closeDb, logEvent } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
@@ -167,6 +167,9 @@ interface InFlightContext {
  */
 const inFlight = new Map<string, InFlightContext>();
 const isAtConcurrencyCap = (): boolean => inFlight.size >= env.MAX_CONCURRENT;
+
+/** Stop function for the active tracker watch (webhook listener), if started. */
+let stopWatch: (() => void) | null = null;
 
 /**
  * Heartbeat line: the agents running right now — ticket, OS pid, and elapsed wall
@@ -369,9 +372,16 @@ const dispatchAgent = async (
       inFlight.set(issue.id, { ...inFlight.get(issue.id), pid });
     });
   })
-    .then(result => {
+    .then(async result => {
       if (result === "skipped") {
         logger.info(`${logger.tag.flow} [${issue.identifier}] another run holds the lock — skipping`);
+        return;
+      }
+      // Silent crash / transient exhaustion: exited code 0 but never produced a
+      // success result, or dropped the API socket mid-stream. Surface it.
+      const stalled = result.exitCode === 0 && (result.transientFailure || !result.sawSuccessResult);
+      if (stalled && !monitor.isCancelled(issue.identifier)) {
+        await postStalledBlock(issue, result);
       }
     })
     .catch(error => {
@@ -403,6 +413,46 @@ const dispatchAgent = async (
   return true;
 };
 
+/** Comment body for a run that stalled (transient API drop or silent crash). */
+const buildStalledComment = (result: InvokeResult): string => {
+  const why = result.transientFailure
+    ? "my connection to the model API dropped mid-run"
+    : "my run ended without producing a final result (the agent exited mid-flight)";
+  return [
+    `🧬 I stopped before finishing — ${why}.`,
+    "",
+    "Nothing is broken: the worktree is preserved with whatever I'd already done. " +
+      "**Reply here** (e.g. \"go ahead\" or \"retry\") and I'll resume from where I left off.",
+    result.transientReason ? `\nLast error seen: \`${result.transientReason.slice(0, 200)}\`` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
+/**
+ * A run exited 'cleanly' (code 0) but never finished — a dropped API socket or a
+ * silent crash. Post an explanatory comment and move the issue to BLOCKED so a
+ * human sees it and a reply re-dispatches a resume, instead of the issue silently
+ * stalling in ACTIVE_STATE (decideAction returns `nothing` for it). Best-effort.
+ */
+const postStalledBlock = async (issue: Issue, result: InvokeResult): Promise<void> => {
+  try {
+    await tracker.postComment(issue, buildStalledComment(result));
+    await tracker.moveToState(issue, env.BLOCKED_STATE);
+    await record(
+      issue,
+      "stalled",
+      result.transientFailure ? "transient API drop — moved to Blocked" : "silent crash (no success result) — moved to Blocked"
+    );
+    logger.warn(`${logger.tag.flow} [${issue.identifier}] run stalled — posted block, moved to "${env.BLOCKED_STATE}"`);
+  } catch (error) {
+    logger.error(
+      `${logger.tag.flow} [${issue.identifier}] failed to post stalled block:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+};
+
 /**
  * In-Review handling: ask the forge whether the open change request has failing
  * CI or new human review comments (review.ts), and dispatch the agent to address
@@ -416,6 +466,38 @@ const processReview = async (
   target: RepoTarget,
   forge: Forge
 ): Promise<boolean> => {
+  // When DONE_STATE is configured, a merged change request ends the lifecycle:
+  // move the issue to Done and stop — no point polling CI on a merged CR.
+  if (env.DONE_STATE) {
+    let merged;
+    try {
+      merged = await findMergedChangeRequest(issue, comments, target, forge);
+    } catch (error) {
+      logger.warn(
+        `${logger.tag.flow} [${issue.identifier}] merged-CR check failed:`,
+        error instanceof Error ? error.message : error
+      );
+      merged = null;
+    }
+    if (merged) {
+      logger.info(`${logger.tag.flow} [${issue.identifier}] ${merged.url} merged — moving to "${env.DONE_STATE}"`);
+      await record(issue, "merged", `${merged.url} merged → ${env.DONE_STATE}`);
+      try {
+        await tracker.postComment(
+          issue,
+          `🧬 ${forge.changeRequestTerm} merged (${merged.url}) — moving this to **${env.DONE_STATE}**.`
+        );
+        await tracker.moveToState(issue, env.DONE_STATE);
+      } catch (error) {
+        logger.error(
+          `${logger.tag.flow} [${issue.identifier}] failed to move to "${env.DONE_STATE}":`,
+          error instanceof Error ? error.message : error
+        );
+      }
+      return true;
+    }
+  }
+
   let outcome;
   try {
     outcome = await evaluateReview(issue, comments, target, forge);
@@ -499,7 +581,7 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
     all = all.filter(i => i.identifier.toLowerCase() === issueFilter.toLowerCase());
     if (all.length === 0) {
       monitor.scanFinished(
-        { trigger: 0, active: 0, blocked: 0, review: 0, other: 0, total: 0 },
+        { trigger: 0, active: 0, blocked: 0, review: 0, done: 0, other: 0, total: 0 },
         Date.now() + env.POLL_INTERVAL_MS
       );
       return false;
@@ -520,12 +602,17 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   const active = mine.filter(i => i.stateName === WATCHED_STATES.active);
   const blocked = mine.filter(i => i.stateName === WATCHED_STATES.blocked);
   const review = mine.filter(i => i.stateName === WATCHED_STATES.review);
-  const other = mine.length - trigger.length - active.length - blocked.length - review.length;
+  // Done is a distinct bucket only when auto-Done is configured; otherwise the daemon
+  // has no notion of a terminal state and such issues fall through to `other`.
+  const done = env.DONE_STATE ? mine.filter(i => i.stateName === env.DONE_STATE) : [];
+  const other = mine.length - trigger.length - active.length - blocked.length - review.length - done.length;
 
   logger.info(
     `${logger.tag.flow} scan @ ${scannedAt} — ${mine.length} ${env.LABEL} issue(s) assigned to ${tracker.ownerLabel()}: ` +
     `${WATCHED_STATES.trigger}=${trigger.length}, ${WATCHED_STATES.active}=${active.length}, ` +
-    `${WATCHED_STATES.blocked}=${blocked.length}, ${WATCHED_STATES.review}=${review.length}, other=${other}`
+    `${WATCHED_STATES.blocked}=${blocked.length}, ${WATCHED_STATES.review}=${review.length}, ` +
+    (env.DONE_STATE ? `${env.DONE_STATE}=${done.length}, ` : "") +
+    `other=${other}`
   );
 
   monitor.scanFinished(
@@ -534,6 +621,7 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
       active: active.length,
       blocked: blocked.length,
       review: review.length,
+      done: done.length,
       other,
       total: mine.length
     },
@@ -563,7 +651,6 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   return true;
 };
 
-const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Publish the daemon's static configuration to the monitor — the TUI header's
@@ -579,7 +666,8 @@ const publishDaemonConfig = (): void => {
     dryRun: env.DRY_RUN,
     tracker: tracker.name,
     label: env.LABEL,
-    assignee: env.ASSIGNEE
+    assignee: env.ASSIGNEE,
+    doneState: env.DONE_STATE
   });
 };
 
@@ -593,6 +681,18 @@ const runForever = async (issueFilter?: string): Promise<void> => {
   // unref() so the heartbeat alone never holds the process open at shutdown.
   const heartbeat = setInterval(reportInFlight, env.POLL_INTERVAL_MS);
   heartbeat.unref();
+
+  // Optional real-time reactivity: if the tracker supports a watch (e.g. a Trello
+  // webhook), let it wake the current poll wait early. Poll-only when unsupported.
+  let wakeEarly: (() => void) | null = null;
+  if (tracker.startWatch) {
+    try {
+      stopWatch = await tracker.startWatch(() => wakeEarly?.());
+    } catch (error) {
+      logger.warn(`${logger.tag.flow} could not start tracker watch:`, error instanceof Error ? error.message : error);
+    }
+  }
+
   while (true) {
     try {
       const found = await scanOnce(issueFilter);
@@ -609,7 +709,21 @@ const runForever = async (issueFilter?: string): Promise<void> => {
       logger.error(`${logger.tag.flow} scan failed:`, message, { cause: error });
       monitor.scanFailed(message);
     }
-    await sleep(env.POLL_INTERVAL_MS);
+    // Wait for the poll interval, but wake immediately if the tracker watch signals
+    // activity. The per-issue debounce (isWithinDebounceWindow) still defers work on
+    // a just-edited issue to the following cycle, so an early wake can't act too soon.
+    await new Promise<void>(resolve => {
+      const timer = setTimeout(() => {
+        wakeEarly = null;
+        resolve();
+      }, env.POLL_INTERVAL_MS);
+      wakeEarly = () => {
+        clearTimeout(timer);
+        wakeEarly = null;
+        logger.info(`${logger.tag.flow} woken early by tracker activity`);
+        resolve();
+      };
+    });
   }
 };
 
@@ -620,6 +734,14 @@ const runForever = async (issueFilter?: string): Promise<void> => {
  * leave the process — and never throws.
  */
 export const gracefulShutdown = async (signal: string): Promise<void> => {
+  if (stopWatch) {
+    try {
+      stopWatch();
+    } catch {
+      /* listener already closed */
+    }
+    stopWatch = null;
+  }
   const owned = listOwnedLocks();
   if (owned.length > 0) {
     logger.info(

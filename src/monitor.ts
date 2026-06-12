@@ -98,7 +98,9 @@ export interface ScanSummary {
   blocked: number;
   /** Issues in the review state (In Review). */
   review: number;
-  /** Issues in any other state. */
+  /** Issues in the done state — counted only when GENE_<TP>_DONE_STATE is configured. */
+  done: number;
+  /** Issues in any other (unwatched) state. */
   other: number;
   /** Total Gene issues assigned to the owner this scan. */
   total: number;
@@ -122,6 +124,8 @@ export interface DaemonState {
   label: string;
   /** Whom Gene works for (env.ASSIGNEE: "me" / "any" / a specific user). */
   assignee: string;
+  /** Configured terminal state name (env.DONE_STATE), when auto-Done is enabled — else undefined. */
+  doneState?: string;
   /** Coarse current phase, for the header's "Stage:" line. */
   phase: "starting" | "scanning" | "idle";
   /** Epoch ms the last scan began. */
@@ -233,6 +237,7 @@ class Monitor extends EventEmitter {
     tracker: string;
     label: string;
     assignee: string;
+    doneState?: string;
   }): void {
     this.daemon = {
       ...this.daemon,

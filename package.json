@@ -20,7 +20,9 @@
     "reset": "node --env-file-if-exists=.env.development src/reset.ts",
     "log": "node --env-file-if-exists=.env.development src/log.ts",
     "trello": "node --env-file-if-exists=.env.development trello/cli.ts",
-    "typecheck": "tsc --noEmit"
+    "webhook": "node --env-file-if-exists=.env.development src/webhook.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'src/**/*.test.ts'"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
