@@ -212,7 +212,7 @@ export class Detail {
 
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
-      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("R")} reset  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
+      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("r")} reset  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
 
     // Live pane: stream the agent's events if it has any, else fall back to the
     // full persisted history so a finished ticket stays browsable.

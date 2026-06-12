@@ -170,7 +170,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         resetBusyId === detailId
           ? `Resetting ${detailId}…`
           : resetArmedId === detailId
-            ? `Press R again within 2s to reset ${detailId} — removes worktree/branch, back to Todo`
+            ? `Press r again within 2s to reset ${detailId} — removes worktree/branch, moves it back to Todo`
             : undefined;
       detail.render(agents.find(a => a.id === detailId), frame, now, notice);
     }
