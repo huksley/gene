@@ -21,6 +21,7 @@ import logger from "./logger.ts";
 import { env, REPO_ROOT, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
 import { addWorktree, fetch } from "./git.ts";
 import { logEvent } from "./db.ts";
+import { setActiveTimeout, type ActiveTimeout } from "./timer.ts";
 import { localPathFor, type RepoTarget } from "./repos.ts";
 import { tracker } from "./tracker/index.ts";
 import type { Issue } from "./tracker/index.ts";
@@ -389,14 +390,16 @@ const runClaudeOnce = (
         // already exited — nothing to signal
       }
     };
-    let killTimer: NodeJS.Timeout | undefined;
+    // Budget counts active time only: setActiveTimeout pauses while the host is
+    // suspended (laptop asleep), so a run isn't killed for time it spent frozen.
+    let killTimer: ActiveTimeout | undefined;
     let hardKillTimer: NodeJS.Timeout | undefined;
     if (env.AGENT_MAX_PROCESSING_TIME > 0) {
-      killTimer = setTimeout(() => {
+      killTimer = setActiveTimeout(() => {
         timedOut = true;
         logger.warn(
           `${logger.tag.invoke} [${issue.identifier}] exceeded GENE_AGENT_MAX_PROCESSING_TIME ` +
-          `(${env.AGENT_MAX_PROCESSING_TIME}s) — terminating (pid ${proc.pid})`
+          `(${env.AGENT_MAX_PROCESSING_TIME}s active) — terminating (pid ${proc.pid})`
         );
         signalChild("SIGTERM");
         hardKillTimer = setTimeout(() => {
@@ -406,9 +409,7 @@ const runClaudeOnce = (
       }, env.AGENT_MAX_PROCESSING_TIME * 1000);
     }
     const clearTimers = (): void => {
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
+      killTimer?.cancel();
       if (hardKillTimer) {
         clearTimeout(hardKillTimer);
       }

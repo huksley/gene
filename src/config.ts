@@ -157,9 +157,11 @@ export const env = {
   AGENT_MAX_RETRIES: int("GENE_AGENT_MAX_RETRIES", 5),
   AGENT_RETRY_DELAY_MS: int("GENE_AGENT_RETRY_DELAY_MS", 5_000),
 
-  // Hard cap on a single agent run's wall-clock time, in SECONDS (default 1800 =
-  // 30 min). When a run exceeds it the spawn is killed (SIGTERM, then SIGKILL) and,
-  // if it still has retries left (AGENT_MAX_RETRIES), restarted. 0 disables it.
+  // Hard cap on a single agent run's active running time, in SECONDS (default
+  // 1800 = 30 min). Counts foreground time only — time the host spends suspended
+  // (laptop asleep) is not charged against it. When a run exceeds it the spawn is
+  // killed (SIGTERM, then SIGKILL) and, if it still has retries left
+  // (AGENT_MAX_RETRIES), restarted. 0 disables it.
   AGENT_MAX_PROCESSING_TIME: int("GENE_AGENT_MAX_PROCESSING_TIME", 1800),
 
   // Use Claude API-billing
