@@ -18,6 +18,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import logger from "./logger.ts";
+import { monitor, type AgentEvent, type TokenUsage } from "./monitor.ts";
 import { env, REPO_ROOT, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
 import { addWorktree, fetch } from "./git.ts";
 import { logEvent } from "./db.ts";
@@ -150,27 +151,30 @@ type ContentBlock = {
   is_error?: boolean;
 };
 
+/** Token usage block, as emitted on assistant `message.usage` and the `result` event. */
+type Usage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+};
+
 type StreamEvent = {
   type?: string;
   subtype?: string;
-  message?: { content?: ContentBlock[] };
+  message?: { content?: ContentBlock[]; usage?: Usage };
+  usage?: Usage;
   duration_ms?: number;
   result?: string;
   is_error?: boolean;
 };
 
-/**
- * A persisted, JSON-serialisable view of one stream event — the structured
- * sibling of the one-line summaries renderEvent prints. `toAgentEvents` is the
- * single source of truth for which events matter; renderEvent logs them and
- * runClaudeOnce collects them for the activity log's `data` column.
- */
-type AgentEvent =
-  | { type: "session" }
-  | { type: "text"; text: string }
-  | { type: "tool_use"; tool: string; summary: string }
-  | { type: "tool_error"; detail: string }
-  | { type: "result"; subtype: string; durationMs?: number; result?: string };
+// AgentEvent — the distilled, JSON-serialisable view of one stream event — now
+// lives in monitor.ts (the model layer) so the daemon, the activity log, and the
+// TUI all share one shape. `toAgentEvents` below remains the single source of
+// truth for WHICH events matter: renderEvent logs them, and runClaudeOnce both
+// collects them for the activity log's `data` column and mirrors them to the
+// monitor for the live dashboard.
 
 const summarizeToolUse = (block: ContentBlock): string => {
   const name = block.name ?? "Tool";
@@ -255,6 +259,24 @@ const renderEvent = (issueId: string, events: AgentEvent[]): void => {
       }
     }
   }
+};
+
+/**
+ * Distil a raw usage block into the monitor's {@link TokenUsage}, folding cache
+ * reads/writes into the input total. Returns undefined for an absent or all-zero
+ * block so callers can skip publishing — token capture is strictly best-effort.
+ */
+const toTokenUsage = (usage?: Usage): TokenUsage | undefined => {
+  if (!usage) {
+    return undefined;
+  }
+  const cached = (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  const input = (usage.input_tokens ?? 0) + cached;
+  const output = usage.output_tokens ?? 0;
+  if (input === 0 && output === 0) {
+    return undefined;
+  }
+  return { in: input, out: output, total: input + output };
 };
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
@@ -390,6 +412,13 @@ const runClaudeOnce = (
         // already exited — nothing to signal
       }
     };
+    // Mirror the spawn into the monitor so the TUI can show the pid and offer a
+    // cancel that maps to exactly the same teardown the timeout uses (SIGTERM,
+    // process-group-aware under sandbox). Re-registers on each retry attempt, so a
+    // cancel always targets the currently-live child.
+    if (proc.pid) {
+      monitor.agentSpawned(issue.identifier, proc.pid, () => signalChild("SIGTERM"));
+    }
     // Budget counts active time only: setActiveTimeout pauses while the host is
     // suspended (laptop asleep), so a run isn't killed for time it spent frozen.
     let killTimer: ActiveTimeout | undefined;
@@ -430,6 +459,15 @@ const runClaudeOnce = (
         const records = toAgentEvents(event);
         events.push(...records);
         renderEvent(issue.identifier, records);
+        for (const record of records) {
+          monitor.agentEvent(issue.identifier, record);
+        }
+        // Best-effort token capture: assistant turns carry a running `message.usage`,
+        // the final `result` event carries the authoritative cumulative `usage`.
+        const usage = toTokenUsage(event.usage ?? event.message?.usage);
+        if (usage) {
+          monitor.agentTokens(issue.identifier, usage);
+        }
       } catch {
         logger.info(`${logger.tag.invoke} [${issue.identifier}] raw: ${truncate(line, 200)}`);
       }
@@ -508,6 +546,14 @@ export const invokeAgent = async (
       updatePid
     ));
 
+    // Operator cancelled this run from the TUI: the child was already signalled, so
+    // the non-zero exit it produced must NOT be retried (isRetriable would treat it
+    // as a transient crash and spawn again). Stop here; the final recording marks it
+    // cancelled rather than letting the retry loop fight the kill.
+    if (monitor.isCancelled(id)) {
+      break;
+    }
+
     if (timedOut) {
       await recordAgent(
         "agent-timeout",
@@ -534,8 +580,14 @@ export const invokeAgent = async (
   // Record what the agent actually did — its own final summary is the best account.
   const seconds = durationMs ? (durationMs / 1000).toFixed(1) : "?";
   const summary = resultText ? ` — ${truncate(resultText, 2000)}` : "";
-  if (exitCode === 0) {
+  if (monitor.isCancelled(id)) {
+    // Cancelled from the TUI: the child was killed mid-run and deliberately not
+    // retried. Record it as its own outcome so the log doesn't read like a crash.
+    await recordAgent("agent-cancelled", `cancelled by operator after ${seconds}s${summary}`, events);
+    monitor.agentFinished(id, "cancelled", durationMs);
+  } else if (exitCode === 0) {
     await recordAgent("agent-done", `completed in ${seconds}s${summary}`, events);
+    monitor.agentFinished(id, "done", durationMs);
   } else {
     const triedNote = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
     const timeoutNote = timedOut ? ` (timed out at ${env.AGENT_MAX_PROCESSING_TIME}s)` : "";
@@ -544,6 +596,7 @@ export const invokeAgent = async (
       `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""}${timeoutNote}${triedNote}${summary}`,
       events
     );
+    monitor.agentFinished(id, timedOut ? "timeout" : "error", durationMs);
   }
 
   if (exitCode !== 0) {

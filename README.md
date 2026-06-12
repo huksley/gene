@@ -148,8 +148,9 @@ All resolution logic lives in `src/repos.ts`.
 
 ## Setup
 
-Prerequisites: Node 24 (via [Volta](https://volta.sh) — pinned in `package.json`),
-**PostgreSQL** (`brew install postgresql@16` — the daemon's state store; `npm run pg`
+Prerequisites: Node ≥ 26.3.0 (via [Volta](https://volta.sh) — pinned in
+`package.json`; the console daemon runs on Node 24+ too, only the
+[TUI dashboard](#tui-dashboard) needs 26.3.0), **PostgreSQL** (`brew install postgresql@16` — the daemon's state store; `npm run pg`
 init-and-runs it locally on port 5433), the `claude`, `git`, and `glab` and/or `gh`
 CLIs on `PATH`, and — for the **Linear** backend — the `linear` CLI. The **Trello** backend needs no extra CLI: it uses the
 bundled `trello/` wrapper, which only wants `TRELLO_API_KEY` + `TRELLO_TOKEN`.
@@ -183,8 +184,10 @@ default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to
 
 ```bash
 npm start               # Postgres + the daemon (poll loop), together via concurrently
+npm run start:ui        # ...same, but with the OpenTUI dashboard (see "TUI dashboard" below)
 npm run once            # Postgres + a single scan, then exit  (great with GENE_DRY_RUN=true)
 npm run pg              # just the local Postgres (port 5433) — leave up for the commands below
+npm run ui              # the OpenTUI dashboard against an already-running pg (needs Node ≥26.3.0)
 npm run clone           # pre-clone the team default repo(s)
 npm run reset -- CLOUD-1094            # reset one issue back to Todo   (needs Postgres up)
 npm run reset -- CLOUD-1094 --close-mr # ...and close its open MR/PR
@@ -196,9 +199,43 @@ Go live by setting `GENE_DRY_RUN=false` in `.env.development`. A dry-run scan pr
 exactly what it *would* do (decision, resolved target repo + forge, branch, prompt
 size) without touching the tracker or the forge.
 
+## TUI dashboard
+
+An optional Symphony-style terminal UI over the same in-process daemon: a status
+header (agents N/MAX, uptime, current stage, next-refresh countdown, tokens, scan
+counts) that stays pinned at the top across both views, a live table of
+running/recent tickets (one-liner + stage each, re-sortable), a per-ticket view
+(the last few actions pinned above a scrollable live log), and inline agent
+cancellation / reset. The poll loop runs in the
+*same* process as the renderer — so the data is live and cancel is immediate, no
+separate observer or IPC.
+
+```bash
+npm run start:ui                 # Postgres + daemon + dashboard, together
+npm run ui                       # dashboard only, against an already-running pg
+npm run ui -- linear:CLOUD-1094  # focus one issue (focus + dry-run flags pass through)
+```
+
+Requires **Node ≥ 26.3.0** — OpenTUI's native renderer loads over FFI, which the
+`ui` script enables (`--experimental-ffi`). On an older Node it prints install
+guidance and exits cleanly; the console daemon (`npm run gene` / `npm start`) is
+unaffected and still runs on Node 24+.
+
+Keys: `↑↓` / `j` `k` navigate (selection is hidden until you move) · `enter` / `→`
+open the selected ticket's log · `s` cycle the table sort (status → age → id; the
+selected ticket stays selected) · `c` cancel the selected running agent (press again
+within 2s to confirm) · `r` reload history from Postgres · `esc` back out of a
+ticket (or clear the selection on the table) · `q` / `Ctrl+C` quit — restores the
+terminal, then shuts the daemon down gracefully. Inside a ticket, the last few
+actions stay pinned at the top while `↑↓` / `PgUp` / `PgDn` / `Home` / `End` scroll
+the live log below them (a finished ticket shows its full history there), and `R`
+resets the ticket (worktree / branch / lock + back to Todo — same as `npm run
+reset`; press again within 2s to confirm).
+
 ## Runtime: native TypeScript, minimal deps
 
-Node 24 runs the `.ts` files directly (type-stripping — no build step), so:
+Node runs the `.ts` files directly (type-stripping — no build step, available since
+Node 24), so:
 
 - relative imports **must** include the `.ts` extension (`import … from "./x.ts"`);
 - no TypeScript-only runtime constructs (enums, namespaces, constructor parameter
@@ -216,6 +253,7 @@ src/
   config.ts       env + constants (hand-rolled, no zod)
   db.ts           Postgres state store: review cursor + issue activity log
   logger.ts       timestamped server logger
+  monitor.ts      in-process event bus + agent/daemon state for the TUI (no OpenTUI)
   decide.ts       pure (issue, comments) → Action
   review.ts       In-Review watchdog + draft pickup: find the open MR/PR, decide re-dispatch
   directives.ts   `!gene approve|redo|stop|retry` parser
@@ -235,6 +273,13 @@ src/
     index.ts      Forge interface + selectForge(name)
     gitlab.ts     glab implementation
     github.ts     gh implementation
+  ui/             OpenTUI dashboard (loaded only under --ui; needs Node ≥26.3.0)
+    app.ts        startUi: mounts the persistent header + bodies, wires keys, runs the loop
+    header.ts     the pinned status block (shared by both views)
+    dashboard.ts  agents table (re-sortable) + log tail (the main screen)
+    detail.ts     per-ticket view: pinned last-5 actions + scrollable live log (history fallback) + reset
+    theme.ts      color palette, status colors/glyphs, spinner frames
+    format.ts     tiny formatters (duration, tokens, truncation, progress bar)
 ```
 
 ## Adding a forge

@@ -14,8 +14,9 @@
  * honour GENE_DRY_RUN.
  */
 
-import { existsSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import logger from "./logger.ts";
 import { env, LOCK_DIR, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
 import { parseRepoUrl } from "./repos.ts";
@@ -82,13 +83,21 @@ const forgeForClone = async (localPath: string) => {
   return target ? selectForge(target.forge) : null;
 };
 
-const main = async (): Promise<void> => {
-  const identifier = process.argv[2];
-  if (!identifier || identifier.startsWith("--")) {
-    logger.error(`${logger.tag.reset} Usage: npm run reset -- <ISSUE-ID> [--close-mr]`);
-    process.exit(1);
-  }
-  const closeMr = process.argv.includes("--close-mr");
+/** Options controlling how far a reset reaches beyond local worktree/branch cleanup. */
+export interface ResetOptions {
+  /** Also close any open MR/PR for matching branches (honours GENE_DRY_RUN). Default false. */
+  closeMr?: boolean;
+}
+
+/**
+ * Reset one issue's pipeline state. Importable — the TUI's `R` key calls this —
+ * and it deliberately does NOT touch the Postgres pool's lifecycle, so a
+ * long-lived daemon can call it repeatedly; only the CLI wrapper below
+ * opens/closes the pool. Local cleanup always runs (an explicit operator
+ * action); the tracker state move and the MR/PR close honour GENE_DRY_RUN.
+ */
+export const resetIssue = async (identifier: string, options: ResetOptions = {}): Promise<void> => {
+  const closeMr = options.closeMr ?? false;
 
   const clones = findClones();
   logger.info(
@@ -184,12 +193,41 @@ const main = async (): Promise<void> => {
     event: "reset",
     detail: `${stateNote}; ${localNote}${closeMr ? "; --close-mr" : ""}`
   });
-
-  // logEvent opened a Postgres pool; close it so this one-shot CLI can exit.
-  await closeDb();
 };
 
-main().catch(error => {
-  logger.error(`${logger.tag.reset} fatal:`, error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+/** True when this file was run directly (`node src/reset.ts …`), not imported. */
+const isMainModule = (): boolean => {
+  const entry = process.argv[1];
+  if (!entry) {
+    return false;
+  }
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+};
+
+/** CLI wrapper: parse argv, run the reset, then close the pool so the one-shot exits. */
+const main = async (): Promise<void> => {
+  const identifier = process.argv[2];
+  if (!identifier || identifier.startsWith("--")) {
+    logger.error(`${logger.tag.reset} Usage: npm run reset -- <ISSUE-ID> [--close-mr]`);
+    process.exit(1);
+  }
+  try {
+    await resetIssue(identifier, { closeMr: process.argv.includes("--close-mr") });
+  } finally {
+    // logEvent opened a Postgres pool; close it so this one-shot CLI can exit.
+    await closeDb();
+  }
+};
+
+// Import-safe: only run as a CLI when invoked directly, so the daemon/TUI can
+// `import { resetIssue }` without auto-triggering a reset.
+if (isMainModule()) {
+  main().catch(error => {
+    logger.error(`${logger.tag.reset} fatal:`, error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

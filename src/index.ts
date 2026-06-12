@@ -19,6 +19,7 @@
  */
 
 import logger from "./logger.ts";
+import { monitor } from "./monitor.ts";
 import { env, WATCHED_STATES } from "./config.ts";
 import { decideAction, type Action } from "./decide.ts";
 import { tracker } from "./tracker/index.ts";
@@ -32,6 +33,7 @@ import { evaluateDraftPickup, evaluateReview, writeCursor, type ReviewContext } 
 import { closeDb, logEvent } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
+import { resetIssue } from "./reset.ts";
 
 const summarizeAction = (action: Action): string => {
   switch (action.kind) {
@@ -268,6 +270,14 @@ const dispatchAgent = async (
     logger.info(`${logger.tag.flow} [${issue.identifier}] already running in this daemon — skipping`);
     return true;
   }
+
+  // Register the eligible task with the monitor up front — before the cap and
+  // dry-run gates below — so the dashboard lists it immediately as "queued": in
+  // dry-run (where no agent ever spawns), while deferred at the concurrency cap,
+  // and in the moment before the child starts. The running/done transitions arrive
+  // later from invoke.ts (agentSpawned / agentFinished). No-op cost in console mode.
+  monitor.agentDispatched(issue.identifier, intent, targetLabel(target));
+
   if (isAtConcurrencyCap()) {
     logger.info(
       `${logger.tag.flow} [${issue.identifier}] at concurrency cap (${inFlight.size}/${env.MAX_CONCURRENT}) — deferring`
@@ -307,7 +317,8 @@ const dispatchAgent = async (
     return true;
   }
 
-  // Live: everything below runs inside the per-issue lock, fire-and-forget.
+  // Live: run everything below inside the per-issue lock, fire-and-forget. The
+  // monitor already has this run as "queued" (registered above).
   const spawnPromise = withLock(issue.identifier, async () => {
     await postStartComment(issue, intent);
     await tracker.moveToState(issue, env.ACTIVE_STATE);
@@ -371,6 +382,10 @@ const dispatchAgent = async (
     })
     .finally(() => {
       inFlight.delete(issue.id);
+      // Finalize any monitor entry that never reached a clean outcome (lock held by
+      // another process, spawn threw) — a no-op once invokeAgent recorded a terminal
+      // status, so the normal done/error/cancelled outcome is preserved.
+      monitor.agentSettled(issue.identifier);
       logger.info(
         `${logger.tag.flow} [${issue.identifier}] spawn complete (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
       );
@@ -477,11 +492,16 @@ const tryContinueAttachedDraft = async (
  */
 const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   const scannedAt = new Date().toISOString();
+  monitor.scanStarted();
   let all = await tracker.listIssues();
 
   if (issueFilter) {
     all = all.filter(i => i.identifier.toLowerCase() === issueFilter.toLowerCase());
     if (all.length === 0) {
+      monitor.scanFinished(
+        { trigger: 0, active: 0, blocked: 0, review: 0, other: 0, total: 0 },
+        Date.now() + env.POLL_INTERVAL_MS
+      );
       return false;
     }
   }
@@ -506,6 +526,18 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
     `${logger.tag.flow} scan @ ${scannedAt} — ${mine.length} ${env.LABEL} issue(s) assigned to ${tracker.ownerLabel()}: ` +
     `${WATCHED_STATES.trigger}=${trigger.length}, ${WATCHED_STATES.active}=${active.length}, ` +
     `${WATCHED_STATES.blocked}=${blocked.length}, ${WATCHED_STATES.review}=${review.length}, other=${other}`
+  );
+
+  monitor.scanFinished(
+    {
+      trigger: trigger.length,
+      active: active.length,
+      blocked: blocked.length,
+      review: review.length,
+      other,
+      total: mine.length
+    },
+    Date.now() + env.POLL_INTERVAL_MS
   );
 
   // Existing conversations take priority over new Todo work: drain In Progress +
@@ -533,6 +565,24 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Publish the daemon's static configuration to the monitor — the TUI header's
+ * N/MAX denominator, dry-run badge, and tracker/label/assignee. Called once per run
+ * *before* the poll loop (and, in UI mode, before the dashboard's first paint) so
+ * the header never flashes the monitor's placeholder defaults (e.g. 0/1). Resets
+ * the uptime clock, so call it exactly once. No-op cost in console mode.
+ */
+const publishDaemonConfig = (): void => {
+  monitor.daemonStarted({
+    pollIntervalMs: env.POLL_INTERVAL_MS,
+    maxConcurrent: env.MAX_CONCURRENT,
+    dryRun: env.DRY_RUN,
+    tracker: tracker.name,
+    label: env.LABEL,
+    assignee: env.ASSIGNEE
+  });
+};
+
 const runForever = async (issueFilter?: string): Promise<void> => {
   logger.info(
     `${logger.tag.flow} starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
@@ -555,18 +605,21 @@ const runForever = async (issueFilter?: string): Promise<void> => {
         );
       }
     } catch (error) {
-      logger.error(`${logger.tag.flow} scan failed:`, error instanceof Error ? error.message : error, { cause: error });
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(`${logger.tag.flow} scan failed:`, message, { cause: error });
+      monitor.scanFailed(message);
     }
     await sleep(env.POLL_INTERVAL_MS);
   }
 };
 
-let shuttingDown = false;
-const handleShutdown = (signal: string): void => {
-  if (shuttingDown) {
-    return;
-  }
-  shuttingDown = true;
+/**
+ * Report any still-owned locks and close the Postgres pool. Shared by the console
+ * signal handlers and the TUI's quit path (the TUI calls it *after* restoring the
+ * terminal via renderer.destroy()). Does NOT exit — the caller decides when to
+ * leave the process — and never throws.
+ */
+export const gracefulShutdown = async (signal: string): Promise<void> => {
   const owned = listOwnedLocks();
   if (owned.length > 0) {
     logger.info(
@@ -576,14 +629,25 @@ const handleShutdown = (signal: string): void => {
   } else {
     logger.info(`${logger.tag.flow} received ${signal} — nothing in flight, exiting`);
   }
-  closeDb().catch(error => {
-    logger.error(`${logger.tag.flow} failed to close database:`, error instanceof Error ? error.message : error, { cause: error });
-  });
-  process.exit(0);
+  try {
+    await closeDb();
+  } catch (error) {
+    logger.error(
+      `${logger.tag.flow} failed to close database:`,
+      error instanceof Error ? error.message : error,
+      { cause: error }
+    );
+  }
 };
 
-process.on("SIGINT", () => handleShutdown("SIGINT"));
-process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+let shuttingDown = false;
+const handleShutdown = (signal: string): void => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  void gracefulShutdown(signal).finally(() => process.exit(0));
+};
 
 const parseIssueFilter = (argv: string[]): string | undefined => {
   const raw = argv.slice(2).find(a => !a.startsWith("--"));
@@ -609,8 +673,17 @@ const parseIssueFilter = (argv: string[]): string | undefined => {
 
 const main = async (): Promise<void> => {
   const issueFilter = parseIssueFilter(process.argv);
+  const useUi = process.argv.includes("--ui");
+
+  // The TUI installs its own signal + key handling (it must restore the terminal
+  // before exiting), so only the console paths get the plain signal handlers.
+  if (!useUi) {
+    process.on("SIGINT", () => handleShutdown("SIGINT"));
+    process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+  }
 
   if (process.argv.includes("--once")) {
+    publishDaemonConfig();
     const found = await scanOnce(issueFilter);
     if (!found) {
       // Fail fast in once-mode: the operator named a ticket that isn't there.
@@ -625,9 +698,39 @@ const main = async (): Promise<void> => {
     await Promise.allSettled(pending.filter(Boolean));
     // Close the Postgres pool, else its open sockets keep the process alive.
     await closeDb();
-  } else {
-    await runForever(issueFilter);
+    return;
   }
+
+  if (useUi) {
+    // Dynamic import so @opentui/core (and its native FFI renderer) is loaded ONLY
+    // in UI mode — console mode never touches FFI and keeps running on Node 24.
+    // startUi mounts the renderer, kicks off the poll loop, and owns shutdown.
+    try {
+      const { startUi } = await import("./ui/app.ts");
+      // Populate the monitor before startUi reads its first snapshot, so the header
+      // shows the real N/MAX + flags from the first frame (not the placeholder 0/1).
+      publishDaemonConfig();
+      await startUi({
+        runForever: () => runForever(issueFilter),
+        shutdown: gracefulShutdown,
+        // `R` inside a ticket resets it (worktree/branch/lock + back to Todo),
+        // reusing the same path as `npm run reset`. The pool stays open (the
+        // daemon owns it) — resetIssue doesn't close the DB, only the CLI does.
+        reset: identifier => resetIssue(identifier)
+      });
+    } catch (error) {
+      logger.error(
+        `${logger.tag.flow} could not start the TUI dashboard — it needs Node ≥ 26.3.0 launched with ` +
+        `--experimental-ffi. Use \`npm run ui\` (which sets the flag), or \`npm run gene\` for the plain console.`,
+        error instanceof Error ? error.message : error
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  publishDaemonConfig();
+  await runForever(issueFilter);
 };
 
 main().catch(error => {
