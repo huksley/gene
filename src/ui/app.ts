@@ -46,6 +46,22 @@ const statusFromEvent = (event: string): AgentStatus =>
           : "queued";
 
 /**
+ * Pull `stage` / `repoLabel` / `branch` back out of a persisted `dispatch` log
+ * detail — the inverse of how index.ts writes it:
+ *   "<intent> → <repo> [<forge>] ⎇ <branch>"
+ * so a finished ticket's detail header mirrors the live one. The `⎇ <branch>`
+ * tail is optional (older rows predate it); on no match the whole string is the
+ * stage, matching the previous behaviour.
+ */
+const parseDispatchDetail = (detail: string): { stage: string; repoLabel?: string; branch?: string } => {
+  const match = /^(.*?)\s*→\s*(.+?)\s*\[[^\]]*\](?:\s*⎇\s*(.+))?$/.exec(detail);
+  if (!match) {
+    return { stage: detail };
+  }
+  return { stage: match[1], repoLabel: match[2], branch: match[3] };
+};
+
+/**
  * Synthesize browsable table rows from the global activity log so the dashboard
  * isn't empty in dry-run (and so finished tickets stay selectable). Groups rows
  * by identifier, derives a coarse status/stage/timing from the run's events, and
@@ -67,17 +83,20 @@ const buildHistorySeed = (rows: IssueLogRow[]): AgentState[] => {
     const first = list[0];
     const last = list[list.length - 1];
     const dispatch = list.find(r => r.event === "dispatch");
+    const parsed = dispatch ? parseDispatchDetail(dispatch.detail) : undefined;
     const startedAt = Number.isNaN(Date.parse(first.createdAt)) ? undefined : Date.parse(first.createdAt);
     const finishedAt = Number.isNaN(Date.parse(last.createdAt)) ? undefined : Date.parse(last.createdAt);
     seed.push({
       id,
-      stage: dispatch?.detail ?? last.event,
+      stage: parsed?.stage ?? last.event,
       status: statusFromEvent(last.event),
       startedAt,
       finishedAt,
       lastEvent: last.detail ? `${last.event} — ${last.detail}` : last.event,
       events: [],
-      toolCount: 0
+      toolCount: 0,
+      repoLabel: parsed?.repoLabel,
+      branch: parsed?.branch
     });
   }
 

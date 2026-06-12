@@ -279,7 +279,8 @@ const dispatchAgent = async (
   // dry-run (where no agent ever spawns), while deferred at the concurrency cap,
   // and in the moment before the child starts. The running/done transitions arrive
   // later from invoke.ts (agentSpawned / agentFinished). No-op cost in console mode.
-  monitor.agentDispatched(issue.identifier, intent, targetLabel(target));
+  const workBranch = extras.existing?.branch ?? issue.branchName;
+  monitor.agentDispatched(issue.identifier, intent, targetLabel(target), workBranch);
 
   if (isAtConcurrencyCap()) {
     logger.info(
@@ -288,7 +289,7 @@ const dispatchAgent = async (
     return true;
   }
 
-  await record(issue, "dispatch", `${intent} → ${targetLabel(target)} [${forge.name}]`);
+  await record(issue, "dispatch", `${intent} → ${targetLabel(target)} [${forge.name}] ⎇ ${workBranch}`);
 
   if (env.DRY_RUN) {
     // Preview only — no clone, no worktree, no spawn, no writes (the write helpers

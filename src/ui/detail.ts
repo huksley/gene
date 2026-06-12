@@ -199,7 +199,8 @@ export class Detail {
     const statusCol = agent ? statusColor(agent.status) : palette.muted;
     const stage = agent?.stage ? `  ·  ${agent.stage}` : "";
     const repo = agent?.repoLabel ? `  ·  ${agent.repoLabel}` : "";
-    this.titleLine.content = t`${dim("‹")} ${bold(fg(palette.text)(id))} ${dim("›")}  ${bold(fg(statusCol)(statusText))}${fg(palette.muted)(stage)}${fg(palette.info)(repo)}`;
+    const branch = agent?.branch ? `  ⎇ ${agent.branch}` : "";
+    this.titleLine.content = t`${dim("‹")} ${bold(fg(palette.text)(id))} ${dim("›")}  ${bold(fg(statusCol)(statusText))}${fg(palette.muted)(stage)}${fg(palette.info)(repo)}${fg(palette.accent)(branch)}`;
 
     const pid = agent?.pid != null ? String(agent.pid) : "—";
     const age = agent?.startedAt != null ? humanDuration(ageMsOf(agent, now)) : "—";

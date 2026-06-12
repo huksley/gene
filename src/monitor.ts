@@ -87,6 +87,8 @@ export interface AgentState {
   durationMs?: number;
   /** Repo the agent works in, e.g. "group/app" — for the detail header. */
   repoLabel?: string;
+  /** Work branch the agent's worktree is on, e.g. "fix/abc-123" — for the detail header. */
+  branch?: string;
 }
 
 /** Summary counts from one scan cycle (mirrors the daemon's scan-summary log). */
@@ -280,11 +282,12 @@ class Monitor extends EventEmitter {
    * "queued" state and clears any stale cancellation flag from a prior run of the
    * same ticket, so a fresh dispatch is never pre-cancelled.
    */
-  agentDispatched(id: string, stage: string, repoLabel: string): void {
+  agentDispatched(id: string, stage: string, repoLabel: string, branch?: string): void {
     this.cancelled.delete(id);
     const agent = this.upsert(id);
     agent.stage = stage;
     agent.repoLabel = repoLabel;
+    agent.branch = branch;
     agent.status = "queued";
     agent.startedAt = undefined;
     agent.finishedAt = undefined;
