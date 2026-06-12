@@ -168,6 +168,17 @@ interface InFlightContext {
 const inFlight = new Map<string, InFlightContext>();
 const isAtConcurrencyCap = (): boolean => inFlight.size >= env.MAX_CONCURRENT;
 
+/**
+ * Wakes the poll loop's interval wait early, so the next scan starts now instead
+ * of after POLL_INTERVAL_MS. Set while `runForever` is sleeping; null while it is
+ * mid-scan (a wake then is a no-op — a scan is already underway). Triggered by the
+ * tracker watch (e.g. a Trello webhook) and by the TUI's `r` refresh.
+ */
+let wakePoll: (() => void) | null = null;
+
+/** Start the next scan immediately if the loop is currently waiting (else a no-op). */
+const requestScan = (): void => wakePoll?.();
+
 /** Stop function for the active tracker watch (webhook listener), if started. */
 let stopWatch: (() => void) | null = null;
 
@@ -685,10 +696,10 @@ const runForever = async (issueFilter?: string): Promise<void> => {
 
   // Optional real-time reactivity: if the tracker supports a watch (e.g. a Trello
   // webhook), let it wake the current poll wait early. Poll-only when unsupported.
-  let wakeEarly: (() => void) | null = null;
+  // The TUI's `r` refresh wakes it too, via the module-level requestScan().
   if (tracker.startWatch) {
     try {
-      stopWatch = await tracker.startWatch(() => wakeEarly?.());
+      stopWatch = await tracker.startWatch(() => wakePoll?.());
     } catch (error) {
       logger.warn(`${logger.tag.flow} could not start tracker watch:`, error instanceof Error ? error.message : error);
     }
@@ -715,13 +726,13 @@ const runForever = async (issueFilter?: string): Promise<void> => {
     // a just-edited issue to the following cycle, so an early wake can't act too soon.
     await new Promise<void>(resolve => {
       const timer = setTimeout(() => {
-        wakeEarly = null;
+        wakePoll = null;
         resolve();
       }, env.POLL_INTERVAL_MS);
-      wakeEarly = () => {
+      wakePoll = () => {
         clearTimeout(timer);
-        wakeEarly = null;
-        logger.info(`${logger.tag.flow} woken early by tracker activity`);
+        wakePoll = null;
+        logger.info(`${logger.tag.flow} woken early`);
         resolve();
       };
     });
@@ -835,6 +846,9 @@ const main = async (): Promise<void> => {
       publishDaemonConfig();
       await startUi({
         runForever: () => runForever(issueFilter),
+        // `r` on the dashboard reseeds the table *and* wakes the poll loop so the
+        // next scan starts now instead of after POLL_INTERVAL_MS.
+        requestScan,
         shutdown: gracefulShutdown,
         // `R` inside a ticket resets it (worktree/branch/lock + back to Todo),
         // reusing the same path as `npm run reset`. The pool stays open (the

@@ -27,6 +27,8 @@ import { palette } from "./theme.ts";
 export interface StartUiOptions {
   /** Runs the daemon's scan/dispatch loop forever (resolves only on shutdown). */
   runForever: () => Promise<void>;
+  /** Wake the poll loop so the next scan starts now (bound to `r` on the dashboard). */
+  requestScan: () => void;
   /** Graceful daemon shutdown (closes the DB, reports owned locks); does not exit the process. */
   shutdown: (signal: string) => Promise<void>;
   /** Reset one ticket (worktree/branch/lock + back to Todo). Bound to `R` inside a ticket. */
@@ -431,6 +433,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         paint();
         return;
       case "r":
+        options.requestScan(); // wake the poll loop so the next scan starts now
         void reseed();
         return;
       case "escape":
