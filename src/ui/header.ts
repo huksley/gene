@@ -11,11 +11,11 @@
  * the rest of src/ui/ it is one of the few modules that imports @opentui/core.
  */
 
-import { BoxRenderable, TextRenderable, bold, dim, fg, t, type CliRenderer } from "@opentui/core";
+import { BoxRenderable, StyledText, TextRenderable, bold, dim, fg, t, type CliRenderer } from "@opentui/core";
 
-import type { DaemonState, MonitorSnapshot } from "../monitor.ts";
+import { AgentStatuses, type AgentStatus, type DaemonState, type MonitorSnapshot } from "../monitor.ts";
 import { compactTokens, humanDuration, progressBar, secondsUntil, truncate } from "./format.ts";
-import { palette } from "./theme.ts";
+import { palette, statusColor, statusGlyph, statusLabel } from "./theme.ts";
 
 /** The status header renderable tree + its imperative update surface. */
 export class Header {
@@ -28,6 +28,7 @@ export class Header {
   private stageLine: TextRenderable;
   private tokensLine: TextRenderable;
   private scanLine: TextRenderable;
+  private explainStatus: BoxRenderable;
   private rule: TextRenderable;
 
   constructor(renderer: CliRenderer) {
@@ -41,7 +42,7 @@ export class Header {
       backgroundColor: palette.bg,
       paddingLeft: 1,
       paddingRight: 1,
-      paddingTop: 1
+      paddingTop: 0
     });
 
     this.titleLine = new TextRenderable(renderer, { id: "gene-title", content: "" });
@@ -54,8 +55,24 @@ export class Header {
     this.root.add(this.stageLine);
     this.root.add(this.tokensLine);
     this.root.add(this.scanLine);
-
     this.rule = new TextRenderable(renderer, { id: "gene-rule", content: "", fg: palette.border });
+    this.explainStatus = new BoxRenderable(renderer, {
+      id: "gene-explain-status",
+      flexDirection: "row",
+      alignItems: "center",
+      columnGap: 1
+    })
+    this.explainStatus.add(new TextRenderable(renderer, {
+      id: "gene-explain-status-label",
+      content: t`${fg(palette.muted)("Legend:")}`,
+    }))
+    for (const status of AgentStatuses) {
+      this.explainStatus.add(new TextRenderable(renderer, {
+        id: "gene-explain-status-item",
+        content: t`${fg(statusColor(status))(statusGlyph(status))} ${fg(palette.dim)(statusLabel(status))}`,
+      }))
+    }
+    this.root.add(this.explainStatus);
     this.root.add(this.rule);
   }
 
@@ -97,8 +114,8 @@ export class Header {
       // When auto-Done is configured, give Done its own lane (labelled with the
       // configured state name) instead of folding those tickets into "other".
       this.scanLine.content = d.doneState
-        ? t`${fg(palette.muted)("Scan:")} Todo ${fg(palette.text)(String(s.trigger))} ${dim("·")} In Progress ${fg(palette.text)(String(s.active))} ${dim("·")} Blocked ${fg(palette.text)(String(s.blocked))} ${dim("·")} In Review ${fg(palette.text)(String(s.review))} ${dim("·")} ${d.doneState} ${fg(palette.good)(String(s.done))} ${dim("·")} other ${fg(palette.text)(String(s.other))}`
-        : t`${fg(palette.muted)("Scan:")} Todo ${fg(palette.text)(String(s.trigger))} ${dim("·")} In Progress ${fg(palette.text)(String(s.active))} ${dim("·")} Blocked ${fg(palette.text)(String(s.blocked))} ${dim("·")} In Review ${fg(palette.text)(String(s.review))} ${dim("·")} other ${fg(palette.text)(String(s.other))}`;
+        ? t`${fg(palette.muted)("Scan:")} Todo ${fg(palette.text)(String(s.trigger))} ${dim("·")} In Progress ${fg(palette.text)(String(s.active))} ${dim("·")} Blocked ${fg(palette.text)(String(s.blocked))} ${dim("·")} In Review ${fg(palette.text)(String(s.review))} ${dim("·")} ${d.doneState} ${fg(palette.good)(String(s.done))}`
+        : t`${fg(palette.muted)("Scan:")} Todo ${fg(palette.text)(String(s.trigger))} ${dim("·")} In Progress ${fg(palette.text)(String(s.active))} ${dim("·")} Blocked ${fg(palette.text)(String(s.blocked))} ${dim("·")} In Review ${fg(palette.text)(String(s.review))}`;
     } else {
       this.scanLine.content = t`${fg(palette.muted)("Scan:")} ${fg(palette.dim)("(pending first scan)")}`;
     }

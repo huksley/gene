@@ -9,8 +9,11 @@
  *    never scrolls away, so the durable summary stays in view.
  *  - **live log** — the running agent's event stream ({@link AgentState.events}),
  *    scrollable and sticky to the tail; `↑↓`/`PgUp`/`PgDn`/`Home`/`End` scroll it.
- *    When no agent is live (a finished ticket browsed from the table) it falls
- *    back to the full persisted history here, so old tickets stay browsable.
+ *    When an agent is attached but hasn't emitted events yet (queued / just
+ *    dispatched) it shows a short "waiting…" placeholder — it does *not* replay
+ *    the persisted history, which is already pinned in "recent actions" above.
+ *    When no agent is live at all (a finished ticket browsed from the table) it
+ *    falls back to the full persisted history here, so old tickets stay browsable.
  *
  * `esc` (handled by the controller) returns to the dashboard; `R` resets the ticket.
  */
@@ -86,7 +89,6 @@ export class Detail {
   private renderer: CliRenderer;
   private titleLine: TextRenderable;
   private subLine: TextRenderable;
-  private rule: TextRenderable;
   private actionsLabel: TextRenderable;
   private actionsBox: BoxRenderable;
   private liveLabel: TextRenderable;
@@ -98,8 +100,8 @@ export class Detail {
   private historyRows: IssueLogRow[] = [];
   private currentId: string | null = null;
   private historyLoaded = false;
-  /** Which source currently fills the live pane: nothing yet / history fallback / live stream. */
-  private liveMode: "pending" | "history" | "live" = "pending";
+  /** Which source currently fills the live pane: nothing yet / agent attached but idle / history fallback / live stream. */
+  private liveMode: "pending" | "waiting" | "history" | "live" = "pending";
   private liveRendered = 0;
   private seq = 0;
 
@@ -116,20 +118,19 @@ export class Detail {
       backgroundColor: palette.bg,
       paddingLeft: 1,
       paddingRight: 1,
-      paddingTop: 1
+      paddingTop: 0
     });
 
     // Chrome lines: flexShrink:0 so the live pane's flexGrow can't squeeze them
     // onto the same row (they otherwise collapse into one mangled line).
     this.titleLine = new TextRenderable(renderer, { id: "gene-detail-title", content: "", flexShrink: 0 });
     this.subLine = new TextRenderable(renderer, { id: "gene-detail-sub", content: "", flexShrink: 0 });
-    this.rule = new TextRenderable(renderer, { id: "gene-detail-rule", content: "", fg: palette.border, flexShrink: 0 });
     this.root.add(this.titleLine);
     this.root.add(this.subLine);
-    this.root.add(this.rule);
 
     // Pinned "recent actions" summary: the last few persisted activity-log rows,
-    // always visible (flexShrink:0) so it never scrolls away.
+    // always visible (flexShrink:0) so it never scrolls away. Sits directly under
+    // the pid/age/tokens line — no separator rule, to keep the header block tight.
     this.actionsLabel = new TextRenderable(renderer, { id: "gene-detail-actions-label", content: "", flexShrink: 0 });
     this.actionsBox = new BoxRenderable(renderer, {
       id: "gene-detail-actions",
@@ -208,8 +209,6 @@ export class Detail {
       : "—";
     this.subLine.content = t`${fg(palette.muted)("pid")} ${fg(palette.text)(pid)}   ${fg(palette.muted)("age")} ${fg(palette.text)(age)}   ${fg(palette.muted)("tools")} ${fg(palette.text)(tools)}   ${fg(palette.muted)("tokens")} ${fg(palette.text)(tokens)}`;
 
-    this.rule.content = "─".repeat(Math.max(0, this.renderer.width - 2));
-
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
       : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("r")} reset  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
@@ -224,13 +223,23 @@ export class Detail {
       }
       this.appendLiveDelta(agent);
       this.liveLabel.content = this.sectionLabel("live log");
+    } else if (agent) {
+      // Agent attached but no events yet (queued / just dispatched). The persisted
+      // history is already pinned in "recent actions" above, so don't replay it
+      // here — just wait for the stream to start (avoids a duplicated log).
+      if (this.liveMode !== "waiting") {
+        this.clearLive();
+        this.addLiveLine("waiting for agent output…", palette.dim);
+        this.liveMode = "waiting";
+      }
+      this.liveLabel.content = this.sectionLabel("live log (waiting…)");
     } else if (this.historyLoaded) {
       if (this.liveMode !== "history") {
         this.clearLive();
         this.renderHistoryIntoLive(this.historyRows);
         this.liveMode = "history";
       }
-      this.liveLabel.content = this.sectionLabel(agent ? "live log (waiting…)" : "activity log");
+      this.liveLabel.content = this.sectionLabel("activity log");
     }
   }
 

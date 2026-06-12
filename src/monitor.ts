@@ -53,6 +53,7 @@ export interface TokenUsage {
  * spawned) and "running" (child alive).
  */
 export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | "cancelled";
+export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled"];
 
 /** A status is terminal once the run has ended one way or another. */
 export const isTerminalStatus = (status: AgentStatus): boolean =>
