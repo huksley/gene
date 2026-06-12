@@ -14,7 +14,7 @@
     "gene:once": "node --env-file-if-exists=.env.development src/index.ts --once",
     "ui": "node --experimental-ffi --disable-warning=ExperimentalWarning --env-file-if-exists=.env.development src/index.ts --ui",
     "start": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene\"",
-    "start:ui": "concurrently -k -s first -n pg,ui \"npm run pg\" \"npm run ui\"",
+    "start:ui": "bash ui.sh",
     "once": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene:once\"",
     "clone": "node --env-file-if-exists=.env.development src/clone.ts",
     "reset": "node --env-file-if-exists=.env.development src/reset.ts",

@@ -211,10 +211,16 @@ cancellation / reset. The poll loop runs in the
 separate observer or IPC.
 
 ```bash
-npm run start:ui                 # Postgres + daemon + dashboard, together
-npm run ui                       # dashboard only, against an already-running pg
-npm run ui -- linear:CLOUD-1094  # focus one issue (focus + dry-run flags pass through)
+npm run start:ui                      # Postgres (background) + dashboard (foreground), one command
+npm run start:ui -- linear:CLOUD-1094 # …focused on one issue (focus + dry-run flags pass through)
+npm run ui                            # dashboard only, against an already-running pg (e.g. npm run pg elsewhere)
 ```
+
+`start:ui` runs Postgres in the background and the dashboard in the foreground
+(see `ui.sh`) — a full-screen TUI must own the terminal, so it
+*can't* be hosted under a stdio multiplexer like `concurrently` (which would
+leave the renderer with no TTY: a tiny window and a dead keyboard). It reuses a
+Postgres that's already listening, and stops only the one it started.
 
 Requires **Node ≥ 26.3.0** — OpenTUI's native renderer loads over FFI, which the
 `ui` script enables (`--experimental-ffi`). On an older Node it prints install
@@ -280,6 +286,7 @@ src/
     detail.ts     per-ticket view: pinned last-5 actions + scrollable live log (history fallback) + reset
     theme.ts      color palette, status colors/glyphs, spinner frames
     format.ts     tiny formatters (duration, tokens, truncation, progress bar)
+ui.sh             start:ui — background Postgres + foreground dashboard (real TTY)
 ```
 
 ## Adding a forge
