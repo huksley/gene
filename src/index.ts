@@ -30,7 +30,7 @@ import { commitsBehind, detectDefaultBranch } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
 import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
-import { closeDb, logEvent } from "./db.ts";
+import { closeDb, findInterruptedRuns, logEvent } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
@@ -692,6 +692,43 @@ const publishDaemonConfig = (): void => {
   });
 };
 
+/**
+ * Close the lifecycle of any run whose daemon was killed mid-flight: its latest log
+ * event is `agent-start` with no outcome after it, so the dashboard would otherwise
+ * resurrect it as a stale row forever. Write a closing `agent-interrupted` event so
+ * the record is honest and the row reads as `interrupted`; the ticket is still in
+ * the active state, so the first scan re-picks it up and continues normally. The
+ * file lock is already self-healing (the owning PID is dead → reclaimed on dispatch),
+ * so there's nothing to unlock here. Best-effort: a DB hiccup must not block startup.
+ */
+const reconcileInterruptedRuns = async (): Promise<void> => {
+  let orphaned: { tracker: string; identifier: string }[];
+  try {
+    orphaned = await findInterruptedRuns();
+  } catch (error) {
+    logger.warn(
+      `${logger.tag.flow} could not reconcile interrupted runs:`,
+      error instanceof Error ? error.message : error
+    );
+    return;
+  }
+  if (orphaned.length === 0) {
+    return;
+  }
+  logger.info(
+    `${logger.tag.flow} reconciling ${orphaned.length} run(s) interrupted by a previous shutdown: ` +
+    `${orphaned.map(o => o.identifier).join(", ")} — left in "${env.ACTIVE_STATE}", will be re-picked up`
+  );
+  for (const { tracker: trackerName, identifier } of orphaned) {
+    await logEvent({
+      tracker: trackerName,
+      identifier,
+      event: "agent-interrupted",
+      detail: "daemon stopped mid-run; no outcome was recorded"
+    });
+  }
+};
+
 const runForever = async (issueFilter?: string): Promise<void> => {
   logger.info(
     `${logger.tag.flow} starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
@@ -855,6 +892,10 @@ const main = async (): Promise<void> => {
       publishDaemonConfig();
       await startUi({
         runForever: () => runForever(issueFilter),
+        // Close any runs orphaned by a previous shutdown, then let the UI reseed so
+        // their rows read as `interrupted` instead of a stale `agent-start`. startUi
+        // runs this off the first frame, so a cold DB never delays the UI mounting.
+        reconcile: reconcileInterruptedRuns,
         // `r` on the dashboard reseeds the table *and* wakes the poll loop so the
         // next scan starts now instead of after POLL_INTERVAL_MS.
         requestScan,
@@ -876,6 +917,9 @@ const main = async (): Promise<void> => {
   }
 
   publishDaemonConfig();
+  // Console mode has no seed to refresh, so just close orphaned runs before the
+  // first scan picks the still-active tickets back up.
+  await reconcileInterruptedRuns();
   await runForever(issueFilter);
 };
 

@@ -197,6 +197,28 @@ export const readIssueLog = async (tracker?: string, identifier?: string): Promi
 };
 
 /**
+ * Find runs that were in flight when their daemon died: the latest event for the
+ * ticket is `agent-start` (the run began) with no outcome row after it. Used once
+ * at daemon startup to reconcile orphaned runs — otherwise they linger in the
+ * dashboard's history seed forever, reconstructed as a stale `queued`/`interrupted`
+ * row. Returns the tracker + identifier of each; the caller records the closing
+ * `agent-interrupted` event.
+ */
+export const findInterruptedRuns = async (): Promise<{ tracker: string; identifier: string }[]> => {
+  const db = await getDb();
+  const res = await db.query<{ tracker: string; identifier: string }>(
+    `SELECT tracker, identifier
+       FROM (
+         SELECT DISTINCT ON (tracker, identifier) tracker, identifier, event
+           FROM issue_log
+          ORDER BY tracker, identifier, id DESC
+       ) latest
+      WHERE event = 'agent-start'`
+  );
+  return res.rows.map(row => ({ tracker: row.tracker, identifier: row.identifier }));
+};
+
+/**
  * Close the pool if it was ever opened, so a one-shot `--once` / `log` / `reset` run
  * can exit instead of lingering on open sockets. Idempotent and never throws — a
  * close failure shouldn't wedge shutdown.

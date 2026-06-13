@@ -50,18 +50,23 @@ export interface TokenUsage {
  * Lifecycle of one dispatched agent run. Mirrors the outcomes invoke.ts can record
  * (agent-done / agent-error / agent-timeout / agent-cancelled) plus the two states
  * that exist only in memory before an outcome: "queued" (dispatched, not yet
- * spawned) and "running" (child alive).
+ * spawned) and "running" (child alive). `interrupted` is reconstructed from the log
+ * for a run whose daemon was killed mid-flight — `agent-start` was recorded but no
+ * outcome ever followed (see src/db.ts findInterruptedRuns + the startup reconcile).
  */
-export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | "cancelled" | "blocked";
-export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled", "blocked"];
+export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | "cancelled" | "blocked" | "interrupted";
+export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled", "blocked", "interrupted"];
 
 /**
  * A status is terminal once the run has ended one way or another. `blocked` (moved
  * to the Blocked state — a clarification or a stall awaiting a human reply) counts:
- * the agent process is gone, even though a human can later re-dispatch it.
+ * the agent process is gone, even though a human can later re-dispatch it. So does
+ * `interrupted`: the daemon (and its child) died, even though the next scan will
+ * re-pick the still-active ticket up.
  */
 export const isTerminalStatus = (status: AgentStatus): boolean =>
-  status === "done" || status === "error" || status === "timeout" || status === "cancelled" || status === "blocked";
+  status === "done" || status === "error" || status === "timeout" || status === "cancelled" ||
+  status === "blocked" || status === "interrupted";
 
 /** Live, in-memory view of one dispatched agent run, keyed by issue identifier. */
 export interface AgentState {

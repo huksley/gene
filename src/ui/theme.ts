@@ -54,6 +54,8 @@ export const statusColor = (status: AgentStatus): string => {
     case "cancelled":
     case "blocked":
       return palette.warn;
+    case "interrupted":
+      return palette.muted; // a ghost row from a dead daemon — faded, not alarming
   }
 };
 
@@ -74,6 +76,8 @@ export const statusGlyph = (status: AgentStatus): string => {
       return "⊘";
     case "blocked":
       return "⏸"; // halted, awaiting a human reply
+    case "interrupted":
+      return "↯"; // run severed when its daemon was killed mid-flight
   }
 };
 

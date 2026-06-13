@@ -27,6 +27,12 @@ import { palette } from "./theme.ts";
 export interface StartUiOptions {
   /** Runs the daemon's scan/dispatch loop forever (resolves only on shutdown). */
   runForever: () => Promise<void>;
+  /**
+   * Close any runs orphaned by a previous shutdown (writes their `agent-interrupted`
+   * event). Run off the first frame, then followed by a reseed so the freshly-closed
+   * rows replace their stale `agent-start` in the table. Best-effort; never throws.
+   */
+  reconcile: () => Promise<void>;
   /** Wake the poll loop so the next scan starts now (bound to `r` on the dashboard). */
   requestScan: () => void;
   /** Graceful daemon shutdown (closes the DB, reports owned locks); does not exit the process. */
@@ -39,8 +45,11 @@ export interface StartUiOptions {
  * Map a persisted log event name to a coarse agent status for the history table.
  * `merged` is the lifecycle end (CR merged → Done), so it maps to `done` like
  * `agent-done`. `stalled` / `clarification` move the issue to Blocked awaiting a
- * human reply, so they map to `blocked`. Anything unrecognised falls through to
- * `queued` (a just-dispatched run not yet started).
+ * human reply, so they map to `blocked`. `agent-start` as the *last* event means a
+ * run whose daemon died before recording any outcome — a seed row is never a live
+ * agent (the monitor overrides live ones by id in mergeAgents), so a lingering
+ * `agent-start` is by definition an interrupted run, not a fresh `queued` one.
+ * Anything else unrecognised falls through to `queued` (a just-dispatched run).
  */
 const statusFromEvent = (event: string): AgentStatus =>
   event.includes("cancel")
@@ -53,7 +62,9 @@ const statusFromEvent = (event: string): AgentStatus =>
           ? "error"
           : event.includes("stall") || event.includes("clarification")
             ? "blocked"
-            : "queued";
+            : event === "agent-start" || event.includes("interrupt")
+              ? "interrupted"
+              : "queued";
 
 /**
  * Pull `stage` / `repoLabel` / `branch` back out of a persisted `dispatch` log
@@ -93,7 +104,6 @@ const buildHistorySeed = (rows: IssueLogRow[]): AgentState[] => {
     const first = list[0];
     const last = list[list.length - 1];
     const dispatch = list.find(r => r.event === "dispatch");
-    console.log(dispatch);
     const parsed = dispatch ? parseDispatchDetail(dispatch.detail) : undefined;
     // The dispatch row persists the issue title in its `data` JSONB (index.ts).
     const title =
@@ -472,6 +482,12 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
 
   await reseed();
   paint();
+
+  // Close any runs orphaned by a previous shutdown, then reseed so their rows show
+  // as `interrupted` rather than the stale `agent-start` the first seed captured.
+  // Non-blocking: a cold DB must not hold up the first frame (reconcile itself never
+  // throws), and the reseed lands as soon as the closing events are written.
+  void options.reconcile().then(reseed);
 
   // Run the daemon loop in this process; it resolves only when the daemon stops.
   try {
