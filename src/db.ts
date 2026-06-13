@@ -146,7 +146,7 @@ export type IssueLogEntry = {
 };
 
 /** One row read back from the activity log. */
-export type IssueLogRow = { createdAt: string; event: string; detail: string; tracker: string; identifier: string };
+export type IssueLogRow = { createdAt: string; event: string; detail: string; tracker: string; identifier: string; data?: unknown };
 
 /**
  * Append one entry to an issue's activity log. Best-effort: recording is
@@ -179,8 +179,8 @@ export const logEvent = async (entry: IssueLogEntry): Promise<void> => {
 /** Read an issue's activity log, oldest-first. Identifier match is case-insensitive. */
 export const readIssueLog = async (tracker?: string, identifier?: string): Promise<IssueLogRow[]> => {
   const db = await getDb();
-  const res = await db.query<{ created_at: Date | string; event: string; detail: string; tracker: string; identifier: string }>(
-    `SELECT created_at, event, detail, tracker, identifier
+  const res = await db.query<{ created_at: Date | string; event: string; detail: string; tracker: string; identifier: string; data: unknown }>(
+    `SELECT created_at, event, detail, tracker, identifier, data
         FROM issue_log
       WHERE ($1::text IS NULL OR tracker = $1) AND ($2::text IS NULL OR lower(identifier) = lower($2))
       ORDER BY id ASC`,
@@ -191,7 +191,8 @@ export const readIssueLog = async (tracker?: string, identifier?: string): Promi
     event: row.event,
     detail: row.detail,
     tracker: row.tracker,
-    identifier: row.identifier
+    identifier: row.identifier,
+    data: row.data ?? undefined
   }));
 };
 

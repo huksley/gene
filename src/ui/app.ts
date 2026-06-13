@@ -35,17 +35,25 @@ export interface StartUiOptions {
   reset: (identifier: string) => Promise<void>;
 }
 
-/** Map a persisted log event name to a coarse agent status for the history table. */
+/**
+ * Map a persisted log event name to a coarse agent status for the history table.
+ * `merged` is the lifecycle end (CR merged → Done), so it maps to `done` like
+ * `agent-done`. `stalled` / `clarification` move the issue to Blocked awaiting a
+ * human reply, so they map to `blocked`. Anything unrecognised falls through to
+ * `queued` (a just-dispatched run not yet started).
+ */
 const statusFromEvent = (event: string): AgentStatus =>
   event.includes("cancel")
     ? "cancelled"
     : event.includes("timeout")
       ? "timeout"
-      : event.includes("done")
+      : event.includes("done") || event.includes("merged")
         ? "done"
         : event.includes("error")
           ? "error"
-          : "queued";
+          : event.includes("stall") || event.includes("clarification")
+            ? "blocked"
+            : "queued";
 
 /**
  * Pull `stage` / `repoLabel` / `branch` back out of a persisted `dispatch` log
@@ -85,11 +93,18 @@ const buildHistorySeed = (rows: IssueLogRow[]): AgentState[] => {
     const first = list[0];
     const last = list[list.length - 1];
     const dispatch = list.find(r => r.event === "dispatch");
+    console.log(dispatch);
     const parsed = dispatch ? parseDispatchDetail(dispatch.detail) : undefined;
+    // The dispatch row persists the issue title in its `data` JSONB (index.ts).
+    const title =
+      dispatch && dispatch.data && typeof dispatch.data === "object" && "title" in dispatch.data
+        ? String((dispatch.data as { title: unknown }).title)
+        : undefined;
     const startedAt = Number.isNaN(Date.parse(first.createdAt)) ? undefined : Date.parse(first.createdAt);
     const finishedAt = Number.isNaN(Date.parse(last.createdAt)) ? undefined : Date.parse(last.createdAt);
     seed.push({
       id,
+      title,
       stage: parsed?.stage ?? last.event,
       status: statusFromEvent(last.event),
       startedAt,

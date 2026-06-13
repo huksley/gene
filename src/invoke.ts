@@ -618,7 +618,7 @@ export const invokeAgent = async (
     );
     monitor.agentFinished(id, "error", durationMs);
   } else if (exitCode === 0) {
-    await recordAgent("agent-done", `completed in ${seconds}s${summary}`, events);
+    await recordAgent("agent-done", `in ${seconds}s${summary}`, events);
     monitor.agentFinished(id, "done", durationMs);
   } else {
     const triedNote = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";

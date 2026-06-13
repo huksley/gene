@@ -52,6 +52,7 @@ export const statusColor = (status: AgentStatus): string => {
       return palette.bad;
     case "timeout":
     case "cancelled":
+    case "blocked":
       return palette.warn;
   }
 };
@@ -71,6 +72,8 @@ export const statusGlyph = (status: AgentStatus): string => {
       return "⏱";
     case "cancelled":
       return "⊘";
+    case "blocked":
+      return "⏸"; // halted, awaiting a human reply
   }
 };
 

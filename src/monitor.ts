@@ -52,12 +52,16 @@ export interface TokenUsage {
  * that exist only in memory before an outcome: "queued" (dispatched, not yet
  * spawned) and "running" (child alive).
  */
-export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | "cancelled";
-export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled"];
+export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | "cancelled" | "blocked";
+export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled", "blocked"];
 
-/** A status is terminal once the run has ended one way or another. */
+/**
+ * A status is terminal once the run has ended one way or another. `blocked` (moved
+ * to the Blocked state — a clarification or a stall awaiting a human reply) counts:
+ * the agent process is gone, even though a human can later re-dispatch it.
+ */
 export const isTerminalStatus = (status: AgentStatus): boolean =>
-  status === "done" || status === "error" || status === "timeout" || status === "cancelled";
+  status === "done" || status === "error" || status === "timeout" || status === "cancelled" || status === "blocked";
 
 /** Live, in-memory view of one dispatched agent run, keyed by issue identifier. */
 export interface AgentState {
@@ -282,12 +286,15 @@ class Monitor extends EventEmitter {
    * "queued" state and clears any stale cancellation flag from a prior run of the
    * same ticket, so a fresh dispatch is never pre-cancelled.
    */
-  agentDispatched(id: string, stage: string, repoLabel: string, branch?: string): void {
+  agentDispatched(id: string, stage: string, repoLabel: string, branch?: string, title?: string): void {
     this.cancelled.delete(id);
     const agent = this.upsert(id);
     agent.stage = stage;
     agent.repoLabel = repoLabel;
     agent.branch = branch;
+    if (title) {
+      agent.title = title;
+    }
     agent.status = "queued";
     agent.startedAt = undefined;
     agent.finishedAt = undefined;

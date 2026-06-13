@@ -61,12 +61,13 @@ const summarizeAction = (action: Action): string => {
  * persistent, per-issue trail of what the daemon did, surfaced by `npm run log`.
  * Best-effort (never throws); dry-run actions are flagged so the log stays honest.
  */
-const record = (issue: Issue, event: string, detail: string): Promise<void> =>
+const record = (issue: Issue, event: string, detail: string, data?: unknown): Promise<void> =>
   logEvent({
     tracker: tracker.name,
     identifier: issue.identifier,
     event,
-    detail: env.DRY_RUN ? `(dry-run) ${detail}` : detail
+    detail: env.DRY_RUN ? `(dry-run) ${detail}` : detail,
+    data
   });
 
 const intentFor = (action: Action): PromptIntent | null => {
@@ -291,7 +292,7 @@ const dispatchAgent = async (
   // and in the moment before the child starts. The running/done transitions arrive
   // later from invoke.ts (agentSpawned / agentFinished). No-op cost in console mode.
   const workBranch = extras.existing?.branch ?? issue.branchName;
-  monitor.agentDispatched(issue.identifier, intent, targetLabel(target), workBranch);
+  monitor.agentDispatched(issue.identifier, intent, targetLabel(target), workBranch, issue.title);
 
   if (isAtConcurrencyCap()) {
     logger.info(
@@ -300,7 +301,12 @@ const dispatchAgent = async (
     return true;
   }
 
-  await record(issue, "dispatch", `${intent} → ${targetLabel(target)} [${forge.name}] ⎇ ${workBranch}`);
+  await record(
+    issue,
+    "dispatch",
+    `${intent} → ${targetLabel(target)} [${forge.name}] ⎇ ${workBranch}`,
+    { title: issue.title }
+  );
 
   if (env.DRY_RUN) {
     // Preview only — no clone, no worktree, no spawn, no writes (the write helpers
@@ -487,13 +493,15 @@ const processReview = async (
     } catch (error) {
       logger.warn(
         `${logger.tag.flow} [${issue.identifier}] merged-CR check failed:`,
-        error instanceof Error ? error.message : error
+        error instanceof Error ? error.message : error,
+        { cause: error }
       );
       merged = null;
     }
+
     if (merged) {
       logger.info(`${logger.tag.flow} [${issue.identifier}] ${merged.url} merged — moving to "${env.DONE_STATE}"`);
-      await record(issue, "merged", `${merged.url} merged → ${env.DONE_STATE}`);
+      await record(issue, "merged", `PR ${merged.iid} merged, issue ${issue.identifier} moved to "${env.DONE_STATE}"`);
       try {
         await tracker.postComment(
           issue,
@@ -503,7 +511,8 @@ const processReview = async (
       } catch (error) {
         logger.error(
           `${logger.tag.flow} [${issue.identifier}] failed to move to "${env.DONE_STATE}":`,
-          error instanceof Error ? error.message : error
+          error instanceof Error ? error.message : error,
+          { cause: error }
         );
       }
       return true;

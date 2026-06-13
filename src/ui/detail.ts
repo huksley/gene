@@ -1,8 +1,9 @@
 /**
  * The per-ticket detail view, opened with `enter` from the dashboard.
  *
- * Layout (below the shared status header): a small header (identifier, status,
- * stage, repo, pid/age/tools/tokens), then two stacked panes —
+ * Layout (below the shared status header): a small header (ticket title, then
+ * identifier, status, stage, repo, branch, pid/age/tools/tokens), then two
+ * stacked panes —
  *
  *  - **recent actions (last 5)** — the tail of the persisted activity log
  *    (`readIssueLog` rows handed in via {@link Detail.setHistory}). Pinned: it
@@ -87,6 +88,7 @@ export class Detail {
   readonly root: BoxRenderable;
 
   private renderer: CliRenderer;
+  private ticketTitle: TextRenderable;
   private titleLine: TextRenderable;
   private subLine: TextRenderable;
   private actionsLabel: TextRenderable;
@@ -122,9 +124,12 @@ export class Detail {
     });
 
     // Chrome lines: flexShrink:0 so the live pane's flexGrow can't squeeze them
-    // onto the same row (they otherwise collapse into one mangled line).
+    // onto the same row (they otherwise collapse into one mangled line). The ticket
+    // title sits above the identifier/status row; hidden until a title is known.
+    this.ticketTitle = new TextRenderable(renderer, { id: "gene-detail-ticket-title", content: "", flexShrink: 0 });
     this.titleLine = new TextRenderable(renderer, { id: "gene-detail-title", content: "", flexShrink: 0 });
     this.subLine = new TextRenderable(renderer, { id: "gene-detail-sub", content: "", flexShrink: 0 });
+    this.root.add(this.ticketTitle);
     this.root.add(this.titleLine);
     this.root.add(this.subLine);
 
@@ -195,6 +200,18 @@ export class Detail {
    */
   render(agent: AgentState | undefined, _frame: number, now: number, notice?: string): void {
     const id = this.currentId ?? "";
+
+    // Ticket title above the identifier row; hide the line entirely when unknown
+    // (live agents carry it from dispatch; finished tickets recover it from the
+    // dispatch log row's data — older rows predate it, so it may be absent).
+    if (agent?.title) {
+      this.ticketTitle.visible = true;
+      this.ticketTitle.content = t`${bold(fg(palette.text)(truncate(agent.title, Math.max(10, this.renderer.width - 2))))}`;
+    } else {
+      this.ticketTitle.visible = false;
+      this.ticketTitle.content = "";
+    }
+
     const statusText = agent ? statusLabel(agent.status) : "HISTORY";
     const statusCol = agent ? statusColor(agent.status) : palette.muted;
     const stage = agent?.stage ? `  ·  ${agent.stage}` : "";
