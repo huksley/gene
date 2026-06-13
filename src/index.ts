@@ -508,6 +508,9 @@ const processReview = async (
           `🧬 ${forge.changeRequestTerm} merged (${merged.url}) — moving this to **${env.DONE_STATE}**.`
         );
         await tracker.moveToState(issue, env.DONE_STATE);
+        // Reflect the terminal state on the dashboard immediately, rather than waiting
+        // for the next scan's done-bucket sweep to retire the stage.
+        monitor.markIssueDone(issue.identifier);
       } catch (error) {
         logger.error(
           `${logger.tag.flow} [${issue.identifier}] failed to move to "${env.DONE_STATE}":`,
@@ -648,6 +651,14 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
     },
     Date.now() + env.POLL_INTERVAL_MS
   );
+
+  // Retire the dashboard stage of any issue now in Done: its row drops the stale
+  // dispatch intent for a terminal `done`. Only touches rows that already exist (a
+  // Done ticket that never ran this session is never added), so this is a no-op until
+  // an issue actually reaches DONE_STATE.
+  for (const issue of done) {
+    monitor.markIssueDone(issue.identifier);
+  }
 
   // Existing conversations take priority over new Todo work: drain In Progress +
   // Blocked, and check In-Review change requests (failing CI / new review comments),

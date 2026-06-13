@@ -1,12 +1,27 @@
-# Gene AI
+# 🧬 Gene AI
 
-AI agent which closes tickets.
+AI agent which gets work done.
 From ticket to pull request in minutes, without touching a code.
+
+
+```
+   ┌──────────┐        ┌─────────────┐       ┌───────────┐       ┌──────────┐
+   │ Todo     │ ─────► │ In Progress │ ────► │ In Review │ ────► │ Done     │
+   │ (plan)   │ ─────► │   (code)    │ ────► │  (push)   │ ────► │ (merge)  │
+   └──────────┘        └─────────────┘       └───────────┘       └──────────┘
+    pick up              │   ▲                │   ▲  │   merged
+    + comment            │   │                │   └──┘
+                    plan │   │ reply          │        re-dispatch loop:
+                         ▼   │                │        CI failed, comment, or review
+                      ┌──────┴──────┐         │
+                      │   Blocked   │ ◄───────┘
+                      └─────────────┘   needs a human decision
+```
 
 Gene AI watches your issue tracker — **Linear** or **Trello** — for issues labelled
 **`Gene`**, and for each one dispatches a `claude` agent — running in a dedicated git
 worktree — to do the work and open a change request. Each issue chooses its own target
-repo (and therefore its forge) from a link in the issue, so one tracker can drive
+repo (and the assigned forge) from a link in the issue, so one tracker can drive
 **GitLab** and **GitHub** repos side by side.
 
 ## How it works
@@ -35,6 +50,52 @@ issue to *In Progress*, and holds a per-issue lock. The **spawned agent** does
 everything else — code changes, the merge/pull request, and the tracker write-back
 (comments + the terminal state move).
 
+## Flow in detail
+
+One shortcut not on the flow above: a **Todo** issue that already has an MR/PR
+attached skips the fresh start and **continues that draft** straight into the
+In Review loop.
+
+**Each scan** (every poll, or woken early by a webhook / TUI `r`) drains active work
+before picking up anything new:
+
+```
+   ┌────────────────────────────────────────────────────────┐
+   │ list your "Gene" issues, then act in PRIORITY ORDER:   │
+   ├────────────────────────────────────────────────────────┤
+   │ 1. In Progress / Blocked  → new human comment? resume  │
+   │ 2. In Review              → check forge CI + comments  │
+   │ 3. Todo                   → start new work (last)      │
+   └────────────────────────────────────────────────────────┘
+```
+
+**What "dispatch the agent" does** — the orchestrator sets up and spawns; the agent
+does the work and writes everything back itself:
+
+```
+   under a per-issue lock (ISSUE-ID):
+   ┌──────────────────────────────────────────────────────────┐
+   │ clone repo → git worktree → build prompt → spawn claude  │
+   └──────────────────────────────────────────────────────────┘
+                              │
+                              ▼   then the AGENT itself:
+   ┌──────────────────────────────────────────────────────────┐
+   │ edit → commit → push → open / update the MR/PR           │
+   │       → comment on the ticket → move its state           │
+   └──────────────────────────────────────────────────────────┘
+```
+
+**If something breaks** — a hard kill never wedges an issue:
+
+```
+   daemon killed mid-run    log ends at "agent-start", no outcome → mark it
+                            "interrupted"; next scan resumes it (still In
+                            Progress, worktree kept)
+   lock held by dead PID    reclaimed automatically on the next dispatch
+   agent stalled / crashed  retried; if still unfinished → Blocked, with a
+                            "reply to resume" comment
+```
+
 ## Lifecycle (tracker workflow states)
 
 The lifecycle is driven by the tracker's **workflow states** — Linear workflow states,
@@ -47,7 +108,7 @@ or on Trello the card's **list** (the daemon scans by state *name*, so both look
 | Picked up — change request already attached | agent **continues** the open MR/PR (on its own branch) instead of starting fresh |
 | Agent asks a question / proposes a plan | agent comments + → **Blocked** |
 | Agent opens a change request | agent comments (MR/PR link) + → **In Review** (as a **draft** if `GENE_DRAFT_CHANGE_REQUEST`) |
-| CI fails or a reviewer comments | daemon re-dispatches the agent to address it (back to **In Review**) |
+| CI fails, **or** a reviewer comments | daemon re-dispatches the agent to address it (back to **In Review**) — a reviewer comment acts **even while CI is still running** |
 | Human merges | manual → **Done** — or set `<TP>_DONE_STATE` to auto-move on merge |
 
 The `Gene` label is an **ownership tag and is never removed by the pipeline.**
@@ -83,10 +144,14 @@ to narrow if needed.)
 polls the forge for two signals before it touches new Todo work: a **failing
 pipeline / Actions run**, and **new review comments** on the MR/PR (the same
 marker tells Gene's own replies from a human's). On either, it re-dispatches the
-agent to push a fix and reply. CI that's still **running**, or nothing new since
-the last check, is a no-op — the daemon just moves on. A per-issue cursor (the
-handled head SHA + newest comment, stored in Postgres via `db.ts`) ensures each
-signal triggers exactly one dispatch, not one per poll.
+agent to push a fix and reply. A **new human comment is acted on immediately —
+even while CI is still running**, so a reviewer never has to wait for a pipeline
+to finish to be heard. Running CI only defers the cases where it logically must:
+a still-running pipeline can't be a *failure* yet, and a draft pickup with nothing
+new won't pile a fresh run onto mid-flight CI. With no new signal at all, the scan
+is a no-op and the daemon moves on. A per-issue cursor (the handled head SHA +
+newest comment, stored in Postgres via `db.ts`) ensures each signal triggers
+exactly one dispatch, not one per poll.
 
 **Auto-progress to Done on merge (`review.ts`, opt-in).** Set `<TP>_DONE_STATE`
 (e.g. `TRELLO_DONE_STATE=Done` / `LINEAR_DONE_STATE=Done`) and the daemon moves an
@@ -101,6 +166,17 @@ success result), retries within the agent's retry budget, and — if it still di
 finish — posts a "I stopped before finishing — reply to resume" comment and moves
 the issue to **Blocked** rather than letting it stall silently In Progress. The
 worktree is preserved, so a reply resumes from where it left off.
+
+**Interrupted runs recover on restart (`index.ts`, `db.ts`).** If the daemon itself
+is killed while an agent is mid-run — a hard quit, a crash, a reboot — that run
+never records an outcome; its activity log just ends at `agent-start`. On the next
+startup the daemon **reconciles** these: it writes a closing `agent-interrupted`
+event for each (so the run stops haunting the dashboard as a stale in-flight row,
+shown there as the `interrupted` status), and — because the issue is still **In
+Progress** — the very next scan re-picks it up and continues from the preserved
+worktree. The per-issue file lock is self-healing (it records the owning PID, and a
+lock held by a now-dead process is reclaimed on the next dispatch), so a hard kill
+never wedges an issue.
 
 **Low-latency reactivity (optional Trello webhook).** By default the daemon reacts
 within `GENE_POLL_INTERVAL_MS`. On Trello you can drop that to seconds: set

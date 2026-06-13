@@ -16,7 +16,7 @@
 import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core";
 
 import logger, { setLogSink, type LogSink } from "../logger.ts";
-import { monitor, type AgentState, type AgentStatus } from "../monitor.ts";
+import { monitor, DONE_STAGE, type AgentState, type AgentStatus } from "../monitor.ts";
 import { readIssueLog, type IssueLogRow } from "../db.ts";
 import { Dashboard, nextSortMode, type SortMode } from "./dashboard.ts";
 import { Detail } from "./detail.ts";
@@ -115,7 +115,9 @@ const buildHistorySeed = (rows: IssueLogRow[]): AgentState[] => {
     seed.push({
       id,
       title,
-      stage: parsed?.stage ?? last.event,
+      // A merged CR is the lifecycle end (→ Done), so its row shows the terminal
+      // `done` stage rather than the stale dispatch intent — matching the live daemon.
+      stage: last.event === "merged" ? DONE_STAGE : (parsed?.stage ?? last.event),
       status: statusFromEvent(last.event),
       startedAt,
       finishedAt,

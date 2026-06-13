@@ -58,6 +58,13 @@ export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | 
 export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled", "blocked", "interrupted"];
 
 /**
+ * Terminal STAGE shown once an issue reaches the tracker's Done state — it replaces
+ * the (now stale) dispatch intent in the dashboard's STAGE column. Shared so the live
+ * daemon (markIssueDone) and the history seed (ui/app.ts) agree on the literal.
+ */
+export const DONE_STAGE = "done";
+
+/**
  * A status is terminal once the run has ended one way or another. `blocked` (moved
  * to the Blocked state — a clarification or a stall awaiting a human reply) counts:
  * the agent process is gone, even though a human can later re-dispatch it. So does
@@ -76,6 +83,12 @@ export interface AgentState {
   title?: string;
   /** Workflow intent driving the run: start-processing / address-review / continue-draft / … */
   stage: string;
+  /**
+   * The issue's current tracker state (Todo / In Progress / Blocked / In Review / Done),
+   * refreshed each scan by the daemon. Distinct from `stage` (the dispatch intent) and
+   * `status` (the run outcome). Undefined until the first scan observes the issue.
+   */
+  lifecycleState?: string;
   /** Current lifecycle status. */
   status: AgentStatus;
   /** OS pid of the `claude -p` child, once spawned. */
@@ -318,6 +331,36 @@ class Monitor extends EventEmitter {
     agent.toolCount = 0;
     agent.tokens = undefined;
     agent.pid = undefined;
+    this.scheduleChange();
+  }
+
+  /**
+   * Mark an issue's row as lifecycle-complete: replace the (now stale) dispatch stage
+   * with {@link DONE_STAGE} once the issue reaches the tracker's Done state. Only
+   * touches an existing row — a Done ticket that never ran this session gets no row —
+   * and leaves the status glyph untouched (a Done ticket whose last run errored still
+   * honestly reads `✗ done`). A later re-dispatch overwrites the stage via agentDispatched.
+   */
+  markIssueDone(id: string): void {
+    const agent = this.agents.get(id);
+    if (!agent || agent.stage === DONE_STAGE) {
+      return;
+    }
+    agent.stage = DONE_STAGE;
+    this.scheduleChange();
+  }
+
+  /**
+   * Record the issue's current tracker state on its row (the STATE column), refreshed
+   * each scan. Only touches an existing row — issues that never ran this session get no
+   * row — so it's a no-op until a dispatched issue moves through the lifecycle.
+   */
+  setIssueState(id: string, state: string): void {
+    const agent = this.agents.get(id);
+    if (!agent || agent.lifecycleState === state) {
+      return;
+    }
+    agent.lifecycleState = state;
     this.scheduleChange();
   }
 
