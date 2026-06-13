@@ -19,7 +19,8 @@ Usage:
   trello cards <boardId>                 List a board's cards (issues)
   trello list-cards <listId>             List cards in one list
   trello card <cardId>                   Show one card
-  trello create --list <id> --name <t> [--desc <d>]   Create a card
+  trello create --list <id> --name <t> [--desc <d>] [--label <id>...] [--member <id>...]
+                                         Create a card (--label/--member repeatable)
   trello move <cardId> <listId>          Move a card to another list
   trello archive <cardId>                Archive (close) a card
   trello delete <cardId>                 Permanently delete a card
@@ -28,26 +29,30 @@ Usage:
 
 Auth: set TRELLO_API_KEY and TRELLO_TOKEN (see trello/README.md).`;
 
-/** Minimal parser: pulls `--flag value` pairs out, leaves the rest as positionals. */
-const parseArgs = (argv: string[]): { flags: Record<string, string>; rest: string[] } => {
+/**
+ * Minimal parser: pulls `--flag value` pairs out, leaves the rest as positionals.
+ * `flags` keeps the last value per flag; `repeated` keeps every value, so a flag passed
+ * multiple times (e.g. `--label a --label b`) can be collected as a list.
+ */
+const parseArgs = (
+  argv: string[]
+): { flags: Record<string, string>; repeated: Record<string, string[]>; rest: string[] } => {
   const flags: Record<string, string> = {};
+  const repeated: Record<string, string[]> = {};
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
       const name = arg.slice(2);
       const next: string | undefined = argv[i + 1];
-      if (next === undefined || next.startsWith("--")) {
-        flags[name] = "true";
-      } else {
-        flags[name] = next;
-        i += 1;
-      }
+      const value = next === undefined || next.startsWith("--") ? "true" : (i += 1, next);
+      flags[name] = value;
+      (repeated[name] ??= []).push(value);
     } else {
       rest.push(arg);
     }
   }
-  return { flags, rest };
+  return { flags, repeated, rest };
 };
 
 const printCard = (c: TrelloCard): void => {
@@ -65,7 +70,7 @@ const main = async (): Promise<void> => {
   }
 
   const client = TrelloClient.fromEnv();
-  const { flags, rest } = parseArgs(argv);
+  const { flags, repeated, rest } = parseArgs(argv);
 
   switch (command) {
     case "boards": {
@@ -120,9 +125,17 @@ const main = async (): Promise<void> => {
       const idList = flags.list;
       const name = flags.name;
       if (!idList || !name) {
-        throw new Error("usage: trello create --list <id> --name <title> [--desc <text>]");
+        throw new Error(
+          "usage: trello create --list <id> --name <title> [--desc <text>] [--label <id>...] [--member <id>...]"
+        );
       }
-      const c = await client.createCard({ idList, name, desc: flags.desc });
+      const c = await client.createCard({
+        idList,
+        name,
+        desc: flags.desc,
+        idLabels: repeated.label,
+        idMembers: repeated.member
+      });
       console.log("created:");
       printCard(c);
       return;

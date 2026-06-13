@@ -20,12 +20,14 @@ import type {
   RawBoard,
   RawCard,
   RawComment,
+  RawLabel,
   RawList,
   RawMember,
   TrelloBoard,
   TrelloCard,
   TrelloComment,
   TrelloCredentials,
+  TrelloLabel,
   TrelloList,
   TrelloMember,
   UpdateCardInput
@@ -222,6 +224,14 @@ export class TrelloClient {
       query: { fields: "id,username,fullName" }
     });
     return raw.map(toMember);
+  }
+
+  /** Labels defined on a board — to resolve a label name (e.g. the Gene tag) to its id. */
+  async listLabels(boardId: string): Promise<TrelloLabel[]> {
+    const raw = await this.request<RawLabel[]>("GET", `/boards/${boardId}/labels`, {
+      query: { fields: "name,color", limit: "1000" }
+    });
+    return raw.map(l => ({ id: l.id ?? "", name: l.name ?? "", color: l.color ?? null }));
   }
 
   // --- Cards (issues) -------------------------------------------------------
