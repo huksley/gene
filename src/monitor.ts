@@ -200,6 +200,15 @@ class Monitor extends EventEmitter {
   /** Live + recently-finished agents, keyed by issue identifier (e.g. CLOUD-1094). */
   private agents = new Map<string, AgentState>();
 
+  /**
+   * Lifetime token total carried over from previous runs (sum of every persisted
+   * run's usage, read from the DB at startup via {@link seedLifetimeTokens}). The
+   * snapshot adds this base to the current session's agents, so the dashboard's
+   * running total survives restarts. This session's agents are NOT in here — they
+   * live in `agents` and are persisted on completion, so next startup folds them in.
+   */
+  private lifetimeBase: TokenUsage = { in: 0, out: 0, total: 0 };
+
   /** Kill closures registered by {@link agentSpawned}, used by {@link requestCancel}. */
   private cancels = new Map<string, () => void>();
 
@@ -372,9 +381,19 @@ class Monitor extends EventEmitter {
 
   // --- View API -------------------------------------------------------------
 
+  /**
+   * Seed the lifetime token base from persisted history (DB sum), once at startup
+   * before any run this session completes — so the base and the session's agents
+   * stay disjoint and the running total never double-counts.
+   */
+  seedLifetimeTokens(base: { in: number; out: number }): void {
+    this.lifetimeBase = { in: base.in, out: base.out, total: base.in + base.out };
+    this.scheduleChange();
+  }
+
   /** Snapshot for the view: daemon state, all agents, and cumulative token totals. */
   getState(): MonitorSnapshot {
-    const tokens: TokenUsage = { in: 0, out: 0, total: 0 };
+    const tokens: TokenUsage = { ...this.lifetimeBase };
     for (const agent of this.agents.values()) {
       if (agent.tokens) {
         tokens.in += agent.tokens.in;

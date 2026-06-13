@@ -30,7 +30,7 @@ import { commitsBehind, detectDefaultBranch } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
 import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
-import { closeDb, findInterruptedRuns, logEvent } from "./db.ts";
+import { closeDb, findInterruptedRuns, logEvent, readTokenTotal } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
@@ -729,6 +729,28 @@ const reconcileInterruptedRuns = async (): Promise<void> => {
   }
 };
 
+/**
+ * Seed the monitor's running token total from the persisted lifetime sum (this
+ * tracker's runs), once at startup — so the dashboard's `Tokens:` line continues
+ * across restarts instead of resetting to zero. Runs before any spawn this session,
+ * keeping the base disjoint from the session's live agents (no double count).
+ * Best-effort: a DB hiccup just starts the session total from zero.
+ */
+const seedTokenTotals = async (): Promise<void> => {
+  try {
+    const base = await readTokenTotal(tracker.name);
+    monitor.seedLifetimeTokens(base);
+    if (base.in > 0 || base.out > 0) {
+      logger.info(`${logger.tag.flow} restored lifetime token total: in ${base.in}, out ${base.out}`);
+    }
+  } catch (error) {
+    logger.warn(
+      `${logger.tag.flow} could not read lifetime token total:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+};
+
 const runForever = async (issueFilter?: string): Promise<void> => {
   logger.info(
     `${logger.tag.flow} starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
@@ -892,10 +914,14 @@ const main = async (): Promise<void> => {
       publishDaemonConfig();
       await startUi({
         runForever: () => runForever(issueFilter),
-        // Close any runs orphaned by a previous shutdown, then let the UI reseed so
-        // their rows read as `interrupted` instead of a stale `agent-start`. startUi
-        // runs this off the first frame, so a cold DB never delays the UI mounting.
-        reconcile: reconcileInterruptedRuns,
+        // Close any runs orphaned by a previous shutdown and restore the lifetime
+        // token total, then let the UI reseed so rows read as `interrupted` instead
+        // of a stale `agent-start`. startUi runs this off the first frame, so a cold
+        // DB never delays the UI mounting.
+        reconcile: async () => {
+          await reconcileInterruptedRuns();
+          await seedTokenTotals();
+        },
         // `r` on the dashboard reseeds the table *and* wakes the poll loop so the
         // next scan starts now instead of after POLL_INTERVAL_MS.
         requestScan,
@@ -917,9 +943,10 @@ const main = async (): Promise<void> => {
   }
 
   publishDaemonConfig();
-  // Console mode has no seed to refresh, so just close orphaned runs before the
-  // first scan picks the still-active tickets back up.
+  // Console mode has no seed to refresh, so just close orphaned runs and restore the
+  // lifetime token total before the first scan picks the still-active tickets back up.
   await reconcileInterruptedRuns();
+  await seedTokenTotals();
   await runForever(issueFilter);
 };
 

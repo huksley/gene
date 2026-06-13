@@ -47,6 +47,12 @@ const SCHEMA = `
   -- attached to agent-done / agent-error rows. Added via ALTER so databases
   -- created before this column gain it on the next open.
   ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS data JSONB;
+
+  -- Per-run token usage, attached to a run's terminal row (agent-done / -error /
+  -- -stalled / -cancelled). Summed at startup into the monitor's lifetime base so
+  -- the dashboard's running total survives daemon restarts. NULL on non-run rows.
+  ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS tokens_in  BIGINT;
+  ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS tokens_out BIGINT;
 `;
 
 let dbPromise: Promise<Pool> | null = null;
@@ -143,6 +149,10 @@ export type IssueLogEntry = {
    * the agent's full response stream alongside the human-readable `detail`.
    */
   data?: unknown;
+  /** This run's total input tokens (folded cache included) — set on terminal run rows. */
+  tokensIn?: number;
+  /** This run's total output tokens — set on terminal run rows. */
+  tokensOut?: number;
 };
 
 /** One row read back from the activity log. */
@@ -157,7 +167,7 @@ export const logEvent = async (entry: IssueLogEntry): Promise<void> => {
   try {
     const db = await getDb();
     await db.query(
-      "INSERT INTO issue_log (tracker, identifier, event, detail, data) VALUES ($1, $2, $3, $4, $5::jsonb)",
+      "INSERT INTO issue_log (tracker, identifier, event, detail, data, tokens_in, tokens_out) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)",
       [
         entry.tracker,
         entry.identifier,
@@ -165,7 +175,9 @@ export const logEvent = async (entry: IssueLogEntry): Promise<void> => {
         entry.detail ?? "",
         // pg renders a JS array as a Postgres array literal, not JSON, so
         // stringify ourselves and let the ::jsonb cast parse it; undefined → NULL.
-        entry.data === undefined ? null : JSON.stringify(entry.data)
+        entry.data === undefined ? null : JSON.stringify(entry.data),
+        entry.tokensIn ?? null,
+        entry.tokensOut ?? null
       ]
     );
   } catch (error) {
@@ -194,6 +206,25 @@ export const readIssueLog = async (tracker?: string, identifier?: string): Promi
     identifier: row.identifier,
     data: row.data ?? undefined
   }));
+};
+
+/**
+ * Lifetime token total: sum of every run's persisted usage, optionally scoped to one
+ * tracker. Read once at startup to seed the monitor's running total so the dashboard's
+ * `Tokens:` line continues across restarts instead of resetting to zero. `sum()` over
+ * BIGINT comes back as a string from pg, so coerce to number (well within 2^53 for
+ * realistic counts).
+ */
+export const readTokenTotal = async (tracker?: string): Promise<{ in: number; out: number }> => {
+  const db = await getDb();
+  const res = await db.query<{ in: string | number; out: string | number }>(
+    `SELECT coalesce(sum(tokens_in), 0) AS in, coalesce(sum(tokens_out), 0) AS out
+       FROM issue_log
+      WHERE ($1::text IS NULL OR tracker = $1)`,
+    [tracker ?? null]
+  );
+  const row = res.rows[0];
+  return { in: Number(row?.in ?? 0), out: Number(row?.out ?? 0) };
 };
 
 /**

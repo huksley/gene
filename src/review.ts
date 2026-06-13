@@ -15,9 +15,11 @@
  * acted on — the failed head SHA and the newest handled comment — so we dispatch
  * once per signal, not on every poll. The In-Review rules:
  *
- *   - CI still **running** → wait (no-op); don't pile work on mid-flight CI.
+ *   - a **new human comment** since the cursor → act (even while CI runs — a
+ *     reviewer shouldn't have to wait for a pipeline to be heard).
  *   - CI **failed** at a head we haven't handled → act.
- *   - a **new human comment** since the cursor → act.
+ *   - CI still **running** with nothing else new → wait (no-op); don't pile a
+ *     fresh run onto mid-flight CI.
  *   - otherwise → no-op, and the daemon moves on to other issues.
  *
  * Picking up an *attached draft* (a Todo issue that already has an open MR/PR) is
@@ -162,10 +164,11 @@ const toContext = (forge: Forge, review: ChangeRequestReview, newComments: Revie
 
 /**
  * Given an already-found open change request, decide whether to (re-)dispatch the
- * agent, comparing CI + comments against the persisted cursor. With `alwaysAct`
- * (picking up an attached draft), dispatch even if nothing changed — there's work
- * queued — but still skip if CI is mid-flight to avoid racing it. Reads state but
- * writes nothing; the caller persists `nextCursor` only if it actually dispatches.
+ * agent, comparing CI + comments against the persisted cursor. New human comments
+ * act immediately, even while CI is still running. With `alwaysAct` (picking up an
+ * attached draft), dispatch even if nothing changed — there's work queued — but skip
+ * when CI is mid-flight *and* there's nothing new, to avoid racing it. Reads state
+ * but writes nothing; the caller persists `nextCursor` only if it actually dispatches.
  */
 const decideReviewOutcome = async (
   review: ChangeRequestReview,
@@ -173,10 +176,6 @@ const decideReviewOutcome = async (
   forge: Forge,
   alwaysAct: boolean
 ): Promise<ReviewOutcome> => {
-  if (review.ci.status === "running") {
-    return { act: false, reason: "CI still running — waiting" };
-  }
-
   const cursor = await readCursor(issueId);
   const newComments = review.comments.filter(
     c =>
@@ -196,7 +195,14 @@ const decideReviewOutcome = async (
     reasons.push(`${newComments.length} new review comment(s)`);
   }
 
+  // New human comments activate the agent immediately, even while CI is mid-flight —
+  // a reviewer shouldn't have to wait for a pipeline to finish to be heard. Running CI
+  // only gates the no-new-signal cases below: a still-running pipeline can't be a
+  // *failure* yet, and we don't pile an alwaysAct draft pickup onto mid-flight CI.
   if (reasons.length === 0) {
+    if (review.ci.status === "running") {
+      return { act: false, reason: "CI still running, no new comments — waiting" };
+    }
     if (!alwaysAct) {
       return { act: false, reason: `nothing new (CI ${review.ci.status}, no new comments)` };
     }

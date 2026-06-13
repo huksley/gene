@@ -28,6 +28,7 @@ import { tracker } from "./tracker/index.ts";
 import type { Issue } from "./tracker/index.ts";
 import type { Forge } from "./forge/index.ts";
 import { isRetriable, matchesTransient } from "./agent-retry.ts";
+import { TokenAccumulator } from "./tokens.ts";
 import chalk from "chalk";
 
 /**
@@ -175,6 +176,8 @@ type StreamEvent = {
   subtype?: string;
   message?: { content?: ContentBlock[]; usage?: Usage };
   usage?: Usage;
+  /** The `--include-partial-messages` wrapper (message_start / message_delta carry the real per-turn usage). */
+  event?: { type?: string; usage?: Usage; message?: { usage?: Usage } };
   duration_ms?: number;
   result?: string;
   is_error?: boolean;
@@ -272,23 +275,6 @@ const renderEvent = (issueId: string, events: AgentEvent[]): void => {
   }
 };
 
-/**
- * Distil a raw usage block into the monitor's {@link TokenUsage}, folding cache
- * reads/writes into the input total. Returns undefined for an absent or all-zero
- * block so callers can skip publishing — token capture is strictly best-effort.
- */
-const toTokenUsage = (usage?: Usage): TokenUsage | undefined => {
-  if (!usage) {
-    return undefined;
-  }
-  const cached = (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
-  const input = (usage.input_tokens ?? 0) + cached;
-  const output = usage.output_tokens ?? 0;
-  if (input === 0 && output === 0) {
-    return undefined;
-  }
-  return { in: input, out: output, total: input + output };
-};
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -376,6 +362,7 @@ const runClaudeOnce = (
   timedOut: boolean;
   transientFailure: boolean;
   transientReason: string | null;
+  tokens: TokenUsage;
   events: AgentEvent[];
 }> =>
   new Promise((resolve, reject) => {
@@ -386,6 +373,7 @@ const runClaudeOnce = (
     let transientFailure = false;
     let transientReason: string | null = null;
     const events: AgentEvent[] = [];
+    const tokenAcc = new TokenAccumulator();
     const { command, args } = getSpawnCommand(worktreePath, prompt, allowedTools);
     // In sandbox mode the child (sandbox.sh) spawns msb + the VM beneath it, so
     // detach it into its own process group — a timeout can then tear down the whole
@@ -477,11 +465,12 @@ const runClaudeOnce = (
         for (const record of records) {
           monitor.agentEvent(issue.identifier, record);
         }
-        // Best-effort token capture: assistant turns carry a running `message.usage`,
-        // the final `result` event carries the authoritative cumulative `usage`.
-        const usage = toTokenUsage(event.usage ?? event.message?.usage);
-        if (usage) {
-          monitor.agentTokens(issue.identifier, usage);
+        // Token capture: fold each turn's real `message_delta` output into a running
+        // absolute total (correct live + crash-resilient), trusting the terminal
+        // `result` event when it lands. See tokens.ts for why per-event usage is wrong.
+        const totals = tokenAcc.observe(event);
+        if (totals.total > 0) {
+          monitor.agentTokens(issue.identifier, totals);
         }
       } catch {
         logger.info(`${logger.tag.invoke} [${issue.identifier}] raw: ${truncate(line, 200)}`);
@@ -505,6 +494,7 @@ const runClaudeOnce = (
         timedOut,
         transientFailure,
         transientReason,
+        tokens: tokenAcc.total(),
         events
       });
     });
@@ -537,8 +527,8 @@ export const invokeAgent = async (
     delete childEnv.ANTHROPIC_API_KEY;
   }
 
-  const recordAgent = (event: string, detail: string, data?: unknown): Promise<void> =>
-    logEvent({ tracker: tracker.name, identifier: id, event, detail, data });
+  const recordAgent = (event: string, detail: string, data?: unknown, tokens?: TokenUsage): Promise<void> =>
+    logEvent({ tracker: tracker.name, identifier: id, event, detail, data, tokensIn: tokens?.in, tokensOut: tokens?.out });
 
   const totalAttempts = env.AGENT_MAX_RETRIES + 1;
   let exitCode = -1;
@@ -550,6 +540,9 @@ export const invokeAgent = async (
   let transientReason: string | null = null;
   let attemptsMade = 0;
   let events: AgentEvent[] = [];
+  // This run's final token usage — the last attempt's accumulated total. Attached to
+  // the terminal log row below so startup can sum it into the lifetime total.
+  let runTokens: TokenUsage = { in: 0, out: 0, total: 0 };
 
   await recordAgent(
     "agent-start",
@@ -563,7 +556,7 @@ export const invokeAgent = async (
     logger.info(`${logger.tag.invoke} [${id}] spawning agent in ${worktreePath}${suffix}`);
     logger.info(`${logger.tag.invoke} [${id}]   prompt: ${prompt.length} chars`);
 
-    ({ exitCode, resultSubtype, resultText, durationMs, timedOut, transientFailure, transientReason, events } =
+    ({ exitCode, resultSubtype, resultText, durationMs, timedOut, transientFailure, transientReason, tokens: runTokens, events } =
       await runClaudeOnce(issue, prompt, worktreePath, allowedTools, childEnv, updatePid));
 
     // Operator cancelled this run from the TUI: the child was already signalled, so
@@ -607,18 +600,19 @@ export const invokeAgent = async (
   if (monitor.isCancelled(id)) {
     // Cancelled from the TUI: the child was killed mid-run and deliberately not
     // retried. Record it as its own outcome so the log doesn't read like a crash.
-    await recordAgent("agent-cancelled", `cancelled by operator after ${seconds}s${summary}`, events);
+    await recordAgent("agent-cancelled", `cancelled by operator after ${seconds}s${summary}`, events, runTokens);
     monitor.agentFinished(id, "cancelled", durationMs);
   } else if (stalled) {
     await recordAgent(
       "agent-stalled",
       `ended without a clean result after ${seconds}s` +
         `${transientFailure ? " (transient API drop)" : " (no success result)"}${summary}`,
-      events
+      events,
+      runTokens
     );
     monitor.agentFinished(id, "error", durationMs);
   } else if (exitCode === 0) {
-    await recordAgent("agent-done", `in ${seconds}s${summary}`, events);
+    await recordAgent("agent-done", `in ${seconds}s${summary}`, events, runTokens);
     monitor.agentFinished(id, "done", durationMs);
   } else {
     const triedNote = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
@@ -626,7 +620,8 @@ export const invokeAgent = async (
     await recordAgent(
       "agent-error",
       `exited ${exitCode}${resultSubtype ? ` (${resultSubtype})` : ""}${timeoutNote}${triedNote}${summary}`,
-      events
+      events,
+      runTokens
     );
     monitor.agentFinished(id, timedOut ? "timeout" : "error", durationMs);
   }
