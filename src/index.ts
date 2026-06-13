@@ -509,7 +509,8 @@ const processReview = async (
         );
         await tracker.moveToState(issue, env.DONE_STATE);
         // Reflect the terminal state on the dashboard immediately, rather than waiting
-        // for the next scan's done-bucket sweep to retire the stage.
+        // for the next scan to sweep it: update the STATE column and retire the stage.
+        monitor.setIssueState(issue.identifier, env.DONE_STATE);
         monitor.markIssueDone(issue.identifier);
       } catch (error) {
         logger.error(
@@ -652,10 +653,13 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
     Date.now() + env.POLL_INTERVAL_MS
   );
 
-  // Retire the dashboard stage of any issue now in Done: its row drops the stale
-  // dispatch intent for a terminal `done`. Only touches rows that already exist (a
-  // Done ticket that never ran this session is never added), so this is a no-op until
-  // an issue actually reaches DONE_STATE.
+  // Keep each dashboard row's STATE column in sync with the issue's current tracker
+  // state, and retire the dispatch stage of any issue now in Done (its row drops the
+  // stale intent for a terminal `done`). Both touch existing rows only — a ticket that
+  // never ran this session is never added — so they're no-ops until an issue has a row.
+  for (const issue of mine) {
+    monitor.setIssueState(issue.identifier, issue.stateName);
+  }
   for (const issue of done) {
     monitor.markIssueDone(issue.identifier);
   }

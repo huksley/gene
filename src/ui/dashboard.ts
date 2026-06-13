@@ -31,16 +31,17 @@ import { fit, humanDuration, stripAnsi, truncate } from "./format.ts";
 import { palette, spinner, statusColor, statusGlyph } from "./theme.ts";
 
 /** Fixed table column widths (characters). The EVENT column flexes to fill the rest. */
-const COL = { tracker: 1, id: 12, glyph: 1, stage: 16, pid: 7, age: 8, tools: 5 } as const;
+const COL = { tracker: 1, id: 10, state: 11, glyph: 1, stage: 16, pid: 7, age: 8, tools: 5 } as const;
 
 /** Columns + the single-space separators between them, up to (not including) EVENT. */
 const FIXED_WIDTH =
-  COL.tracker + 1 + COL.id + 1 + COL.glyph + 1 + COL.stage + 1 + COL.pid + 1 + COL.age + 1 + COL.tools + 1;
+  COL.tracker + 1 + COL.id + 1 + COL.state + 1 + COL.glyph + 1 + COL.stage + 1 + COL.pid + 1 + COL.age + 1 + COL.tools + 1;
 
 /** The dim column-label row, built from the same widths so it aligns with the data rows. */
 const TABLE_HEADER = [
   fit("", COL.tracker),
   fit("ID", COL.id),
+  fit("STATE", COL.state),
   fit("", COL.glyph),
   fit("STAGE", COL.stage),
   fit("PID", COL.pid),
@@ -139,7 +140,8 @@ const rowLine = (
   const idCell = fit(a.id, COL.id);
   const idChunk = selected ? bold(fg("#FFFFFF")(idCell)) : fg(palette.text)(idCell);
 
-  return t`${dim(fit(trackerInitial, COL.tracker))} ${idChunk} ${fg(statusColor(a.status))(fit(glyph, COL.glyph))} ${fg(palette.muted)(fit(a.stage, COL.stage))} ${fg(palette.dim)(fit(pid, COL.pid))} ${fg(palette.muted)(fit(age, COL.age))} ${fg(palette.dim)(fit(tools, COL.tools))} ${fg(eventColor)(truncate(a.lastEvent, eventWidth))}`;
+  const state = fit(a.lifecycleState ?? "—", COL.state);
+  return t`${dim(fit(trackerInitial, COL.tracker))} ${idChunk} ${fg(palette.info)(state)} ${fg(statusColor(a.status))(fit(glyph, COL.glyph))} ${fg(palette.muted)(fit(a.stage, COL.stage))} ${fg(palette.dim)(fit(pid, COL.pid))} ${fg(palette.muted)(fit(age, COL.age))} ${fg(palette.dim)(fit(tools, COL.tools))} ${fg(eventColor)(truncate(a.lastEvent, eventWidth))}`;
 };
 
 /** One reusable table row: a full-width Box (for the highlight) wrapping one Text. */

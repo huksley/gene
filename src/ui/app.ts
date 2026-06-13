@@ -202,7 +202,13 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     if (resetArmedId && now - resetArmedAt > 2000) {
       resetArmedId = null;
     }
-    const agents = mergeAgents(snapshot.agents, historySeed);
+    // Stamp the live tracker state (from the daemon's per-scan side-map) onto every
+    // row — live and seed alike — so the STATE column is populated for reconstructed
+    // rows too, not just this session's live agents.
+    const agents = mergeAgents(snapshot.agents, historySeed).map(a => {
+      const lifecycleState = monitor.getIssueState(a.id) ?? a.lifecycleState;
+      return lifecycleState === a.lifecycleState ? a : { ...a, lifecycleState };
+    });
     const merged = { daemon: snapshot.daemon, agents, tokens: snapshot.tokens };
     // The status header is pinned at the top, above whichever body is shown.
     header.render(merged, now);

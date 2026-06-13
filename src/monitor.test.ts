@@ -36,15 +36,16 @@ test("markIssueDone never creates a row for a ticket that never ran", () => {
   assert.equal(monitor.getAgent("NEVER-RAN"), undefined);
 });
 
-test("setIssueState records the issue's current tracker state on an existing row", () => {
+test("setIssueState tracks an issue's current tracker state in the side-map", () => {
   monitor.agentDispatched("STATE-1", "start-processing", "repo");
   monitor.setIssueState("STATE-1", "In Review");
-  assert.equal(monitor.getAgent("STATE-1")?.lifecycleState, "In Review");
+  assert.equal(monitor.getIssueState("STATE-1"), "In Review");
   monitor.setIssueState("STATE-1", "Done");
-  assert.equal(monitor.getAgent("STATE-1")?.lifecycleState, "Done");
+  assert.equal(monitor.getIssueState("STATE-1"), "Done");
 });
 
-test("setIssueState never creates a row for a ticket that never ran", () => {
+test("setIssueState records state without conjuring an agent row", () => {
   monitor.setIssueState("STATE-GHOST", "In Progress");
+  assert.equal(monitor.getIssueState("STATE-GHOST"), "In Progress");
   assert.equal(monitor.getAgent("STATE-GHOST"), undefined);
 });

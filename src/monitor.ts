@@ -214,6 +214,14 @@ class Monitor extends EventEmitter {
   private agents = new Map<string, AgentState>();
 
   /**
+   * Every Gene issue's current tracker state, keyed by identifier, refreshed each scan
+   * by the daemon (see setIssueState). Held separately from `agents` so the dashboard's
+   * STATE column can be stamped onto BOTH live rows and history-seed rows (which have no
+   * live agent entry) — and without conjuring agent rows for issues that never ran.
+   */
+  private issueStates = new Map<string, string>();
+
+  /**
    * Lifetime token total carried over from previous runs (sum of every persisted
    * run's usage, read from the DB at startup via {@link seedLifetimeTokens}). The
    * snapshot adds this base to the current session's agents, so the dashboard's
@@ -351,17 +359,22 @@ class Monitor extends EventEmitter {
   }
 
   /**
-   * Record the issue's current tracker state on its row (the STATE column), refreshed
-   * each scan. Only touches an existing row — issues that never ran this session get no
-   * row — so it's a no-op until a dispatched issue moves through the lifecycle.
+   * Record an issue's current tracker state, refreshed each scan for every Gene issue.
+   * Stored in the `issueStates` side-map (not on an agent row), so the dashboard can
+   * stamp the STATE column onto history-seed rows too — and so an issue that never ran
+   * this session doesn't get a spurious agent row.
    */
   setIssueState(id: string, state: string): void {
-    const agent = this.agents.get(id);
-    if (!agent || agent.lifecycleState === state) {
+    if (this.issueStates.get(id) === state) {
       return;
     }
-    agent.lifecycleState = state;
+    this.issueStates.set(id, state);
     this.scheduleChange();
+  }
+
+  /** An issue's last-known tracker state (set each scan), for the dashboard STATE column. */
+  getIssueState(id: string): string | undefined {
+    return this.issueStates.get(id);
   }
 
   /** The `claude -p` child has spawned: record its pid and how to cancel it. */
