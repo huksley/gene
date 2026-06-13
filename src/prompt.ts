@@ -182,6 +182,64 @@ const renderReviewContext = (rc: ReviewContext | undefined, forge: Forge): strin
   ].join("\n");
 };
 
+/**
+ * Scope-sizing + planning protocol. For non-trivial cards the agent plans (brainstorming →
+ * writing-plans) before executing, then picks Shape A (one cohesive change request) or, for
+ * top-level cards with truly independent subtasks, Shape B (split into subcards). A card that
+ * is itself a subcard (`issue.parentIdentifier` set) may plan but never spawn further subcards.
+ */
+const renderScopeSizing = (issue: Issue): string => {
+  const isSubcard = Boolean(issue.parentIdentifier);
+  const lines = [
+    "# Scope sizing — read this BEFORE picking an outcome",
+    "",
+    "Most cards are small (one bug, one screen, one copy change) — handle those directly via the",
+    "outcomes below. For **non-trivial scope**, plan first. A card is non-trivial when ANY holds:",
+    "- 4 or more items under `## Acceptance criteria`",
+    "- description longer than ~600 characters",
+    '- title/description contains: "refactor", "migrate", "redesign", "introduce", "rewrite",',
+    '  "add feature", "build a", "implement a", "overhaul"',
+    "- the work would plausibly touch 5+ files (excluding tests)",
+    "",
+    "For non-trivial scope, do NOT jump straight to editing. Follow the **planning protocol**:",
+    "1. Use the `superpowers:brainstorming` skill to clarify intent and surface hidden constraints.",
+    "2. Use `superpowers:writing-plans` to produce a structured, checkbox plan.",
+    "3. Pick the **shape** of the work and complete the matching outcome.",
+    "",
+    "## Shape A — one cohesive change request (most non-trivial cards)",
+    "",
+    `Steps are internal (files, sequential edits). Post the markdown-checkbox plan as a comment, move to`,
+    `"${env.BLOCKED_STATE}", and exit. On approval (a \`${env.COMMAND_BASE} approve\` directive or a free-form`,
+    '"go ahead" / "yes" reply) you resume and use `superpowers:executing-plans` to work the checklist on ONE',
+    "branch → ONE change request (outcome 3). Independently parallelizable steps may use",
+    "`superpowers:dispatching-parallel-agents`, but all output still lands on one branch and one change request."
+  ];
+
+  if (isSubcard) {
+    lines.push(
+      "",
+      "## Shape B — NOT available here",
+      "",
+      "This card is a **subcard** (its description/parent links to a parent card). Subcards may plan, but",
+      "their output is ALWAYS one of outcomes 1–4 — never split into further subcards. If the scope turns out",
+      "too big, prefer a Shape A plan inside this card's single change request."
+    );
+    return lines.join("\n");
+  }
+
+  lines.push(
+    "",
+    "## Shape B — independently shippable subcards (rare; only when truly independent)",
+    "",
+    "The plan reveals 3–6 subtasks that are each reviewable and mergeable on their own. The right output is",
+    "**N subcards, each running through the normal pipeline** — NOT one giant change request. When Shape B",
+    "applies, follow outcome 5 below.",
+    "",
+    tracker.subcardSnippet(issue)
+  );
+  return lines.join("\n");
+};
+
 const renderAttachments = (paths: string[]): string => {
   if (paths.length === 0) {
     return "(none)";
@@ -308,17 +366,25 @@ ${tracker.writeBackSnippet(issue)}
 
 ${forge.promptSnippet(ctx)}
 
+${renderScopeSizing(issue)}
+
 # Your task — pick ONE outcome
 
 1. **Ask a clarifying question** — post one comment with the question, move the issue to
    **"${env.BLOCKED_STATE}"**, then exit. Use this only when ambiguity would lead to materially wrong code.
-2. **Propose a plan** — post a comment outlining files to change + approach + estimated scope, move the
-   issue to **"${env.BLOCKED_STATE}"**, then exit. Wait for user approval before executing.
+2. **Propose a plan** — for non-trivial scope (Shape A), post the markdown-checkbox plan as a comment, move
+   the issue to **"${env.BLOCKED_STATE}"**, then exit. Wait for user approval before executing.
 3. **Execute code changes** — edit files on your branch, run typecheck + lint, commit, \`git push -u origin
    "${branch}"\`, open the ${cr} (above), post a comment with the ${cr} link, then move the issue to
    **"${env.REVIEW_STATE}"**. Do NOT merge — human merge is the final gate.
 4. **Acknowledge and adjust** — when the user redirected you, post an acknowledgement comment describing
-   the revised approach, then either execute (outcome 3) or propose (outcome 2).
+   the revised approach, then either execute (outcome 3) or propose (outcome 2).${issue.parentIdentifier
+      ? ""
+      : `
+5. **Split into subcards** — for Shape B (truly independent subtasks), create the subcards per the
+   "How to split into subcards" instructions above, post a summary comment, move the issue to
+   **"${env.BLOCKED_STATE}"**, then exit. The daemon moves this parent to Done automatically once every
+   subcard is done.`}
 
 # Hard rules
 
@@ -335,9 +401,12 @@ ${forge.promptSnippet(ctx)}
   spot new *human* review feedback; an unmarked reply of yours looks like fresh feedback and re-dispatches you
   in a loop.
 - **Terminal state (CRITICAL):** every run MUST end with the issue in exactly one of these states:
-  - **"${env.BLOCKED_STATE}"** — you posted a question or plan and are waiting on the user.
+  - **"${env.BLOCKED_STATE}"** — you posted a question, a plan, or a split-into-subcards summary and are waiting on the user.
   - **"${env.REVIEW_STATE}"** — you opened a ${cr}.
   If you exit without opening a ${cr}, you MUST move the issue to "${env.BLOCKED_STATE}". Never both, never neither.
+- **No nested subcards:** splitting into subcards (outcome 5) is only for top-level cards. ${issue.parentIdentifier
+      ? "This card IS a subcard — outcome 5 is not available to you; finish via outcomes 1–4."
+      : "If a subtask is too big, prefer a Shape A plan inside its own subcard rather than recursing."}
 - Never merge the ${cr}. Never push to the \`${baseBranch}\` branch directly.
 - Do NOT touch the issue's labels — the \`${env.LABEL}\` label is Gene's ownership tag and the daemon manages it.
 - Stay inside the worktree at \`${worktreePath}\`. Do not edit files elsewhere.

@@ -25,6 +25,7 @@ import type {
   TrelloCard,
   TrelloClient,
   TrelloComment,
+  TrelloLabel,
   TrelloList,
   TrelloMember
 } from "../../trello/index.ts";
@@ -79,6 +80,7 @@ let boardName: string | undefined;
 let listsCache: TrelloList[] | undefined;
 let membersCache: TrelloMember[] | undefined;
 let meCache: TrelloMember | null | undefined;
+let labelsCache: TrelloLabel[] | undefined;
 let listMapCache: Record<string, string> | null | undefined;
 
 /** Parse + cache the optional TRELLO_LIST_MAP (state-name → list-id) override. */
@@ -116,17 +118,19 @@ const ensureMeta = async (): Promise<void> => {
   }
   const board = boardId();
   const c = trello();
-  // Members/me/boards are best-effort: a missing member list just loses username
+  // Members/me/boards/labels are best-effort: a missing member list just loses username
   // resolution; the lists are essential (they are the lifecycle states).
-  const [lists, members, me, boards] = await Promise.all([
+  const [lists, members, me, boards, labels] = await Promise.all([
     c.listLists(board),
     c.listMembers(board).catch(() => [] as TrelloMember[]),
     c.getMe().catch(() => null),
-    c.listBoards().catch(() => [])
+    c.listBoards().catch(() => []),
+    c.listLabels(board).catch(() => [] as TrelloLabel[])
   ]);
   listsCache = lists;
   membersCache = members;
   meCache = me;
+  labelsCache = labels;
   boardName = boards.find(b => b.id === board)?.name;
 };
 
@@ -156,6 +160,15 @@ const usernamesFor = (idMembers: string[]): string[] => {
     .filter((u): u is string => Boolean(u));
 };
 
+/**
+ * Trello cards have no native parent field, so a subcard (Shape B) records its parent
+ * as a `Parent: <cardUrl>` first line in its description — the card shortLink in that URL
+ * is the parent's identifier. Returns undefined for a card with no such marker.
+ */
+const PARENT_LINE_REGEX = /^\s*Parent:\s*\S*trello\.com\/c\/([A-Za-z0-9]{8,})/im;
+export const parentIdentifierFromDesc = (desc: string): string | undefined =>
+  PARENT_LINE_REGEX.exec(desc)?.[1] ?? undefined;
+
 const toIssue = (card: TrelloCard): Issue => {
   const me = meCache;
   const usernames = usernamesFor(card.idMembers);
@@ -174,7 +187,8 @@ const toIssue = (card: TrelloCard): Issue => {
     assigneeMatch: usernames.length > 0 ? usernames.join(",") : null,
     teamKey: "",
     teamName: boardName ?? "",
-    projectName: null
+    projectName: null,
+    parentIdentifier: parentIdentifierFromDesc(card.desc)
   };
 };
 
@@ -366,6 +380,45 @@ export class TrelloTracker implements Tracker {
       moveLine(env.REVIEW_STATE, listIdForState(env.REVIEW_STATE)),
       `  List every list id on the board with \`${cli} lists ${boardId()}\`.`
     ].join("\n");
+  }
+
+  /**
+   * Prompt block: how the agent creates a subcard (Shape B). Trello has no native parent
+   * field, so the link is a `Parent: <url>` first description line; the card must also carry
+   * the Gene label, land in the trigger list, and (when ASSIGNEE=me) have the bot as a member
+   * so the next scan picks it up. The label/list/member ids are resolved from the warm meta
+   * cache and baked into the command (the bundled CLI takes ids straight through).
+   */
+  subcardSnippet(issue: Issue): string {
+    const cli = `node ${REPO_ROOT}/trello/cli.ts`;
+    const todoList = listIdForState(env.TRIGGER_STATE);
+    const geneLabelId = (labelsCache ?? []).find(l => l.name.toLowerCase() === env.LABEL.toLowerCase())?.id;
+    const meId = meCache?.id;
+    const labelFlag = geneLabelId ? ` --label ${geneLabelId}` : "";
+    const memberFlag = meId ? ` --member ${meId}` : "";
+    return [
+      "# How to split into subcards (Shape B)",
+      "",
+      "Create each subcard as its own Trello card that enters the normal pipeline. For each subtask:",
+      `- Create the card in the trigger list (\`${env.TRIGGER_STATE}\`):`,
+      "  ```",
+      `  ${cli} create --list ${todoList ?? "<todoListId>"}${labelFlag}${memberFlag} \\`,
+      `    --name "[${issue.identifier}] <subtask title>" \\`,
+      `    --desc $'Parent: ${issue.url}` + String.raw`\n\n## Problem\n<...>\n\n## Acceptance criteria\n- [ ] <...>'`,
+      "  ```",
+      `  The \`--desc\` uses bash \`$'…'\` quoting so the \`\\n\` become real newlines. The \`Parent: ${issue.url}\``,
+      "  first line is REQUIRED — the daemon reads it to auto-complete this parent once every subcard is done.",
+      geneLabelId
+        ? `  (\`--label\` applies the \`${env.LABEL}\` tag so the daemon sees the subcard; keep it.)`
+        : `  IMPORTANT: also ensure the new card carries the \`${env.LABEL}\` label, or the daemon will ignore it.`,
+      meId
+        ? "  (`--member` assigns it to you so it's picked up; keep it.)"
+        : "",
+      "- After creating all subcards, post a summary comment on THIS card listing them, then move THIS",
+      `  card to "${env.BLOCKED_STATE}" and exit. Do NOT open a change request for this parent.`
+    ]
+      .filter(line => line !== "")
+      .join("\n");
   }
 
   allowedTools(): string[] {

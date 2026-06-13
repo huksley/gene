@@ -30,6 +30,7 @@ import { commitsBehind, detectDefaultBranch } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
 import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
+import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts";
 import { closeDb, findInterruptedRuns, logEvent, readTokenTotal } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
@@ -669,10 +670,20 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   // before picking up anything new. A quiet In-Review issue is a no-op and doesn't defer.
   let actionableCount = 0;
   for (const issue of [...active, ...blocked, ...review]) {
+    // A Shape-B parent parked while its subcards run must not be re-dispatched by a
+    // stray comment — the daemon completes it (below) once every subcard reaches Done.
+    if (env.DONE_STATE && isParentAwaitingChildren(issue, mine, env.DONE_STATE)) {
+      logger.info(`${logger.tag.flow} [${issue.identifier}] parent awaiting subcards — leaving parked`);
+      continue;
+    }
     if (await processIssue(issue)) {
       actionableCount += 1;
     }
   }
+
+  // Auto-complete any parent whose subcards are now all Done. Runs every scan (even when
+  // ongoing items defer the Todo scan below) over the list already fetched — no extra calls.
+  await completeFinishedParents(mine);
 
   if (actionableCount > 0) {
     logger.info(

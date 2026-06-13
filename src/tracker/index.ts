@@ -36,6 +36,12 @@ export type Issue = {
   teamKey: string;
   teamName: string;
   projectName: string | null;
+  /**
+   * Identifier of this issue's parent when it is a subcard (Shape B), else undefined.
+   * Populated natively per backend — Linear's sub-issue `parent`, Trello's `Parent: <url>`
+   * description marker — so the daemon (src/subcards.ts) can group children uniformly.
+   */
+  parentIdentifier?: string;
 };
 
 /** A tracker-neutral comment. `isAgent` is detected via the agent marker, uniformly across backends. */
@@ -83,6 +89,12 @@ export interface Tracker {
 
   /** The prompt block telling the AGENT how to comment / move state via this backend's CLI. */
   writeBackSnippet(issue: Issue): string;
+  /**
+   * The prompt block telling the AGENT how to CREATE a subcard (Shape B) that links back to
+   * `issue` as its parent and enters the normal pipeline (carries the Gene label, lands in the
+   * trigger state, assigned to the owner). Backends resolve their own ids/native parent link.
+   */
+  subcardSnippet(issue: Issue): string;
   /** Extra `--allowedTools` entries the agent needs for this backend (e.g. `Bash(trello *)`). */
   allowedTools(): string[];
 

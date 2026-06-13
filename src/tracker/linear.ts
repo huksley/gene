@@ -34,6 +34,7 @@ type RawIssue = {
   team: { key: string; name: string } | null;
   project: { name: string } | null;
   assignee: { id: string; displayName: string | null; email: string | null; isMe: boolean } | null;
+  parent: { identifier: string } | null;
 };
 
 type RawComment = {
@@ -97,7 +98,8 @@ const toIssue = (raw: RawIssue): Issue => ({
   assigneeMatch: raw.assignee?.email ?? null,
   teamKey: raw.team?.key ?? "",
   teamName: raw.team?.name ?? "",
-  projectName: raw.project?.name ?? null
+  projectName: raw.project?.name ?? null,
+  parentIdentifier: raw.parent?.identifier ?? undefined
 });
 
 const toComment = (raw: RawComment): Comment => ({
@@ -111,7 +113,7 @@ const toComment = (raw: RawComment): Comment => ({
 const LIST_QUERY =
   "query GeneIssues($label: String!) { issues(filter: { labels: { name: { eq: $label } } }, first: 200) " +
   "{ nodes { id identifier title description url branchName updatedAt state { name type } team { key name } " +
-  "project { name } assignee { id displayName email isMe } } } }";
+  "project { name } assignee { id displayName email isMe } parent { identifier } } } }";
 
 const COMMENTS_QUERY =
   "query Comments($id: String!) { issue(id: $id) { comments(first: 100) " +
@@ -305,6 +307,31 @@ export class LinearTracker implements Tracker {
       "  (or `--body \"<text>\"` for a one-liner). Keep each comment to one focused message.",
       `- **Move state:** \`linear issue update ${issue.identifier} --state "<State>"${ws}\`.`,
       `  Terminal states for you are **"${env.BLOCKED_STATE}"** and **"${env.REVIEW_STATE}"** (see outcomes).`
+    ].join("\n");
+  }
+
+  /**
+   * Prompt block: how the agent creates a subcard (Shape B) as a true Linear sub-issue.
+   * `--parent` makes the native parent/child link the daemon reads back via `parent { identifier }`;
+   * `--label`/`--assignee self`/`--state` put the new issue into the normal pipeline.
+   */
+  subcardSnippet(issue: Issue): string {
+    const ws = workspaceFlag();
+    const team = issue.teamKey ? ` --team ${issue.teamKey}` : "";
+    return [
+      "# How to split into subcards (Shape B)",
+      "",
+      "Create each subcard as a native Linear **sub-issue** of this issue. For each subtask:",
+      "```",
+      `linear issue create --parent ${issue.identifier}${team} --label "${env.LABEL}" --assignee self \\`,
+      `  --state "${env.TRIGGER_STATE}" --title "<subtask title>" --description-file <file>${ws}`,
+      "```",
+      `The \`--parent ${issue.identifier}\` link is REQUIRED — the daemon reads it to auto-complete this`,
+      `parent once every sub-issue is done. \`--label "${env.LABEL}"\` is what makes the daemon pick the`,
+      "sub-issue up; keep it. Write the description (Problem / Acceptance criteria) to the temp file.",
+      "",
+      "After creating all sub-issues, post a summary comment on THIS issue listing them, then move THIS",
+      `issue to "${env.BLOCKED_STATE}" and exit. Do NOT open a change request for this parent.`
     ].join("\n");
   }
 

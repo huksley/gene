@@ -70,6 +70,10 @@ const BASE_ALLOWED_TOOLS = [
   "Bash(mv *)",
   "Bash(cp *)",
   "Bash(touch *)",
+  // Playwright
+  "Bash(playwright-cli *)",
+  "Bash(kill *)",
+  "Bash(pkill *)",
   // Direct file editing
   "Edit",
   "Read",
