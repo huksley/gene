@@ -79,6 +79,8 @@ export interface RenderOptions {
   now: number;
   /** Active sort order for the table. */
   sort: SortMode;
+  /** When true, tickets in the tracker's Done state are hidden from the table. Shown by default. */
+  hideDone?: boolean;
   /** Optional one-line notice shown in the footer instead of the key hints (e.g. cancel confirm). */
   notice?: string;
 }
@@ -249,11 +251,16 @@ export class Dashboard {
 
   /** Update the whole dashboard from a snapshot + per-frame options. Cheap; no tree churn. */
   render(snapshot: MonitorSnapshot, options: RenderOptions): void {
-    const { selectedIndex, frame, now, sort, notice } = options;
+    const { selectedIndex, frame, now, sort, hideDone, notice } = options;
     const d = snapshot.daemon;
     const width = this.renderer.width;
 
-    const sorted = sortAgents(snapshot.agents, sort, now);
+    // "Done" means the ticket's tracker state equals the configured Done state (the
+    // STATE column), not the agent's run status — a finished run can still sit in
+    // In Review. With no Done state configured there's nothing to hide.
+    const visible =
+      hideDone && d.doneState ? snapshot.agents.filter(a => a.lifecycleState !== d.doneState) : snapshot.agents;
+    const sorted = sortAgents(visible, sort, now);
     this.orderedIds = sorted.map(a => a.id);
     this.placeholder.visible = sorted.length === 0;
 
@@ -275,7 +282,7 @@ export class Dashboard {
 
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
-      : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`;
+      : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("d")} done:${fg(palette.text)(hideDone ? "hidden" : "shown")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`;
   }
 
   /** Append one log record to the bottom pane (sticky-scrolled to the tail). */

@@ -182,6 +182,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let detailId = "";
   let selectedIndex = -1;
   let sortMode: SortMode = "status";
+  let hideDone = false; // done tickets are shown by default; `d` toggles them off
   let frame = 0;
   let snapshot = monitor.getState();
   let historySeed: AgentState[] = [];
@@ -190,6 +191,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let resetArmedId: string | null = null;
   let resetArmedAt = 0;
   let resetBusyId: string | null = null;
+  let quitArmedAt = 0; // when q was pressed while agents are still running (double-press to confirm)
   let detailToken = 0;
   let quitting = false;
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -201,6 +203,9 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
     if (resetArmedId && now - resetArmedAt > 2000) {
       resetArmedId = null;
+    }
+    if (quitArmedAt && now - quitArmedAt > 2000) {
+      quitArmedAt = 0;
     }
     // Stamp the live tracker state (from the daemon's per-scan side-map) onto every
     // row — live and seed alike — so the STATE column is populated for reconstructed
@@ -215,13 +220,18 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     if (view === "dashboard") {
       detail.root.visible = false;
       dashboard.root.visible = true;
-      const notice = cancelArmedId ? `Press c again within 2s to cancel ${cancelArmedId}` : undefined;
-      dashboard.render(merged, { selectedIndex, frame, now, sort: sortMode, notice });
+      const notice = quitArmedAt
+        ? "Agents still running — press q again within 2s to quit, or Q to quit now"
+        : cancelArmedId
+          ? `Press c again within 2s to cancel ${cancelArmedId}`
+          : undefined;
+      dashboard.render(merged, { selectedIndex, frame, now, sort: sortMode, hideDone, notice });
     } else {
       dashboard.root.visible = false;
       detail.root.visible = true;
-      const notice =
-        resetBusyId === detailId
+      const notice = quitArmedAt
+        ? "Agents still running — press q again within 2s to quit, or Q to quit now"
+        : resetBusyId === detailId
           ? `Resetting ${detailId}…`
           : resetArmedId === detailId
             ? `Press r again within 2s to reset ${detailId} — removes worktree/branch, moves it back to Todo`
@@ -358,6 +368,27 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     paint();
   };
 
+  /**
+   * Quit, but guard against losing in-flight work: if any agent is still running,
+   * the first `q` arms a confirmation (footer notice) and a second `q` within 2s
+   * quits. `force` (Shift+Q) always quits immediately. With nothing running, plain
+   * `q` quits straight away too.
+   */
+  const requestQuit = (force: boolean): void => {
+    if (force || !snapshot.agents.some(a => a.status === "running")) {
+      void quit();
+      return;
+    }
+    const now = Date.now();
+    if (quitArmedAt && now - quitArmedAt <= 2000) {
+      quitArmedAt = 0;
+      void quit();
+    } else {
+      quitArmedAt = now;
+      paint();
+    }
+  };
+
   const quit = async (): Promise<void> => {
     if (quitting) {
       return;
@@ -393,7 +424,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
           paint();
           return;
         case "q":
-          void quit();
+          requestQuit(key.shift); // Shift+Q quits immediately, even with agents running
           return;
         case "up":
         case "k":
@@ -432,7 +463,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
     switch (key.name) {
       case "q":
-        void quit();
+        requestQuit(key.shift); // Shift+Q quits immediately, even with agents running
         return;
       case "up":
       case "k":
@@ -458,6 +489,16 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         if (selId) {
           selectedIndex = dashboard.getOrderedIds().indexOf(selId);
         }
+        paint();
+        return;
+      }
+      case "d": {
+        // Toggle finished tickets, keeping the same ticket selected if it survives the filter.
+        const ids = dashboard.getOrderedIds();
+        const selId = selectedIndex >= 0 && selectedIndex < ids.length ? ids[selectedIndex] : null;
+        hideDone = !hideDone;
+        paint(); // re-filters the table and refreshes getOrderedIds()
+        selectedIndex = selId ? dashboard.getOrderedIds().indexOf(selId) : -1;
         paint();
         return;
       }
