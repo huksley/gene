@@ -28,7 +28,7 @@ test("loads plugins from a GENE_PLUGINS directory and dispatches to each", async
   await setupPlugins();
 
   (globalThis as Record<string, unknown>).__geneTestEvents = [];
-  await dispatch({ kind: "agent-started", issue, intent: "start-processing" });
+  await dispatch({ kind: "agent-started", issue, intent: "processing" });
   await dispatch({ kind: "issue-status-changed", issue, from: "Todo", to: "In Progress" });
 
   const seen = (globalThis as Record<string, unknown>).__geneTestEvents as string[];

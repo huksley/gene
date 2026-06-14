@@ -1,9 +1,10 @@
 /**
  * The per-ticket detail view, opened with `enter` from the dashboard.
  *
- * Layout (below the shared status header): a small header (ticket title, then
- * identifier, status, stage, repo, branch, pid/age/tools/tokens), then two
- * stacked panes —
+ * Layout (below the shared status header): a small header — when the title is
+ * known, line 1 is "‹ ID ›  title" and line 2 is status/stage/repo/branch;
+ * when it isn't, those collapse into one "‹ ID ›  status · stage …" line and the
+ * title row is hidden. Then the pid/age/tools/tokens line, then two stacked panes —
  *
  *  - **recent actions (last 5)** — the tail of the persisted activity log
  *    (`readIssueLog` rows handed in via {@link Detail.setHistory}). Pinned: it
@@ -16,7 +17,8 @@
  *    When no agent is live at all (a finished ticket browsed from the table) it
  *    falls back to the full persisted history here, so old tickets stay browsable.
  *
- * `esc` (handled by the controller) returns to the dashboard; `R` resets the ticket.
+ * `esc` (handled by the controller) returns to the dashboard; `c` cancels the live
+ * agent (or, when there's nothing to cancel, shows why for 2s); `R` resets the ticket.
  */
 
 import {
@@ -125,7 +127,8 @@ export class Detail {
 
     // Chrome lines: flexShrink:0 so the live pane's flexGrow can't squeeze them
     // onto the same row (they otherwise collapse into one mangled line). The ticket
-    // title sits above the identifier/status row; hidden until a title is known.
+    // id+title line sits above the status/stage row; the title line is hidden until a
+    // title is known (then the id moves up to share that line).
     this.issueTitle = new TextRenderable(renderer, { id: "gene-detail-issue-title", content: "", flexShrink: 0 });
     this.titleLine = new TextRenderable(renderer, { id: "gene-detail-title", content: "", flexShrink: 0 });
     this.subLine = new TextRenderable(renderer, { id: "gene-detail-sub", content: "", flexShrink: 0 });
@@ -201,23 +204,27 @@ export class Detail {
   render(agent: AgentState | undefined, _frame: number, now: number, notice?: string): void {
     const id = this.currentId ?? "";
 
-    // Ticket title above the identifier row; hide the line entirely when unknown
-    // (live agents carry it from dispatch; finished tickets recover it from the
-    // dispatch log row's data — older rows predate it, so it may be absent).
-    if (agent?.title) {
-      this.issueTitle.visible = true;
-      this.issueTitle.content = t`${bold(fg(palette.text)(truncate(agent.title, Math.max(10, this.renderer.width - 2))))}`;
-    } else {
-      this.issueTitle.visible = false;
-      this.issueTitle.content = "";
-    }
-
     const statusText = agent ? statusLabel(agent.status) : "HISTORY";
     const statusCol = agent ? statusColor(agent.status) : palette.muted;
     const stage = agent?.stage ? `  ·  ${agent.stage}` : "";
     const repo = agent?.repoLabel ? `  ·  ${agent.repoLabel}` : "";
     const branch = agent?.branch ? `  ⎇ ${agent.branch}` : "";
-    this.titleLine.content = t`${dim("‹")} ${bold(fg(palette.text)(id))} ${dim("›")}  ${bold(fg(statusCol)(statusText))}${fg(palette.muted)(stage)}${fg(palette.info)(repo)}${fg(palette.accent)(branch)}`;
+
+    // With a known title, put the identifier alongside it on the first line and give
+    // the status/stage/repo/branch the second line to itself. Without a title (live
+    // agents carry it from dispatch; finished tickets recover it from the dispatch log
+    // row's data, but older rows predate it), keep the single combined line and hide
+    // the title row.
+    if (agent?.title) {
+      const titleWidth = Math.max(10, this.renderer.width - 2 - (id.length + 6));
+      this.issueTitle.visible = true;
+      this.issueTitle.content = t`${dim("‹")} ${bold(fg(palette.text)(id))} ${dim("›")}  ${bold(fg(palette.text)(truncate(agent.title, titleWidth)))}`;
+      this.titleLine.content = t`${bold(fg(statusCol)(statusText))}${fg(palette.muted)(stage)}${fg(palette.info)(repo)}${fg(palette.accent)(branch)}`;
+    } else {
+      this.issueTitle.visible = false;
+      this.issueTitle.content = "";
+      this.titleLine.content = t`${dim("‹")} ${bold(fg(palette.text)(id))} ${dim("›")}  ${bold(fg(statusCol)(statusText))}${fg(palette.muted)(stage)}${fg(palette.info)(repo)}${fg(palette.accent)(branch)}`;
+    }
 
     const pid = agent?.pid != null ? String(agent.pid) : "—";
     const age = agent?.startedAt != null ? humanDuration(ageMsOf(agent, now)) : "—";
@@ -229,7 +236,7 @@ export class Detail {
 
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
-      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("r")} reset  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
+      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} reset  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
 
     // Live pane: stream the agent's events if it has any, else fall back to the
     // full persisted history so a finished ticket stays browsable.

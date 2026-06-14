@@ -3,7 +3,7 @@
  * the daemon should do this cycle. No side effects — trivially testable.
  *
  * Linear workflow *states* drive the lifecycle:
- *   - TRIGGER_STATE  (Todo)        → fresh work        → start-processing
+ *   - TRIGGER_STATE  (Todo)        → fresh work        → processing
  *   - BLOCKED_STATE  (Blocked)     → Gene asked a Q    → resume when a human replies
  *   - ACTIVE_STATE   (In Progress) → Gene working      → handle new human feedback
  *   - REVIEW_STATE   (In Review)   → a CR is open      → check the forge for review
@@ -22,9 +22,9 @@ import type { Comment, Issue } from "./tracker/index.ts";
 export type Action =
   | { kind: "nothing"; reason: string }
   | { kind: "ask-clarification"; reason: string; missingSections: string[] }
-  | { kind: "start-processing" }
-  | { kind: "resume-from-block"; latestUserCommentId: string }
-  | { kind: "handle-user-feedback"; latestUserCommentId: string }
+  | { kind: "processing" }
+  | { kind: "resume"; latestUserCommentId: string }
+  | { kind: "feedback"; latestUserCommentId: string }
   | { kind: "check-review" };
 
 /** Headings (from GENE_REQUIRE_SECTIONS) that are absent or have an empty body. */
@@ -81,19 +81,19 @@ export const decideAction = (issue: Issue, comments: Comment[]): Action => {
         return { kind: "ask-clarification", reason: "missing-required-sections", missingSections: missing };
       }
     }
-    return { kind: "start-processing" };
+    return { kind: "processing" };
   }
 
   if (issue.stateName === WATCHED_STATES.blocked) {
     if (newUserComments.length > 0) {
-      return { kind: "resume-from-block", latestUserCommentId };
+      return { kind: "resume", latestUserCommentId };
     }
     return { kind: "nothing", reason: "blocked, waiting for user reply" };
   }
 
   if (issue.stateName === WATCHED_STATES.active) {
     if (newUserComments.length > 0) {
-      return { kind: "handle-user-feedback", latestUserCommentId };
+      return { kind: "feedback", latestUserCommentId };
     }
     return { kind: "nothing", reason: "in-progress, no new activity" };
   }
@@ -101,7 +101,7 @@ export const decideAction = (issue: Issue, comments: Comment[]): Action => {
   if (issue.stateName === WATCHED_STATES.review) {
     // A direct Linear reply takes precedence over forge review chatter.
     if (newUserComments.length > 0) {
-      return { kind: "handle-user-feedback", latestUserCommentId };
+      return { kind: "feedback", latestUserCommentId };
     }
     // The real decision needs the forge (open CR + CI + review comments).
     return { kind: "check-review" };

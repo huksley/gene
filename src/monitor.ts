@@ -81,7 +81,7 @@ export interface AgentState {
   id: string;
   /** Issue title, when known (set by the dashboard's history merge — not by the daemon). */
   title?: string;
-  /** Workflow intent driving the run: start-processing / address-review / continue-draft / … */
+  /** Workflow intent driving the run: processing / review-fix / continue / … */
   stage: string;
   /**
    * The issue's current tracker state (Todo / In Progress / Blocked / In Review / Done),

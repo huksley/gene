@@ -21,7 +21,7 @@ import { readIssueLog, type IssueLogRow } from "../db.ts";
 import { Dashboard, nextSortMode, type SortMode } from "./dashboard.ts";
 import { Detail } from "./detail.ts";
 import { Header } from "./header.ts";
-import { palette } from "./theme.ts";
+import { palette, statusLabel } from "./theme.ts";
 
 /** What the controller (index.ts) hands the UI: the daemon loop to drive + how to shut down. */
 export interface StartUiOptions {
@@ -103,7 +103,7 @@ const buildHistorySeed = (rows: IssueLogRow[]): AgentState[] => {
   for (const [id, list] of groups) {
     const first = list[0];
     const last = list[list.length - 1];
-    const dispatch = list.find(r => r.event === "dispatch");
+    const dispatch = list.findLast(r => r.event === "dispatch");
     const parsed = dispatch ? parseDispatchDetail(dispatch.detail) : undefined;
     // The dispatch row persists the issue title in its `data` JSONB (index.ts).
     const title =
@@ -188,6 +188,10 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let historySeed: AgentState[] = [];
   let cancelArmedId: string | null = null;
   let cancelArmedAt = 0;
+  // A short-lived footer message explaining why a cancel could not be armed (e.g.
+  // nothing running for the ticket) — cleared after 2s by paint(), like the arms.
+  let cancelNotice: string | null = null;
+  let cancelNoticeAt = 0;
   let resetArmedId: string | null = null;
   let resetArmedAt = 0;
   let resetBusyId: string | null = null;
@@ -200,6 +204,9 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     const now = Date.now();
     if (cancelArmedId && now - cancelArmedAt > 2000) {
       cancelArmedId = null;
+    }
+    if (cancelNotice && now - cancelNoticeAt > 2000) {
+      cancelNotice = null;
     }
     if (resetArmedId && now - resetArmedAt > 2000) {
       resetArmedId = null;
@@ -222,9 +229,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
       dashboard.root.visible = true;
       const notice = quitArmedAt
         ? "Agents still running — press q again within 2s to quit, or Q to quit now"
-        : cancelArmedId
-          ? `Press c again within 2s to cancel ${cancelArmedId}`
-          : undefined;
+        : undefined;
       dashboard.render(merged, { selectedIndex, frame, now, sort: sortMode, hideDone, notice });
     } else {
       dashboard.root.visible = false;
@@ -235,7 +240,9 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
           ? `Resetting ${detailId}…`
           : resetArmedId === detailId
             ? `Press r again within 2s to reset ${detailId} — removes worktree/branch, moves it back to Todo`
-            : undefined;
+            : cancelArmedId === detailId
+              ? `Press c again within 2s to cancel ${detailId}`
+              : cancelNotice ?? undefined;
       detail.render(agents.find(a => a.id === detailId), frame, now, notice);
     }
   };
@@ -306,14 +313,22 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     loadDetailHistory(detailId);
   };
 
+  /**
+   * Cancel the open ticket's live agent; double-press `c` within 2s confirms (mirrors
+   * armReset). When there's nothing to cancel (no live agent, or it isn't running),
+   * surface why in the footer for 2s instead of silently swallowing the key.
+   */
   const armCancel = (): void => {
-    const ids = dashboard.getOrderedIds();
-    if (selectedIndex < 0 || selectedIndex >= ids.length) {
+    const id = detailId;
+    if (!id) {
       return;
     }
-    const id = ids[selectedIndex];
     const agent = monitor.getAgent(id);
     if (!agent || agent.status !== "running") {
+      cancelNotice = agent
+        ? `Can't cancel ${id} — it isn't running (${statusLabel(agent.status)})`
+        : `Can't cancel ${id} — no live agent for it`;
+      cancelNoticeAt = Date.now();
       return;
     }
     const now = Date.now();
@@ -453,8 +468,13 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
           paint();
           return;
         case "r":
-          // `R` (and lowercase r — no other binding in this view) resets the ticket.
+          // `R` (and lowercase r) resets the ticket.
           armReset();
+          paint();
+          return;
+        case "c":
+          // `c` cancels the ticket's live agent (or explains for 2s why it can't).
+          armCancel();
           paint();
           return;
         default:
@@ -502,10 +522,6 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         paint();
         return;
       }
-      case "c":
-        armCancel();
-        paint();
-        return;
       case "r":
         options.requestScan(); // wake the poll loop so the next scan starts now
         void reseed();

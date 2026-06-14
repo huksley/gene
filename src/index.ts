@@ -43,11 +43,11 @@ const summarizeAction = (action: Action): string => {
       return `nothing (${action.reason})`;
     case "ask-clarification":
       return `ASK CLARIFICATION (missing: ${action.missingSections.join(", ")})`;
-    case "start-processing":
+    case "processing":
       return "START PROCESSING";
-    case "resume-from-block":
+    case "resume":
       return `RESUME (latest user comment ${action.latestUserCommentId})`;
-    case "handle-user-feedback":
+    case "feedback":
       return `HANDLE FEEDBACK (latest user comment ${action.latestUserCommentId})`;
     case "check-review":
       return "CHECK REVIEW (forge CI + comments)";
@@ -74,9 +74,9 @@ const record = (issue: Issue, event: string, detail: string, data?: unknown): Pr
 
 const intentFor = (action: Action): PromptIntent | null => {
   switch (action.kind) {
-    case "start-processing":
-    case "resume-from-block":
-    case "handle-user-feedback":
+    case "processing":
+    case "resume":
+    case "feedback":
       return action.kind;
     default:
       return null;
@@ -84,16 +84,16 @@ const intentFor = (action: Action): PromptIntent | null => {
 };
 
 const startMessages: Record<PromptIntent, string> = {
-  "start-processing":
+  "processing":
     "🧬 Picking this up — exploring the code and figuring out the scope. " +
     "I'll comment again when I have a plan, a question, or a change request ready.",
-  "resume-from-block":
+  "resume":
     "🧬 Thanks for the reply — picking back up from where I left off. I'll comment again when there's an update.",
-  "handle-user-feedback":
+  "feedback":
     "🧬 Got your feedback — incorporating it now. I'll comment again with the next iteration.",
-  "address-review":
+  "review-fix":
     "🧬 Spotted new review feedback / CI status on the change request — addressing it now and I'll push an update.",
-  "continue-draft":
+  "continue":
     "🧬 There's already a change request attached here — picking it up to finish the work, fix CI, and address review comments."
 };
 
@@ -313,7 +313,7 @@ const processIssue = async (issue: Issue): Promise<boolean> => {
 
   // A fresh Todo issue may already carry an open change request (a human attached a
   // draft, or a prior run opened one). Continue it instead of starting from scratch.
-  if (intent === "start-processing" && (await tryContinueAttachedDraft(issue, comments, target, forge))) {
+  if (intent === "processing" && (await tryContinueAttachedDraft(issue, comments, target, forge))) {
     return true;
   }
 
@@ -321,7 +321,7 @@ const processIssue = async (issue: Issue): Promise<boolean> => {
 };
 
 type DispatchExtras = {
-  /** Forge review state to feed the prompt (address-review / continue-draft). */
+  /** Forge review state to feed the prompt (review-fix / continue). */
   reviewContext?: ReviewContext;
   /** When continuing an existing change request: its source branch + merge target. */
   existing?: ExistingChangeRequest;
@@ -615,7 +615,7 @@ const processReview = async (
 
   logger.info(`${logger.tag.flow} [${issue.identifier}] in review — ${outcome.reason}; dispatching a fix`);
   await record(issue, "review", outcome.reason);
-  return dispatchAgent(issue, comments, target, forge, "address-review", {
+  return dispatchAgent(issue, comments, target, forge, "review-fix", {
     reviewContext: outcome.context,
     existing: { branch: outcome.context.sourceBranch, baseBranch: outcome.context.targetBranch },
     beforeSpawn: () => writeCursor(issue.identifier, outcome.nextCursor)
@@ -625,7 +625,7 @@ const processReview = async (
 /**
  * Draft pickup for a fresh Todo issue: if it already has an open change request
  * attached (matched to the target repo, found by iid so a human branch name is
- * fine), dispatch the agent to CONTINUE it (intent "continue-draft") on the change
+ * fine), dispatch the agent to CONTINUE it (intent "continue") on the change
  * request's own source branch. Returns true if it acted or is intentionally
  * waiting (CI in flight); false when nothing is attached, so the caller starts fresh.
  */
@@ -656,7 +656,7 @@ const tryContinueAttachedDraft = async (
   }
   logger.info(`${logger.tag.flow} [${issue.identifier}] attached change request — ${outcome.reason}; continuing it`);
   await record(issue, "draft", outcome.reason);
-  return dispatchAgent(issue, comments, target, forge, "continue-draft", {
+  return dispatchAgent(issue, comments, target, forge, "continue", {
     reviewContext: outcome.context,
     existing: { branch: outcome.context.sourceBranch, baseBranch: outcome.context.targetBranch },
     beforeSpawn: () => writeCursor(issue.identifier, outcome.nextCursor)

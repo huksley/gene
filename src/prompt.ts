@@ -17,11 +17,11 @@ import type { ChangeRequestContext, Forge } from "./forge/index.ts";
 import type { ReviewContext } from "./review.ts";
 
 export type PromptIntent =
-  | "start-processing"
-  | "resume-from-block"
-  | "handle-user-feedback"
-  | "address-review"
-  | "continue-draft";
+  | "processing"
+  | "resume"
+  | "feedback"
+  | "review-fix"
+  | "continue";
 
 export type PromptInputs = {
   issue: Issue;
@@ -38,7 +38,7 @@ export type PromptInputs = {
   repoLabel: string;
   /** Monorepo subdirectory to scope work to, if the issue link pinned one. */
   subdir?: string;
-  /** Forge review state (failing CI / new comments), present only for address-review. */
+  /** Forge review state (failing CI / new comments), present only for review-fix. */
   reviewContext?: ReviewContext;
 };
 
@@ -81,26 +81,26 @@ const detectDirectives = (comments: Comment[]): string => {
 const DRAFT_MODE = env.DRAFT_CHANGE_REQUEST;
 
 const intentInstructions: Record<PromptIntent, string> = {
-  "start-processing":
+  "processing":
     "This issue just entered the Gene queue (Todo). Read the description carefully. " +
     "If the scope is small and unambiguous (typo fix, single-line removal, isolated copy change), " +
     "you may execute directly. Otherwise, propose a plan first and exit, waiting for the user's " +
     `approval via a \`${env.COMMAND_BASE} approve\` directive or a free-form 'go ahead' / 'yes' reply.`,
-  "resume-from-block":
+  "resume":
     "The issue was previously Blocked — you asked a clarifying question or proposed a plan and the " +
     "user has now replied. Read the latest user comment, decide whether you have enough to proceed, " +
     "and either execute the change, propose a refined plan, or ask one more focused question.",
-  "handle-user-feedback":
+  "feedback":
     "The user has commented while you were working (or after you finished). They may be redirecting " +
     "you, requesting a change, or approving prior work. Read the latest comment, identify what they " +
     "want, and respond accordingly.",
-  "address-review":
+  "review-fix":
     "Your change request is open and under review, and there's new review feedback and/or failing CI " +
     "(see the section below). Make the fixes on your EXISTING branch and push so CI re-runs; reply to the " +
     "reviewer(s) on the change request itself; then put the issue back in the review state. Do NOT open a " +
     "second change request — update the one that's already open. If a comment raises something you genuinely " +
     "can't resolve, ask back (comment on the issue) and move to the blocked state instead.",
-  "continue-draft":
+  "continue":
     "A change request is ALREADY attached to this issue (a human or a previous run opened it — see the " +
     "section below) and its branch is already checked out. Do NOT start over and do NOT open a second one. " +
     "First understand where it stands: run `git log " +

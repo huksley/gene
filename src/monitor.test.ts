@@ -25,8 +25,8 @@ test("re-seeding replaces the base (not additive); session agents still counted 
 });
 
 test("markIssueDone replaces a stale dispatch stage with 'done' on an existing row", () => {
-  monitor.agentDispatched("DONE-1", "start-processing", "repo");
-  assert.equal(monitor.getAgent("DONE-1")?.stage, "start-processing");
+  monitor.agentDispatched("DONE-1", "processing", "repo");
+  assert.equal(monitor.getAgent("DONE-1")?.stage, "processing");
   monitor.markIssueDone("DONE-1");
   assert.equal(monitor.getAgent("DONE-1")?.stage, DONE_STAGE);
 });
@@ -37,7 +37,7 @@ test("markIssueDone never creates a row for a ticket that never ran", () => {
 });
 
 test("setIssueState tracks an issue's current tracker state in the side-map", () => {
-  monitor.agentDispatched("STATE-1", "start-processing", "repo");
+  monitor.agentDispatched("STATE-1", "processing", "repo");
   monitor.setIssueState("STATE-1", "In Review");
   assert.equal(monitor.getIssueState("STATE-1"), "In Review");
   monitor.setIssueState("STATE-1", "Done");
