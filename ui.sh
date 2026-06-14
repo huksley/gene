@@ -18,6 +18,7 @@
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+echo "UI mode requires Node 26.3.0 or later."
 
 # The server always listens on whatever pg.conf says; default to 5433 (its value
 # and db.ts's default). Used only for the readiness probe — the UI's client

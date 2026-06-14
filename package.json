@@ -14,7 +14,6 @@
     "gene:once": "node --env-file-if-exists=.env.development src/index.ts --once",
     "ui": "node --experimental-ffi --disable-warning=ExperimentalWarning --env-file-if-exists=.env.development src/index.ts --ui",
     "console": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene\"",
-    "prestart": "echo \"UI mode requires Node 26.3.0 or later.\"",
     "start": "bash ui.sh",
     "once": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene:once\"",
     "clone": "node --env-file-if-exists=.env.development src/clone.ts",
