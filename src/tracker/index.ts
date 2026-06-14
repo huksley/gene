@@ -9,6 +9,7 @@
  */
 
 import { env } from "../config.ts";
+import type { AttachmentRef } from "../attachment-refs.ts";
 import { LinearTracker } from "./linear.ts";
 import { TrelloTracker } from "./trello.ts";
 
@@ -72,8 +73,8 @@ export interface Tracker {
   /** Links/attachments on an issue (used for MR/PR discovery in review.ts). */
   getAttachments(issue: Issue): Promise<Attachment[]>;
 
-  /** Distinct image URLs referenced by the issue/comments, for worktree staging. */
-  collectImageUrls(issue: Issue, comments: Comment[]): Promise<string[]>;
+  /** Distinct stageable attachment refs (images + text/docs) referenced by the issue/comments. */
+  collectAttachmentUrls(issue: Issue, comments: Comment[]): Promise<AttachmentRef[]>;
   /** Authed download of one attachment/image URL; null on any failure (best-effort). */
   fetchAttachment(url: string): Promise<Buffer | null>;
 

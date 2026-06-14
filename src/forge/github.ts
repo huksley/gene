@@ -171,8 +171,55 @@ export class GithubForge implements Forge {
     }
   }
 
-  /** Turn a `gh pr view` object into a ChangeRequestReview. */
-  private buildReview(v: any): ChangeRequestReview {
+  /**
+   * Line-level pull-request review comments (the `Files changed` thread comments).
+   * `gh pr view` omits these entirely — only `repos/{repo}/pulls/{n}/comments`
+   * returns them — so a review submitted as inline comments with no summary body
+   * would otherwise be invisible to the watchdog. Each is prefixed with its
+   * `path:line` so the flattened prompt tells the agent where it applies.
+   * Best-effort: a failed/garbled call yields no inline comments, never throws.
+   */
+  private async reviewComments(repo: RepoTarget, number: string): Promise<ReviewComment[]> {
+    const marker = env.AGENT_MARKER;
+    const res = await run(
+      "gh",
+      ["api", "--paginate", `repos/${repo.repoPath}/pulls/${number}/comments`],
+      { env: this.ghEnv(repo) }
+    );
+    if (res.code !== 0) {
+      return [];
+    }
+    let raw: any;
+    try {
+      raw = JSON.parse(res.stdout);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw.map((c: any): ReviewComment => {
+      const body = String(c.body ?? "");
+      const lineNo = c.line ?? c.original_line;
+      const where = c.path ? `${c.path}${lineNo != null ? `:${lineNo}` : ""}` : "";
+      return {
+        id: String(c.id ?? c.url ?? ""),
+        author: c.user?.login ?? "?",
+        body: where ? `[${where}] ${body}` : body,
+        createdAt: String(c.created_at ?? ""),
+        isAgent: body.includes(marker)
+      };
+    });
+  }
+
+  /**
+   * Turn a `gh pr view` object into a ChangeRequestReview. `inline` carries the
+   * line-level review comments (fetched separately via {@link reviewComments}) —
+   * `gh pr view` doesn't expose them, yet a review left purely as inline code
+   * comments (an empty-bodied COMMENTED review) is exactly what the watchdog must
+   * act on, so they're merged into `comments` alongside the timeline + review bodies.
+   */
+  private buildReview(v: any, inline: ReviewComment[] = []): ChangeRequestReview {
     const marker = env.AGENT_MARKER;
     const toComment = (id: string, author: string, body: string, createdAt: string): ReviewComment => ({
       id,
@@ -194,7 +241,7 @@ export class GithubForge implements Forge {
           String(r.submittedAt ?? "")
         )
       );
-    const comments = [...fromComments, ...fromReviews]
+    const comments = [...fromComments, ...fromReviews, ...inline]
       .filter(c => c.createdAt)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
@@ -231,7 +278,10 @@ export class GithubForge implements Forge {
       return null;
     }
     const v = await this.view(repo, String(pr.number));
-    return v ? this.buildReview(v) : null;
+    if (!v) {
+      return null;
+    }
+    return this.buildReview(v, await this.reviewComments(repo, String(pr.number)));
   }
 
   async getReviewByIid(repo: RepoTarget, iid: string): Promise<ChangeRequestReview | null> {
@@ -239,6 +289,6 @@ export class GithubForge implements Forge {
     if (!v || v.number === undefined) {
       return null;
     }
-    return this.buildReview(v);
+    return this.buildReview(v, await this.reviewComments(repo, String(v.number)));
   }
 }

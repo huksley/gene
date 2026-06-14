@@ -18,7 +18,7 @@
 
 import logger from "../logger.ts";
 import { env, REPO_ROOT } from "../config.ts";
-import { buildBranchName, fallbackPrefix } from "../branch.ts";
+import { buildBranchName, choosePrefix } from "../branch.ts";
 import { fetchRetryTimeout } from "../fetch.ts";
 import { createTrelloClient } from "../../trello/index.ts";
 import type {
@@ -30,6 +30,7 @@ import type {
   TrelloMember
 } from "../../trello/index.ts";
 import type { Attachment, Comment, Issue, Tracker } from "./index.ts";
+import { collectAttachmentRefsFromText, isStageableName, type AttachmentRef } from "../attachment-refs.ts";
 import { ensureTrelloWebhook, startTrelloWebhookListener } from "./trello/webhook.ts";
 
 const TRELLO_API_BASE = "https://api.trello.com/1";
@@ -42,11 +43,6 @@ type RawAttachment = {
   mimeType?: string | null;
   fileName?: string | null;
 };
-
-// Capture http(s) URLs; the character class stops at whitespace and the
-// delimiters that wrap links in markdown/prose.
-const URL_PATTERN = /https?:\/\/[^\s)\]"'`<>]+/g;
-const IMAGE_EXT_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|svg)(\?|#|$)/i;
 
 const oneLine = (value: string, max = 140): string => {
   const flat = value.replace(/\s+/g, " ").trim();
@@ -179,7 +175,11 @@ const toIssue = (card: TrelloCard): Issue => {
     title: card.name,
     description: card.desc,
     url: card.url,
-    branchName: buildBranchName({ prefix: fallbackPrefix(), identifier, title: card.name }),
+    branchName: buildBranchName({
+      prefix: choosePrefix({ labels: card.labels.map(l => l.name), description: card.desc }),
+      identifier,
+      title: card.name
+    }),
     stateName: listName(card.idList),
     updatedAt: card.dateLastActivity ?? "",
     assigneeName: usernames.length > 0 ? usernames.join(", ") : null,
@@ -242,18 +242,22 @@ export class TrelloTracker implements Tracker {
       .map(a => ({ title: a.name ?? null, url: a.url as string, sourceType: a.mimeType ?? null }));
   }
 
-  /** Image URLs to stage: the card's image attachments + any inline image links in the text. */
-  async collectImageUrls(issue: Issue, comments: Comment[]): Promise<string[]> {
-    const seen = new Set<string>();
+  /** Stageable refs (images + text/docs): the card's attachments + any inline links in the text. */
+  async collectAttachmentUrls(issue: Issue, comments: Comment[]): Promise<AttachmentRef[]> {
+    const byUrl = new Map<string, AttachmentRef>();
     try {
       for (const a of await listCardAttachments(issue.id)) {
         if (!a.url) {
           continue;
         }
-        const isImage =
-          (a.mimeType ?? "").startsWith("image/") || IMAGE_EXT_PATTERN.test(a.fileName ?? a.name ?? a.url);
-        if (isImage) {
-          seen.add(a.url);
+        const mime = a.mimeType ?? "";
+        const name = a.fileName ?? a.name ?? undefined;
+        const stageable =
+          mime.startsWith("image/") ||
+          mime.startsWith("text/") ||
+          isStageableName(name ?? a.url);
+        if (stageable) {
+          byUrl.set(a.url, { url: a.url, fileName: name });
         }
       }
     } catch (error) {
@@ -262,13 +266,15 @@ export class TrelloTracker implements Tracker {
         error instanceof Error ? error.message : error
       );
     }
+    // Inline links/images in the card + comment markdown (any host; the extension may
+    // live only in the link label). Card-attachment refs above win on URL collision.
     const haystack = [issue.description, ...comments.map(c => c.body)].join("\n");
-    for (const match of haystack.matchAll(URL_PATTERN)) {
-      if (IMAGE_EXT_PATTERN.test(match[0])) {
-        seen.add(match[0]);
+    for (const ref of collectAttachmentRefsFromText(haystack, () => true)) {
+      if (!byUrl.has(ref.url)) {
+        byUrl.set(ref.url, ref);
       }
     }
-    return [...seen];
+    return [...byUrl.values()];
   }
 
   /** Download via REST with an OAuth header (the wrapper has no download); null on failure. */

@@ -1,9 +1,10 @@
 /**
- * Stage image attachments referenced by an issue into the agent's worktree so the
- * agent can `Read` them and use Claude's vision to interpret them.
+ * Stage attachments referenced by an issue into the agent's worktree so the agent
+ * can `Read` them — images (interpreted via Claude's vision) and text/doc files
+ * (markdown, txt, csv, json, yaml, log) read as text.
  *
- * The active tracker knows where its images live and how to authenticate for them:
- * it scrapes the referenced image URLs (`tracker.collectImageUrls`) and downloads
+ * The active tracker knows where its files live and how to authenticate for them:
+ * it scrapes the referenced URLs (`tracker.collectAttachmentUrls`) and downloads
  * each one (`tracker.fetchAttachment`). This module is tracker-agnostic — it just
  * caches the bytes under the worktree and names the files.
  *
@@ -52,8 +53,8 @@ export const stageIssueAttachments = async (
   comments: Comment[],
   worktreePath: string
 ): Promise<StagedAttachment[]> => {
-  const urls = await tracker.collectImageUrls(issue, comments);
-  if (urls.length === 0) {
+  const refs = await tracker.collectAttachmentUrls(issue, comments);
+  if (refs.length === 0) {
     return [];
   }
 
@@ -62,8 +63,12 @@ export const stageIssueAttachments = async (
 
   const staged: StagedAttachment[] = [];
 
-  for (const [index, url] of urls.entries()) {
-    const fileName = fileNameFromUrl(url, index);
+  for (const [index, { url, fileName: suggested }] of refs.entries()) {
+    // Prefer the filename the tracker recovered from the markdown label / metadata
+    // (upload URLs are often extension-less UUIDs); fall back to the URL's last segment.
+    const fileName = suggested
+      ? sanitizeFileName(decodeURIComponent(suggested), `attachment-${index}`)
+      : fileNameFromUrl(url, index);
     const localPath = path.join(destDir, fileName);
     const relativePath = path.join(ATTACHMENTS_DIRNAME, fileName);
 

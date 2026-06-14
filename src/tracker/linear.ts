@@ -17,7 +17,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import logger from "../logger.ts";
 import { env } from "../config.ts";
-import { buildBranchName, prefixFromLinearBranch } from "../branch.ts";
+import { buildBranchName, choosePrefix } from "../branch.ts";
+import { collectAttachmentRefsFromText, type AttachmentRef } from "../attachment-refs.ts";
 import { run, runOrThrow } from "../exec.ts";
 import { fetchRetryTimeout } from "../fetch.ts";
 import type { Attachment, Comment, Issue, Tracker } from "./index.ts";
@@ -28,8 +29,9 @@ type RawIssue = {
   title: string | null;
   description: string | null;
   url: string;
-  branchName: string;
   updatedAt: string;
+  estimate: number | null;
+  labels: { nodes: { name: string }[] } | null;
   state: { name: string; type: string } | null;
   team: { key: string; name: string } | null;
   project: { name: string } | null;
@@ -87,7 +89,11 @@ const toIssue = (raw: RawIssue): Issue => ({
   description: raw.description ?? "",
   url: raw.url,
   branchName: buildBranchName({
-    prefix: prefixFromLinearBranch(raw.branchName),
+    prefix: choosePrefix({
+      labels: (raw.labels?.nodes ?? []).map(n => n.name),
+      estimate: raw.estimate,
+      description: raw.description
+    }),
     identifier: raw.identifier,
     title: raw.title ?? ""
   }),
@@ -112,7 +118,8 @@ const toComment = (raw: RawComment): Comment => ({
 
 const LIST_QUERY =
   "query GeneIssues($label: String!) { issues(filter: { labels: { name: { eq: $label } } }, first: 200) " +
-  "{ nodes { id identifier title description url branchName updatedAt state { name type } team { key name } " +
+  "{ nodes { id identifier title description url updatedAt estimate labels { nodes { name } } " +
+  "state { name type } team { key name } " +
   "project { name } assignee { id displayName email isMe } parent { identifier } } } }";
 
 const COMMENTS_QUERY =
@@ -127,10 +134,11 @@ const ATTACHMENTS_QUERY =
 const withAgentMarker = (body: string): string =>
   body.includes(env.AGENT_MARKER) ? body : `${body}\n\n${env.AGENT_MARKER}`;
 
-// Linear embeds uploaded files as `https://uploads.linear.app/...` URLs in the
-// issue/comment markdown; we scrape the image ones and download them with the token.
-const UPLOAD_URL_PATTERN = /https:\/\/uploads\.linear\.app\/[^\s)\]"'<>]+/g;
-const IMAGE_EXT_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|svg)(\?|#|$)/i;
+// Linear embeds uploaded files as `https://uploads.linear.app/...` links in the
+// issue/comment markdown. Note these URLs are extension-less UUID paths — the
+// filename (and extension) lives only in the markdown link *label* — so deciding
+// what to stage is delegated to collectAttachmentRefsFromText, which reads the label.
+const isLinearUpload = (url: string): boolean => url.startsWith("https://uploads.linear.app/");
 
 // Memoised (per process) Linear token for uploads.linear.app downloads:
 // undefined = not yet resolved, null = unavailable.
@@ -184,17 +192,10 @@ export class LinearTracker implements Tracker {
     return nodes.map(n => ({ title: n.title ?? null, url: n.url, sourceType: n.sourceType ?? null }));
   }
 
-  /** Distinct uploads.linear.app image URLs from the issue + comment bodies. */
-  async collectImageUrls(issue: Issue, comments: Comment[]): Promise<string[]> {
+  /** Stageable uploads.linear.app refs (images + text/docs) from the issue + comment bodies. */
+  async collectAttachmentUrls(issue: Issue, comments: Comment[]): Promise<AttachmentRef[]> {
     const haystack = [issue.description, ...comments.map(c => c.body)].join("\n");
-    const seen = new Set<string>();
-    for (const match of haystack.matchAll(UPLOAD_URL_PATTERN)) {
-      const url = match[0];
-      if (IMAGE_EXT_PATTERN.test(url)) {
-        seen.add(url);
-      }
-    }
-    return [...seen];
+    return collectAttachmentRefsFromText(haystack, isLinearUpload);
   }
 
   /** Download an image, trying both auth schemes; null on no-token / 401 / network error. */

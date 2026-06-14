@@ -213,7 +213,7 @@ PY
 }
 
 # ── ephemeral-sandbox cleanup (globals so the EXIT trap can see them) ──────────
-SB_NAME=""; SB_KEEP=""; STAGED_CRED_FILE=""; STAGED_CONFIG_FILE=""
+SB_NAME=""; SB_KEEP=""; STAGED_CRED_FILE=""; STAGED_CONFIG_FILE=""; SB_DOCKER_VOL=""
 cleanup() {
   [ -n "$SB_KEEP" ] && return 0
   # Drop the transient files staged for this run (the Keychain-bridged credential
@@ -224,6 +224,9 @@ cleanup() {
   [ -n "$SB_NAME" ] || return 0
   msb stop "$SB_NAME" >/dev/null 2>&1 || true
   msb rm   "$SB_NAME" >/dev/null 2>&1 || true
+  # Drop the disk-backed /var/lib/docker volume after the sandbox is gone (it's in
+  # use until then). Ephemeral only — kept sandboxes returned above keep it cached.
+  [ -n "$SB_DOCKER_VOL" ] && msb volume rm "$SB_DOCKER_VOL" >/dev/null 2>&1 || true
 }
 
 image_in_msb() { msb image ls 2>/dev/null | awk '{print $1}' | grep -qx "$REF"; }
@@ -383,9 +386,21 @@ do_run() {
   # privileges (CAP_SYS_ADMIN, for containerd's overlay layer extraction) that
   # microsandbox restored by default in #911 (v0.5.5+); `--security restricted`
   # strips them. Requires an image built with the docker layer (./sandbox.sh base).
+  #
+  # /var/lib/docker must live on a real filesystem, NOT the sandbox's overlay
+  # rootfs: containerd's overlayfs snapshotter can't stack an overlay upperdir on
+  # another overlay ("overlay: filesystem on .../work not supported as upperdir").
+  # Back it with a disk-backed named volume (microsandbox #911 / v0.5.6) so
+  # dockerd's overlay2 driver works. msb auto-creates the volume on first use; we
+  # name it after the sandbox so concurrent runs don't share one data dir, and the
+  # EXIT trap removes it for ephemeral runs (kept/named/detached sandboxes reuse it
+  # across restarts, caching pulled images). Size via GENE_SANDBOX_DOCKER_DISK.
   if [ -n "$docker_d" ]; then
+    local docker_disk="${GENE_SANDBOX_DOCKER_DISK:-10G}"
+    SB_DOCKER_VOL="${name}-docker-data"
     opts+=(--security default --init /usr/local/bin/sandbox-dockerd-init)
-    log "docker: in-sandbox dockerd ON (PID 1, --security default; iptables off — use 'docker --network=host' for egress)"
+    opts+=(--mount-named "$SB_DOCKER_VOL:/var/lib/docker:kind=disk,size=$docker_disk")
+    log "docker: in-sandbox dockerd ON (PID 1, --security default; /var/lib/docker on ${docker_disk} disk volume '$SB_DOCKER_VOL'; iptables off — use 'docker --network=host' for egress)"
     if [ "${#cmd[@]}" -gt 0 ]; then
       # gate the command on daemon readiness so it doesn't race dockerd startup
       local dwait="${GENE_DOCKER_WAIT:-60}"
@@ -434,10 +449,12 @@ run flags:
                       routes) — e.g. gitlab.example.com; implied by --inherit
       --isolated      force public-egress-only, even with --inherit (--no-internal)
       --docker        start dockerd inside the sandbox (msb --init hands it PID 1
-                      on the default security profile). Needs msb v0.5.5+ (PR #911
-                      restored the Docker-in-Docker mount privileges) and an image
-                      built with the docker layer (./sandbox.sh base). iptables is
-                      off, so pass 'docker --network=host' for build/run egress
+                      on the default security profile). Needs msb v0.5.6+ (PR #911)
+                      and an image built with the docker layer (./sandbox.sh base).
+                      /var/lib/docker is backed by a disk volume (overlay2 can't
+                      nest on the overlay rootfs); size via GENE_SANDBOX_DOCKER_DISK
+                      (default 10G). iptables is off, so pass 'docker
+                      --network=host' for build/run egress
   -n, --name NAME     name the sandbox (named sandboxes are kept, not auto-removed)
   -k, --keep          keep the sandbox after the command exits
   -d, --detach        start in the background and print the name
@@ -497,6 +514,7 @@ Env overrides: GENE_SANDBOX_IMAGE, GENE_SANDBOX_TAG, GENE_SANDBOX_DOCKERFILE,
   GENE_SANDBOX_INHERIT (=1 to always inherit), GENE_SANDBOX_INHERIT_RO (=1 read-only),
   GENE_SANDBOX_INTERNAL (=1 to always allow internal/private network access),
   GENE_SANDBOX_DOCKER (=1 to always start the in-sandbox dockerd; see --docker),
+  GENE_SANDBOX_DOCKER_DISK (size of the disk volume backing /var/lib/docker; default 10G),
   GENE_DOCKER_WAIT (seconds wait-for-docker blocks for daemon readiness; default 60),
   GENE_SANDBOX_KEEP_CREDENTIALS (=1 keep the bridged claude creds file on the host),
   GENE_SANDBOX_NO_KEYCHAIN (=1 skip the macOS Keychain → credentials.json bridge),

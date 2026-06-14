@@ -3,9 +3,8 @@
  * template (GENE_BRANCH_TEMPLATE, default "{prefix}/{identifier}-{slug}") so every
  * tracker produces the same shape. Placeholders: {prefix}, {identifier}, {slug}.
  *
- * The {prefix} is derived from the tracker when it supplies one (Linear's suggested
- * branch name carries a label-based prefix); otherwise it falls back to the command
- * base (GENE_COMMAND_BASE, e.g. "!gene") stripped to alphanumerics → "gene".
+ * The {prefix} is chosen by Gene itself (not the tracker's suggestion) via
+ * {@link choosePrefix}: "fix" or "feature", from the issue's labels and size.
  *
  * Linear auto-links a change request to its issue whenever the issue *identifier*
  * appears anywhere in the branch name, so a "{prefix}/{identifier}-{slug}" branch
@@ -16,12 +15,6 @@ import { env } from "./config.ts";
 
 /** Longest the {slug} segment may be (hardcoded — not worth an env var). */
 const SLUG_MAX = 40;
-
-/** The fallback prefix: GENE_COMMAND_BASE stripped to alphanumerics ("!gene" → "gene"). */
-export const fallbackPrefix = (): string => {
-  const stripped = env.COMMAND_BASE.replace(/[^a-z0-9]/gi, "").toLowerCase();
-  return stripped || "gene";
-};
 
 /**
  * A short, git-safe slug from an issue title: lowercase, any run of non-alphanumerics
@@ -63,9 +56,46 @@ export const buildBranchName = (input: { prefix: string; identifier: string; tit
   return sanitizeRef(out);
 };
 
-/** The prefix Linear supplies: the segment before the first "/" of its suggested branch. */
-export const prefixFromLinearBranch = (linearBranch: string): string => {
-  const idx = linearBranch.indexOf("/");
-  const head = idx > 0 ? linearBranch.slice(0, idx).trim() : "";
-  return head || fallbackPrefix();
+/** Estimate (story points) at/above which an unlabelled issue counts as "big" → feature. */
+const BIG_ESTIMATE = 3;
+/** Description length (chars) at/above which an unestimated issue counts as "big" → feature. */
+const BIG_DESCRIPTION_CHARS = 600;
+
+/** Labels (lowercased) that force a "fix" prefix, and those that force "feature". */
+const FIX_LABELS = new Set(["bug", "fix"]);
+const FEATURE_LABELS = new Set(["feature"]);
+
+/**
+ * Choose the branch prefix from the issue itself — Gene-owned, independent of the
+ * tracker's suggested branch name. Order of precedence:
+ *
+ *   1. a Bug/Fix label  → "fix"      (explicit: a defect)
+ *   2. a Feature label  → "feature"  (explicit: a feature)
+ *   3. a "big" issue    → "feature"  (estimate ≥ {@link BIG_ESTIMATE}, or — when
+ *                                      unestimated — description ≥
+ *                                      {@link BIG_DESCRIPTION_CHARS} chars)
+ *   4. otherwise        → "fix"
+ *
+ * Step 3 is a size proxy for "would need a planning step": the branch is named in
+ * the tracker mapping, before any agent runs, so whether a plan was actually
+ * proposed/approved isn't known yet — a big issue stands in for that.
+ */
+export const choosePrefix = (input: {
+  labels: string[];
+  estimate?: number | null;
+  description?: string | null;
+}): "fix" | "feature" => {
+  const labels = input.labels.map(l => l.toLowerCase());
+  if (labels.some(l => FIX_LABELS.has(l))) {
+    return "fix";
+  }
+  if (labels.some(l => FEATURE_LABELS.has(l))) {
+    return "feature";
+  }
+  // Size proxy for "big / would need planning": prefer the team's estimate when one
+  // is set (it fully decides), else fall back to description length.
+  if (input.estimate != null) {
+    return input.estimate >= BIG_ESTIMATE ? "feature" : "fix";
+  }
+  return (input.description ?? "").length >= BIG_DESCRIPTION_CHARS ? "feature" : "fix";
 };

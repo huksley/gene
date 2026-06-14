@@ -159,10 +159,13 @@ RUN set -eux; \
 # dockerd config + runtime helpers for the optional in-sandbox daemon. iptables
 # is disabled so dockerd doesn't fight msb's managed networking — pass `docker
 # --network=host` for build/run egress. Storage driver is left to dockerd's
-# auto-detect: overlay2 works because msb's default security profile grants the
-# CAP_SYS_ADMIN mounts containerd needs (microsandbox #911, v0.5.5+) — pin
-# "storage-driver": "vfs" only if dockerd refuses to start on an older/restricted
-# runtime. sandbox-dockerd-init is msb's `--init` PID-1 target (execs dockerd);
+# auto-detect: overlay2 works because (a) msb's default security profile grants
+# the CAP_SYS_ADMIN mounts containerd needs (microsandbox #911, v0.5.5+) and (b)
+# sandbox.sh --docker backs /var/lib/docker with a disk volume, so overlay2's
+# upperdir lands on real ext4, not on the overlay rootfs (the kernel rejects
+# overlay-on-overlay: "not supported as upperdir"). Pin "storage-driver": "vfs"
+# only if dockerd refuses to start on an older/restricted runtime without that
+# disk mount. sandbox-dockerd-init is msb's `--init` PID-1 target (execs dockerd);
 # wait-for-docker gates commands on daemon readiness.
 RUN <<'SETUP'
 set -eux
