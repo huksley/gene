@@ -5,6 +5,8 @@ From ticket to pull request in minutes, without touching a code.
 
 <img width="1316" height="837" alt="image" src="https://github.com/user-attachments/assets/96d01720-895f-4d49-a31f-5d9bfb2f6157" />
 
+## Workflow
+
 ```
    ┌──────────┐        ┌─────────────┐       ┌───────────┐       ┌──────────┐
    │ Todo     │ ─────► │ In Progress │ ────► │ In Review │ ────► │ Done     │
