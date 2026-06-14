@@ -106,11 +106,11 @@ export interface Tracker {
   startWatch?(onActivity: () => void): Promise<() => void>;
 }
 
-/** Construct the tracker for a backend name (mirrors selectForge). */
+/** Construct the issue tracker for a backend name (mirrors selectForge). */
 export const selectTracker = (name: "linear" | "trello"): Tracker =>
   name === "trello" ? new TrelloTracker() : new LinearTracker();
 
-/** The process-wide tracker, chosen by GENE_TRACKER at startup. */
+/** The process-wide issue tracker, chosen by GENE_TRACKER at startup. */
 export const tracker: Tracker = selectTracker(env.TRACKER);
 
 /**

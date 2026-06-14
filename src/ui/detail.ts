@@ -88,7 +88,7 @@ export class Detail {
   readonly root: BoxRenderable;
 
   private renderer: CliRenderer;
-  private ticketTitle: TextRenderable;
+  private issueTitle: TextRenderable;
   private titleLine: TextRenderable;
   private subLine: TextRenderable;
   private actionsLabel: TextRenderable;
@@ -126,10 +126,10 @@ export class Detail {
     // Chrome lines: flexShrink:0 so the live pane's flexGrow can't squeeze them
     // onto the same row (they otherwise collapse into one mangled line). The ticket
     // title sits above the identifier/status row; hidden until a title is known.
-    this.ticketTitle = new TextRenderable(renderer, { id: "gene-detail-ticket-title", content: "", flexShrink: 0 });
+    this.issueTitle = new TextRenderable(renderer, { id: "gene-detail-issue-title", content: "", flexShrink: 0 });
     this.titleLine = new TextRenderable(renderer, { id: "gene-detail-title", content: "", flexShrink: 0 });
     this.subLine = new TextRenderable(renderer, { id: "gene-detail-sub", content: "", flexShrink: 0 });
-    this.root.add(this.ticketTitle);
+    this.root.add(this.issueTitle);
     this.root.add(this.titleLine);
     this.root.add(this.subLine);
 
@@ -205,11 +205,11 @@ export class Detail {
     // (live agents carry it from dispatch; finished tickets recover it from the
     // dispatch log row's data — older rows predate it, so it may be absent).
     if (agent?.title) {
-      this.ticketTitle.visible = true;
-      this.ticketTitle.content = t`${bold(fg(palette.text)(truncate(agent.title, Math.max(10, this.renderer.width - 2))))}`;
+      this.issueTitle.visible = true;
+      this.issueTitle.content = t`${bold(fg(palette.text)(truncate(agent.title, Math.max(10, this.renderer.width - 2))))}`;
     } else {
-      this.ticketTitle.visible = false;
-      this.ticketTitle.content = "";
+      this.issueTitle.visible = false;
+      this.issueTitle.content = "";
     }
 
     const statusText = agent ? statusLabel(agent.status) : "HISTORY";

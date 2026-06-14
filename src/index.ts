@@ -29,8 +29,9 @@ import { selectForge, type Forge } from "./forge/index.ts";
 import { commitsBehind, detectDefaultBranch } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
-import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
+import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, findOpenChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
 import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts";
+import { dispatch as dispatchPluginEvent, setupPlugins } from "./plugins/index.ts";
 import { closeDb, findInterruptedRuns, logEvent, readTokenTotal } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
@@ -170,6 +171,67 @@ interface InFlightContext {
 const inFlight = new Map<string, InFlightContext>();
 const isAtConcurrencyCap = (): boolean => inFlight.size >= env.MAX_CONCURRENT;
 
+// Plugin-event dedup state (by issue id), so each scan emits a change exactly once.
+// lastSeenState drives `issue-status-changed`; seenPrUrl + lastPipeline gate the
+// In-Review `pr-created` / `ci-completed` events (see emitReviewEvents).
+const lastSeenState = new Map<string, string>();
+const seenPrUrl = new Map<string, string>();
+const lastPipeline = new Map<string, string>();
+
+/**
+ * Emit `issue-status-changed` for any issue whose tracker state moved since the last
+ * scan — one chokepoint that catches daemon-driven moves AND human drags alike. First
+ * sighting of an issue only seeds the map (no event), so a cold start isn't a storm.
+ */
+const emitStatusChanges = async (issues: Issue[]): Promise<void> => {
+  for (const issue of issues) {
+    const prev = lastSeenState.get(issue.identifier);
+    lastSeenState.set(issue.identifier, issue.stateName);
+    if (prev !== undefined && prev !== issue.stateName) {
+      await dispatchPluginEvent({ kind: "issue-status-changed", issue, from: prev, to: issue.stateName });
+    }
+  }
+};
+
+/**
+ * Emit `pr-created` (first time a change request is seen for an issue) and
+ * `ci-completed` (when its CI reaches a terminal state, once per head SHA) from the
+ * In-Review watchdog. One extra forge read per in-review poll — negligible at poll cadence
+ * — kept isolated so it never perturbs the dispatch decision in processReview.
+ */
+const emitReviewEvents = async (
+  issue: Issue,
+  comments: Comment[],
+  target: RepoTarget,
+  forge: Forge
+): Promise<void> => {
+  let open;
+  try {
+    open = await findOpenChangeRequest(issue, comments, target, forge);
+  } catch {
+    return; // discovery is best-effort; never let event emission disturb the watchdog
+  }
+  if (!open) {
+    return;
+  }
+  if (seenPrUrl.get(issue.id) !== open.url) {
+    seenPrUrl.set(issue.id, open.url);
+    await dispatchPluginEvent({ kind: "pr-created", issue, url: open.url, forge: forge.name });
+  }
+  if (open.ci.status === "success" || open.ci.status === "failed") {
+    const key = `${open.headSha}:${open.ci.status}`;
+    if (lastPipeline.get(issue.id) !== key) {
+      lastPipeline.set(issue.id, key);
+      await dispatchPluginEvent({
+        kind: "ci-completed",
+        issue,
+        status: open.ci.status === "success" ? "passed" : "failed",
+        url: open.ci.url ?? open.url
+      });
+    }
+  }
+};
+
 /**
  * Wakes the poll loop's interval wait early, so the next scan starts now instead
  * of after POLL_INTERVAL_MS. Set while `runForever` is sleeping; null while it is
@@ -294,6 +356,7 @@ const dispatchAgent = async (
   // later from invoke.ts (agentSpawned / agentFinished). No-op cost in console mode.
   const workBranch = extras.existing?.branch ?? issue.branchName;
   monitor.agentDispatched(issue.identifier, intent, targetLabel(target), workBranch, issue.title);
+  void dispatchPluginEvent({ kind: "agent-started", issue, intent });
 
   if (isAtConcurrencyCap()) {
     logger.info(
@@ -415,6 +478,11 @@ const dispatchAgent = async (
       // another process, spawn threw) — a no-op once invokeAgent recorded a terminal
       // status, so the normal done/error/cancelled outcome is preserved.
       monitor.agentSettled(issue.identifier);
+      void dispatchPluginEvent({
+        kind: "agent-finished",
+        issue,
+        status: monitor.getAgent(issue.identifier)?.status ?? "done"
+      });
       logger.info(
         `${logger.tag.flow} [${issue.identifier}] spawn complete (${inFlight.size}/${env.MAX_CONCURRENT} in flight)`
       );
@@ -485,6 +553,10 @@ const processReview = async (
   target: RepoTarget,
   forge: Forge
 ): Promise<boolean> => {
+  // Surface pr-created / ci-completed to plugins (deduped) before the dispatch
+  // decision below — isolated so event emission never affects the watchdog outcome.
+  await emitReviewEvents(issue, comments, target, forge);
+
   // When DONE_STATE is configured, a merged change request ends the lifecycle:
   // move the issue to Done and stop — no point polling CI on a merged CR.
   if (env.DONE_STATE) {
@@ -664,6 +736,9 @@ const scanOnce = async (issueFilter?: string): Promise<boolean> => {
   for (const issue of done) {
     monitor.markIssueDone(issue.identifier);
   }
+  // Notify plugins of any status moves since the last scan (one chokepoint for daemon
+  // moves and human drags). Best-effort — never blocks the scan if a plugin is slow.
+  await emitStatusChanges(mine);
 
   // Existing conversations take priority over new Todo work: drain In Progress +
   // Blocked, and check In-Review change requests (failing CI / new review comments),
@@ -902,6 +977,9 @@ const parseIssueFilter = (argv: string[]): string | undefined => {
 const main = async (): Promise<void> => {
   const issueFilter = parseIssueFilter(process.argv);
   const useUi = process.argv.includes("--ui");
+
+  // Load lifecycle observers (GENE_PLUGINS) once, before any scan can emit an event.
+  await setupPlugins();
 
   // The TUI installs its own signal + key handling (it must restore the terminal
   // before exiting), so only the console paths get the plain signal handlers.

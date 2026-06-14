@@ -130,6 +130,11 @@ export const env = {
   // namespaced like the other *_STATE values. NOT in WATCHED_STATES — Done is
   // terminal and never scanned.
   DONE_STATE: optional(`${TP}DONE_STATE`),
+  // Comma-separated list of plugin module paths and/or directories. Each module
+  // default-exports a Plugin (see src/plugins/index.ts); a directory loads every
+  // *.ts/*.js inside it. Plugins observe lifecycle events (ticket status change,
+  // PR created, agent started/finished, pipeline complete). Unset ⇒ no plugins.
+  PLUGINS: optional("GENE_PLUGINS"),
   AGENT_MARKER: term("GENE_AGENT_MARKER", "#gene-ai"),
   COMMAND_BASE: term("GENE_COMMAND_BASE", "!gene"),
   // Template for the branch Gene works on. Placeholders: {prefix}, {identifier},

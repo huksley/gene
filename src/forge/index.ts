@@ -48,6 +48,7 @@ export type ChangeRequestReview = {
   targetBranch: string;
   /** Head commit the CI ran against — debounces repeated CI-fix dispatches. */
   headSha: string;
+  /** CI status and URL. */
   ci: { status: CiStatus; url?: string; detail?: string };
   /** Discussion comments + reviews, chronological, system notes excluded. */
   comments: ReviewComment[];
