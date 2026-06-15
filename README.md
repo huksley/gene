@@ -56,26 +56,7 @@ until you fill them in. The recommended shape (and what this deployment requires
 
 ## How it works
 
-```
-                 ┌──────────────────────────── GeneAI (this repo, orchestrator) ──────┐
-   Tracker       │                                                                    │
-  ┌───────┐ poll │  index.ts ─ scan ─► decide.ts ─► dispatch                          │
-  │ Gene  │◄─────┤     │                                  │                           │
-  │ label │      │     │ list issues (tracker api)        │ withLock(ISSUE-ID)        │
-  └───────┘      │     ▼                                  ▼                           │ 
-                 │  tracker/                         invoke.ts ── spawn ──► claude -p │
-                 │                                        │  (in a worktree)          │
-                 └────────────────────────────────────────┼───────────────────────────┘
-                                                          │ git worktree off the clone
-                               ┌──────────────────────────▼──────────────────────────┐
-   GitLab / GitHub             │  repos/<repoPath>/                 (local clone)    │
-  ┌──────────────┐  glab / gh  │  repos/.worktrees/<repoPath>/<ISSUE-ID> (per issue) │
-  │ MR / PR      │◄────────────┤  the agent edits, commits, pushes, opens the MR/PR, │
-  └──────────────┘             │  comments + moves the tracker state itself          │
-                               └─────────────────────────────────────────────────────┘
-```
-
-The **orchestrator** only lists issues, decides, posts a start comment, moves the
+The **orchestrator** checks issues, decides, posts a start comment, moves the
 issue to *In Progress*, and holds a per-issue lock. The **spawned agent** does
 everything else — code changes, the merge/pull request, and the tracker write-back
 (comments + the terminal state move).
