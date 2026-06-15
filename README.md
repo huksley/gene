@@ -27,6 +27,33 @@ worktree — to do the work and open a change request. Each issue chooses its ow
 repo (and the assigned forge) from a link in the issue, so one tracker can drive
 **GitLab** and **GitHub** repos side by side.
 
+## Writing tickets
+
+Gene only acts on an issue when **all** of these hold — so a ticket needs:
+
+- **the `Gene` label** — the ownership tag the daemon filters on (never removed by the pipeline);
+- **an assignee of you** — the tracker user Gene is authenticated as (`LINEAR_ASSIGNEE` /
+  `TRELLO_ASSIGNEE`, default `me`; set `any` to drop the filter, or a specific user to
+  work on their behalf);
+- **a target repo** — a GitLab/GitHub link in the description (the **first** link wins;
+  comments are a fallback), or a team mapped via `GENE_REPO_MAP` / `GENE_REPO_URL`
+  (see [Repo targeting](#repo-targeting-per-issue));
+- **state `Todo`** — the trigger for new work. The other states are reactions to
+  comments / CI, see the [lifecycle table](#lifecycle-tracker-workflow-states).
+
+Write the **description** for an engineer picking it up cold — the agent sees only the
+issue, its comments, and the repo. Say **what** and **why**, not how, and paste
+screenshots / logs (image attachments are staged into the worktree).
+
+When `GENE_REQUIRE_SECTIONS` is set, the description **must** carry those headings with
+a non-empty body, or Gene replies asking for them and moves the issue to **Blocked**
+until you fill them in. The recommended shape (and what this deployment requires —
+`## Problem,## Acceptance criteria`):
+
+- **`## Problem`** — the symptom or desired change, with enough context to reproduce or locate it.
+- **`## Acceptance criteria`** — what "done" looks like, concretely, including
+  *"tests added/updated for this scenario"*.
+
 ## How it works
 
 ```
@@ -104,15 +131,21 @@ does the work and writes everything back itself:
 The lifecycle is driven by the tracker's **workflow states** — Linear workflow states,
 or on Trello the card's **list** (the daemon scans by state *name*, so both look alike):
 
-| Phase | Mechanism |
-|---|---|
-| Eligible | label `Gene`, **assigned to you**, **and** state `Todo` |
-| Picked up | orchestrator → **In Progress**, start comment, lock taken |
-| Picked up — change request already attached | agent **continues** the open MR/PR (on its own branch) instead of starting fresh |
-| Agent asks a question / proposes a plan | agent comments + → **Blocked** |
-| Agent opens a change request | agent comments (MR/PR link) + → **In Review** (as a **draft** if `GENE_DRAFT_CHANGE_REQUEST`) |
-| CI fails, **or** a reviewer comments | daemon re-dispatches the agent to address it (back to **In Review**) — a reviewer comment acts **even while CI is still running** |
-| Human merges | manual → **Done** — or set `<TP>_DONE_STATE` to auto-move on merge |
+Each scan, for every eligible issue, the **(state, situation)** pair decides what Gene does:
+
+| Tracker state | What the daemon sees | What Gene does |
+|---|---|---|
+| **Todo** | an MR/PR is already attached | **continues** that change request on its own branch — skips planning |
+| **Todo** | no change request yet | starts **from scratch**: plan → code → open the MR/PR → **In Review** |
+| **In Progress** | a new human comment | hands it to the work in flight as **feedback** |
+| **Blocked** | a new human reply | **resumes** — Gene had asked a question or proposed a plan |
+| **In Review** | a new review comment on the MR/PR | re-dispatches to **address** it — acts **even while CI is still running** |
+| **In Review** | the CI pipeline **failed** | re-dispatches to **address** the failure |
+| **In Review** | nothing new (quiet; CI green or still running) | **no-op** — waits for the next signal |
+| **In Review** | the MR/PR **merged** | → **Done** (when `<TP>_DONE_STATE` is set; otherwise a human drags it) |
+
+Eligibility (label `Gene`, **assigned to you**, a target repo) and what to put in the
+description are covered in **[Writing tickets](#writing-tickets)**.
 
 The `Gene` label is an **ownership tag and is never removed by the pipeline.**
 Each scan watches `Gene` issues in **{Todo, In Progress, Blocked, In Review}** and
@@ -460,4 +493,6 @@ document them in `.env.example`.
 - **Two-repo** model (orchestrator vs cloned targets); worktrees branch off the clone.
 - Native Node 24 TS — **no build**, `.ts` imports, `--env-file`; **one runtime dep**
   (`pg`, talking to a local Postgres for state).
-- Description **section enforcement is off** by default (real tickets are free-form).
+- Description **section enforcement is opt-in** (`GENE_REQUIRE_SECTIONS`) — off by
+  default (free-form); when set, a missing section sends the issue to Blocked with a
+  request to fill it in. See [Writing tickets](#writing-tickets).
