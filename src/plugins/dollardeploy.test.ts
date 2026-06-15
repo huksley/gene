@@ -6,8 +6,7 @@ import {
   isDevStagingApp,
   baseAppNameStem,
   deploymentNameFor,
-  dnsLabel,
-  customHostnameFrom
+  dnsLabel
 } from "./dollardeploy.ts";
 
 test("normalizeRepoUrl strips scheme, .git, trailing slash; handles ssh", () => {
@@ -44,26 +43,14 @@ test("baseAppNameStem strips dev/staging tokens, keeps the rest", () => {
   assert.equal(baseAppNameStem("staging"), "staging"); // nothing left → fall back
 });
 
-test("deploymentNameFor joins stem + ticket id (ticket case preserved)", () => {
-  assert.equal(deploymentNameFor(baseAppNameStem("nextjs"), "ID-244"), "nextjs-ID-244");
-  assert.equal(deploymentNameFor(baseAppNameStem("app-staging"), "ID-601"), "app-ID-601");
+test("deploymentNameFor joins stem + ticket id, lowercased", () => {
+  assert.equal(deploymentNameFor(baseAppNameStem("nextjs"), "ID-244"), "nextjs-id-244");
+  assert.equal(deploymentNameFor(baseAppNameStem("App-Staging"), "ID-601"), "app-id-601");
 });
 
-test("dnsLabel is lowercase, dash-collapsed, ≤63 chars, trimmed", () => {
+test("dnsLabel produces the lowercase bare hostname label (no FQDN)", () => {
+  assert.equal(dnsLabel("nextjs-ID-602"), "nextjs-id-602");
   assert.equal(dnsLabel("app-ID-601"), "app-id-601");
   assert.equal(dnsLabel("My App!! v2"), "my-app-v2");
   assert.equal(dnsLabel("x".repeat(80)).length, 63);
-});
-
-test("customHostnameFrom swaps the first label of a subdomain base", () => {
-  assert.equal(
-    customHostnameFrom("app4.mh6i6q7v.dollardeploy.dev", "app-ID-601"),
-    "app-id-601.mh6i6q7v.dollardeploy.dev"
-  );
-});
-
-test("customHostnameFrom returns undefined when the base isn't a usable subdomain", () => {
-  assert.equal(customHostnameFrom("example.com", "app-ID-601"), undefined);
-  assert.equal(customHostnameFrom(null, "app-ID-601"), undefined);
-  assert.equal(customHostnameFrom("", "app-ID-601"), undefined);
 });

@@ -4,9 +4,11 @@
  * Spins up a per-ticket preview environment on DollarDeploy when a ticket's change
  * request passes CI, and tears it down when the ticket is marked Done:
  *
- *   - on `ci-completed` (passed): find the repo's existing dev/staging app, duplicate
- *     it, rename the copy `<repo>-<ticket-id>`, point it at the ticket's branch and a
- *     custom subdomain under the host's wildcard, then build + deploy it.
+ *   - when the change request is created (or, with DOLLARDEPLOY_REQUIRE_CI=true, once
+ *     its CI passes): find the repo's existing dev/staging app — or, failing that, any
+ *     app on the same repo — duplicate it, rename the copy `<app-stem>-<ticket-id>`,
+ *     point it at the ticket's branch and a custom subdomain under the host's wildcard,
+ *     then build + deploy it.
  *   - on `issue-status-changed` → Done: remove that preview app.
  *
  * It's a pure observer (like every Gene plugin): all failures are caught by the
@@ -16,6 +18,8 @@
  *   - DOLLARDEPLOY_API_KEY — API token. Falls back to `~/.dollardeploy/auth` (the
  *     file `ddc auth` writes: `{ "apiKey": "sk_…" }`).
  *   - DOLLARDEPLOY_BASE_URL — defaults to https://dollardeploy.com.
+ *   - DOLLARDEPLOY_REQUIRE_CI — "true" gates deploys on CI passing; default false
+ *     (deploy as soon as the change request exists, for repos without CI).
  *
  * Enable via GENE_PLUGINS=src/plugins/dollardeploy.ts (or a built dist path).
  */
@@ -35,6 +39,7 @@ type DdApp = {
   repositoryUrl?: string | null;
   hostId?: string | null;
   hostname?: string | null;
+  type?: string | null;
   status?: string | null;
 };
 
@@ -79,8 +84,9 @@ export const baseAppNameStem = (name: string): string => {
   return parts.join("-") || name;
 };
 
-/** The preview app's name for a ticket, e.g. "nextjs-ID-244" (ticket case preserved). */
-export const deploymentNameFor = (stem: string, ticketId: string): string => `${stem}-${ticketId}`;
+/** The preview app's name for a ticket, lowercased, e.g. "nextjs-id-244". */
+export const deploymentNameFor = (stem: string, ticketId: string): string =>
+  `${stem}-${ticketId}`.toLowerCase();
 
 /** A DNS-safe label (≤63 chars, lowercase, no leading/trailing dash). */
 export const dnsLabel = (raw: string): string =>
@@ -90,24 +96,6 @@ export const dnsLabel = (raw: string): string =>
     .replace(/^-+/, "")
     .slice(0, 63)
     .replace(/-+$/, "");
-
-/**
- * Build the preview's custom hostname by swapping the first label of the base app's
- * hostname for the deployment label — e.g. base "app4.mh6i6q7v.dollardeploy.dev"
- * + "app-ID-601" → "app-id-601.mh6i6q7v.dollardeploy.dev". Returns undefined when the
- * base hostname isn't a subdomain we can derive from (so the caller skips the custom domain).
- */
-export const customHostnameFrom = (baseHostname: string | null | undefined, deploymentName: string): string | undefined => {
-  const labels = (baseHostname ?? "").split(".").filter(Boolean);
-  if (labels.length < 3) {
-    return undefined;
-  }
-  const label = dnsLabel(deploymentName);
-  if (!label) {
-    return undefined;
-  }
-  return [label, ...labels.slice(1)].join(".");
-};
 
 // --- Plugin -----------------------------------------------------------------
 
@@ -129,6 +117,7 @@ const readApiKey = (): string => {
 const createPlugin = (): Plugin => {
   let apiKey = "";
   let baseUrl = "https://dollardeploy.com";
+  let requireCi = false;
 
   /** One authed JSON API call; throws on a non-2xx so the dispatcher logs it. */
   const api = async <T>(method: string, apiPath: string, body?: unknown): Promise<T> => {
@@ -160,7 +149,7 @@ const createPlugin = (): Plugin => {
     return target ? { url: `https://${target.host}/${target.repoPath}` } : null;
   };
 
-  const deployPreview = async (issue: Issue, ctx: PluginContext): Promise<void> => {
+  const deployPreview = async (issue: Issue, ctx: PluginContext, prUrl?: string): Promise<void> => {
     const repo = await repoFor(issue, ctx);
     if (!repo) {
       ctx.logger.warn(`[dollardeploy] [${issue.identifier}] no repo resolved — skipping preview`);
@@ -182,38 +171,76 @@ const createPlugin = (): Plugin => {
     }
     const name = deploymentNameFor(baseAppNameStem(base.name), issue.identifier);
 
-    if (apps.some(a => a.name === name)) {
-      ctx.logger.info(`[dollardeploy] [${issue.identifier}] preview "${name}" already exists — nothing to do`);
+    // Already provisioned (an earlier run, or pr-created re-firing after a restart):
+    // don't duplicate again — just trigger a fresh deploy of the existing preview.
+    const existing = apps.find(a => a.name === name);
+    if (existing) {
+      if (ctx.dryRun) {
+        ctx.logger.info(`[dollardeploy] [${issue.identifier}] (dry-run) preview "${name}" exists — would redeploy`);
+        return;
+      }
+      await api("POST", `/api/app/${existing.id}/build`, { deploy: true });
+      ctx.logger.info(`[dollardeploy] [${issue.identifier}] preview "${name}" exists — triggered redeploy`);
       return;
     }
 
-    const hostname = customHostnameFrom(base.hostname, name);
+    // The hostname to register is just the lowercase `<stem>-<ticket>` label — the host
+    // expands it under its own domain (FQDNs are not accepted here).
+    const label = dnsLabel(name);
     if (ctx.dryRun) {
       ctx.logger.info(
         `[dollardeploy] [${issue.identifier}] (dry-run) would duplicate "${base.name}" → "${name}" ` +
-        `on branch ${issue.branchName}${hostname ? ` at ${hostname}` : ""} and deploy`
+        `on branch ${issue.branchName} with hostname "${label}" and deploy`
       );
       return;
     }
 
     const dup = await api<DdApp>("POST", `/api/app/${base.id}/duplicate`);
-    // Ensure the host serves the wildcard the custom subdomain falls under (best-effort —
-    // it usually already exists, since the base app resolves under the same wildcard).
-    if (hostname && base.hostId) {
-      const wildcardBase = hostname.split(".").slice(1).join(".");
-      await api("POST", `/api/host/${base.hostId}/hostname/wildcard`, { hostname: wildcardBase }).catch(error =>
-        ctx.logger.warn(`[dollardeploy] [${issue.identifier}] wildcard ensure failed (continuing):`, error instanceof Error ? error.message : error)
-      );
+
+    // Register the preview's hostname on the host via the *wildcard* endpoint with the bare
+    // label (idempotent): it expands "<label>" → "<label>.<short-host-id>.dollardeploy.app"
+    // and returns the host's full `hostnames` list. We take that FQDN and assign it (plus the
+    // host) to the app — so it doesn't collide with the hostname the duplicate inherited from
+    // the base app. (The non-wildcard /hostname endpoint stores the string verbatim, so the
+    // bare label must NOT be sent there.)
+    let hostname = label;
+    if (base.hostId) {
+      const host = await api<{ hostnames?: string[] }>("POST", `/api/host/${base.hostId}/hostname/wildcard`, { hostname: label });
+      const fqdn = (host.hostnames ?? []).find(h => h.toLowerCase().startsWith(`${label}.`));
+      if (fqdn) {
+        hostname = fqdn;
+      } else {
+        ctx.logger.warn(`[dollardeploy] [${issue.identifier}] host returned no FQDN for "${label}" — using bare label`);
+      }
     }
+    const description =
+      `Gene preview for ${issue.identifier} ${issue.title}\n\nTicket: ${issue.url}` +
+      (prUrl ? `\n\nPR: ${prUrl}` : "");
     await api("PATCH", `/api/app/${dup.id}`, {
       name,
+      description,
       sourceBranch: issue.branchName,
-      ...(hostname ? { hostname } : {})
+      ...(base.hostId ? { hostId: base.hostId } : {}),
+      hostname
     });
+
+    // The duplicate inherited the base app's port, which collides on the shared host —
+    // allocate a free one for this host and set it, or the deploy fails. Must run after
+    // the host/hostname are assigned above. (findPort isn't in the OpenAPI spec yet.)
+    if (base.hostId) {
+      const params = new URLSearchParams({ id: dup.id, hostId: base.hostId });
+      const type = dup.type ?? base.type;
+      if (type) {
+        params.set("type", String(type));
+      }
+      const { port } = await api<{ port: number }>("GET", `/api/app/${dup.id}/findPort?${params.toString()}`);
+      await api("PATCH", `/api/app/${dup.id}`, { mainPort: port });
+    }
+
     await api("POST", `/api/app/${dup.id}/build`, { deploy: true });
     ctx.logger.info(
-      `[dollardeploy] [${issue.identifier}] preview "${name}" deploying` +
-      `${hostname ? ` → https://${hostname}` : ""} (from "${base.name}", branch ${issue.branchName})`
+      `[dollardeploy] [${issue.identifier}] preview "${name}" deploying → ` +
+      `${hostname.includes(".") ? `https://${hostname}` : hostname} (from "${base.name}", branch ${issue.branchName})`
     );
   };
 
@@ -249,12 +276,15 @@ const createPlugin = (): Plugin => {
     setup(ctx: PluginContext): void {
       apiKey = readApiKey();
       baseUrl = (process.env.DOLLARDEPLOY_BASE_URL?.trim() || "https://dollardeploy.com").replace(/\/+$/, "");
+      requireCi = /^true$/i.test(process.env.DOLLARDEPLOY_REQUIRE_CI?.trim() ?? "");
       if (!apiKey) {
         ctx.logger.warn(
           "[dollardeploy] no API key (set DOLLARDEPLOY_API_KEY or run `ddc auth`) — plugin loaded but inert"
         );
       } else {
-        ctx.logger.info(`[dollardeploy] active (base ${baseUrl})`);
+        ctx.logger.info(
+          `[dollardeploy] active (base ${baseUrl}, trigger ${requireCi ? "on CI pass" : "on change-request created"})`
+        );
       }
     },
 
@@ -262,8 +292,14 @@ const createPlugin = (): Plugin => {
       if (!apiKey) {
         return;
       }
-      if (event.kind === "ci-completed" && event.status === "passed") {
-        await deployPreview(event.issue, ctx);
+      // Deploy trigger: by default as soon as the change request is created; with
+      // DOLLARDEPLOY_REQUIRE_CI=true, only once its CI passes instead.
+      if (!requireCi && event.kind === "pr-created") {
+        await deployPreview(event.issue, ctx, event.url);
+        return;
+      }
+      if (requireCi && event.kind === "ci-completed" && event.status === "passed") {
+        await deployPreview(event.issue, ctx, event.url);
         return;
       }
       if (event.kind === "issue-status-changed") {
