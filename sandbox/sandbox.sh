@@ -54,10 +54,11 @@ EOF
 # ── host-context inheritance (--inherit) ───────────────────────────────────────
 # Env vars proxied into the sandbox when --inherit is set, but only if set on the
 # host. Tokens flow straight to the tools: gh←GITHUB_TOKEN, glab←GITLAB_TOKEN/
-# GITLAB_HOST, claude←ANTHROPIC_API_KEY & CLAUDE_*, ntn←NOTION_API_TOKEN/NOTION_*,
-# trello←TRELLO_API_KEY/TRELLO_TOKEN/TRELLO_*, plus OPENAI_*/CODEX_*/
-# HUGGINGFACE_TOKEN/NPM_TOKEN. Only key names are ever printed — never values.
-PROXY_EXACT="ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN GITLAB_HOST OPENAI_TOKEN NOTION_API_TOKEN TRELLO_API_KEY TRELLO_TOKEN"
+# GITLAB_HOST, linear←LINEAR_API_KEY/LINEAR_WORKSPACE, claude←ANTHROPIC_API_KEY &
+# CLAUDE_*, ntn←NOTION_API_TOKEN/NOTION_*, trello←TRELLO_API_KEY/TRELLO_TOKEN/
+# TRELLO_*, plus OPENAI_*/CODEX_*/HUGGINGFACE_TOKEN/NPM_TOKEN. Only key names are
+# ever printed — never values.
+PROXY_EXACT="ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN GITLAB_HOST LINEAR_API_KEY LINEAR_WORKSPACE OPENAI_TOKEN NOTION_API_TOKEN TRELLO_API_KEY TRELLO_TOKEN"
 PROXY_GLOBS="CLAUDE_ OPENAI_ CODEX_ NOTION_ TRELLO_"
 INHERIT_RO="${GENE_SANDBOX_INHERIT_RO:-}"
 
@@ -81,6 +82,26 @@ collect_proxy_env() {
   done <<EOF
 $(printenv)
 EOF
+}
+
+# GitHub CLI (gh) on macOS keeps its OAuth login in the Keychain, not in
+# ~/.config/gh/hosts.yml — so the gh config mount alone won't carry it into the
+# (Linux) sandbox, leaving gh unauthenticated. Bridge it like the claude one:
+# unless GITHUB_TOKEN is already being proxied from the host env (which wins),
+# pull the active token via `gh auth token` and proxy it as GITHUB_TOKEN (which
+# gh reads). The token is never printed. No-op if gh isn't installed or no login.
+# Call after collect_proxy_env so it can see/extend PROXY_SEEN.
+stage_github_token() {
+  case " $PROXY_SEEN " in *" GITHUB_TOKEN "*) return 0;; esac   # host env already supplies it
+  have gh || { info "github login: gh not installed on host — skipping token bridge"; return 0; }
+  local tok
+  tok="$(gh auth token 2>/dev/null)" || tok=""
+  if [ -n "$tok" ]; then
+    proxy_add GITHUB_TOKEN "$tok"
+    info "github login: bridged 'gh auth token' -> GITHUB_TOKEN (proxied to sandbox)"
+  else
+    info "github login: gh has no token (run 'gh auth login') — sandbox gh unauthenticated"
+  fi
 }
 
 # Host config/auth dirs → guest paths; each is bind-mounted only if it exists on
@@ -349,6 +370,7 @@ do_run() {
     local trust_dirs="${workdir:-/workspace}"
     [ -n "${GENE_SANDBOX_TRUST_DIRS:-}" ] && trust_dirs="$trust_dirs $GENE_SANDBOX_TRUST_DIRS"
     collect_proxy_env
+    stage_github_token                                        # macOS: gh Keychain login -> GITHUB_TOKEN
     stage_claude_credentials                                  # macOS: Keychain login -> ~/.claude/.credentials.json
     stage_claude_config "$GUEST_HOME/.claude.json" $trust_dirs  # workdir trust -> staged ~/.claude.json (word-split intended)
     collect_inherit_mounts
@@ -477,8 +499,12 @@ run flags:
       more trusted dirs with GENE_SANDBOX_TRUST_DIRS="dir1 dir2".
   • proxies these env vars when set (values never printed):
       ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN
-      GITLAB_HOST OPENAI_TOKEN NOTION_API_TOKEN TRELLO_API_KEY TRELLO_TOKEN
-      and  CLAUDE_* OPENAI_* CODEX_* NOTION_* TRELLO_*
+      GITLAB_HOST LINEAR_API_KEY LINEAR_WORKSPACE OPENAI_TOKEN NOTION_API_TOKEN
+      TRELLO_API_KEY TRELLO_TOKEN  and  CLAUDE_* OPENAI_* CODEX_* NOTION_* TRELLO_*
+  • bridges your gh login into GITHUB_TOKEN via `gh auth token` (unless GITHUB_TOKEN
+      is already set on the host, which wins) — gh on macOS keeps the token in the
+      Keychain, not ~/.config/gh, so the config mount alone can't carry it. No-op if
+      gh isn't installed or isn't logged in.
   • on macOS, bridges your Claude Code Keychain login into a 0600
       ~/.claude/.credentials.json so the (Linux) sandbox's claude is logged in —
       macOS hides the token in the Keychain, which the mount alone can't carry.
