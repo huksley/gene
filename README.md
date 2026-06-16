@@ -398,11 +398,12 @@ default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to
 ## Usage
 
 ```bash
-npm start               # Postgres + the daemon (poll loop), together via concurrently
-npm run start:ui        # ...same, but with the OpenTUI dashboard (see "TUI dashboard" below)
+npm start               # TUI dashboard + its Postgres — the default way to run Gene (needs Node ≥26.3.0)
+npm run console         # headless: Postgres + the daemon poll loop, logs to stdout (runs on Node 24+)
 npm run once            # Postgres + a single scan, then exit  (great with GENE_DRY_RUN=true)
 npm run pg              # just the local Postgres (port 5434) — leave up for the commands below
-npm run ui              # the OpenTUI dashboard against an already-running pg (needs Node ≥26.3.0)
+npm run ui              # the TUI against an already-running pg (needs Node ≥26.3.0)
+npm run gene            # just the daemon poll loop against an already-running pg (no TUI)
 npm run clone           # pre-clone the team default repo(s)
 npm run reset -- CLOUD-1094            # reset one issue back to Todo   (needs Postgres up)
 npm run reset -- CLOUD-1094 --close-mr # ...and close its open MR/PR
@@ -410,28 +411,32 @@ npm run log -- linear:CLOUD-1094       # show one issue's activity log (needs Po
 npm run typecheck       # tsc --noEmit
 ```
 
+`npm start` is the **default** — the TUI dashboard with its Postgres in one command.
+Prefer headless (CI, a server, or Node < 26.3.0)? `npm run console` runs the same
+poll loop with plain stdout logging and no terminal UI.
+
 Go live by setting `GENE_DRY_RUN=false` in `.env.development`. A dry-run scan prints
 exactly what it *would* do (decision, resolved target repo + forge, branch, prompt
 size) without touching the tracker or the forge.
 
 ## TUI dashboard
 
-An optional Symphony-style terminal UI over the same in-process daemon: a status
-header (agents N/MAX, uptime, current stage, next-refresh countdown, tokens, scan
-counts) that stays pinned at the top across both views, a live table of
-running/recent tickets (one-liner + stage each, re-sortable), a per-ticket view
-(the last few actions pinned above a scrollable live log), and inline agent
-cancellation / reset. The poll loop runs in the
+The **default** way to run Gene — a Symphony-style terminal UI over the same
+in-process daemon: a status header (agents N/MAX, uptime, current stage,
+next-refresh countdown, tokens, scan counts) that stays pinned at the top across
+both views, a live table of running/recent tickets (one-liner + stage each,
+re-sortable), a per-ticket view (the last few actions pinned above a scrollable
+live log), and inline agent cancellation / reset. The poll loop runs in the
 *same* process as the renderer — so the data is live and cancel is immediate, no
 separate observer or IPC.
 
 ```bash
-npm run start:ui                      # Postgres (background) + dashboard (foreground), one command
-npm run start:ui -- linear:CLOUD-1094 # …focused on one issue (focus + dry-run flags pass through)
-npm run ui                            # dashboard only, against an already-running pg (e.g. npm run pg elsewhere)
+npm start                       # Postgres (background) + dashboard (foreground), one command — the default
+npm start -- linear:CLOUD-1094  # …focused on one issue (focus + dry-run flags pass through)
+npm run ui                      # dashboard only, against an already-running pg (e.g. npm run pg elsewhere)
 ```
 
-`start:ui` runs Postgres in the background and the dashboard in the foreground
+`npm start` runs Postgres in the background and the dashboard in the foreground
 (see `ui.sh`) — a full-screen TUI must own the terminal, so it
 *can't* be hosted under a stdio multiplexer like `concurrently` (which would
 leave the renderer with no TTY: a tiny window and a dead keyboard). It reuses a
@@ -439,8 +444,8 @@ Postgres that's already listening, and stops only the one it started.
 
 Requires **Node ≥ 26.3.0** — OpenTUI's native renderer loads over FFI, which the
 `ui` script enables (`--experimental-ffi`). On an older Node it prints install
-guidance and exits cleanly; the console daemon (`npm run gene` / `npm start`) is
-unaffected and still runs on Node 24+.
+guidance and exits cleanly; the headless daemon (`npm run console` / `npm run gene`)
+is unaffected and still runs on Node 24+.
 
 Keys: `↑↓` / `j` `k` navigate (selection is hidden until you move) · `enter` / `→`
 open the selected ticket's log · `s` cycle the table sort (status → age → id; the
@@ -501,7 +506,7 @@ src/
     detail.ts     per-ticket view: pinned last-5 actions + scrollable live log (history fallback) + reset
     theme.ts      color palette, status colors/glyphs, spinner frames
     format.ts     tiny formatters (duration, tokens, truncation, progress bar)
-ui.sh             start:ui — background Postgres + foreground dashboard (real TTY)
+ui.sh             npm start — background Postgres + foreground dashboard (real TTY)
 ```
 
 ## Adding a forge

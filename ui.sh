@@ -3,7 +3,7 @@
 # One command to run the OpenTUI dashboard with its database: start Postgres in
 # the background, then run the UI in the FOREGROUND so it owns the real terminal.
 #
-# Why not `concurrently` (what `npm run start:ui` used to do)? concurrently pipes
+# Why not `concurrently` (what `npm start` used to do)? concurrently pipes
 # every child's stdio so it can prefix and multiplex their logs — which means the
 # UI child never gets a TTY: stdout isn't a terminal (OpenTUI's renderer falls
 # back to a tiny default size — the "small window") and stdin isn't a raw TTY (so
@@ -14,7 +14,7 @@
 # foreground, and stop the pg we started once the UI exits. If a Postgres is
 # already listening (e.g. `npm run pg` in another window) we reuse it untouched.
 #
-# Focus/flags pass through, e.g. `npm run start:ui -- linear:CLOUD-1094`.
+# Focus/flags pass through, e.g. `npm start -- linear:CLOUD-1094`.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
