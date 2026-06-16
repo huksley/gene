@@ -275,12 +275,12 @@ service. So "install" means: get the dependencies on your `PATH`, clone the repo
 | Tool | Why | Needed when |
 |---|---|---|
 | **Node ≥ 26.3.0** | runtime (runs the `.ts` files directly; the [TUI](#tui-dashboard) needs 26.3.0, the console daemon runs on Node 24+) | always |
-| **PostgreSQL ≥ 14** (16 recommended) | state store — only the `initdb` + `postgres` binaries need to be on `PATH`; Gene runs its own cluster | always |
+| **PostgreSQL ≥ 16** | state store — only the `initdb` + `postgres` binaries need to be on `PATH`; Gene runs its own instance | always |
 | **git** | clones target repos + per-issue worktrees | always |
 | **claude** (Claude Code) | the agent Gene dispatches (`claude -p`) | always |
-| **gh** | GitHub forge | issues targeting `github.com` |
-| **glab** | GitLab forge | issues targeting GitLab |
-| **linear** (`@schpet/linear-cli`) | Linear backend read/write | `GENE_TRACKER=linear` |
+| **gh CLI** | GitHub forge | issues targeting `github.com` |
+| **glab CLI** | GitLab forge | issues targeting GitLab |
+| **linear CLI** (`@schpet/linear-cli`) | Linear backend read/write | `GENE_TRACKER=linear` |
 
 The **Trello** backend needs no extra CLI — the bundled `trello/` wrapper talks to
 the REST API directly (just `TRELLO_API_KEY` + `TRELLO_TOKEN`).
@@ -290,12 +290,10 @@ the REST API directly (just `TRELLO_API_KEY` + `TRELLO_TOKEN`).
 ```bash
 # Node — Volta honours the version pinned in package.json (26.3.0)
 curl https://get.volta.sh | bash && exec "$SHELL" -l
-volta install node@26.3.0
+volta install node@26
 
-# PostgreSQL 16 — keg-only, so put its binaries (initdb/postgres) on PATH
-brew install postgresql@16
-echo 'export PATH="'"$(brew --prefix postgresql@16)"'/bin:$PATH"' >> ~/.zprofile
-exec "$SHELL" -l
+# PostgreSQL 16+ — keg-only, so put its binaries (initdb/postgres) on PATH
+brew install postgresql
 
 # git, the agent, and the forge CLIs you need
 brew install git gh                              # GitHub forge
@@ -317,8 +315,6 @@ sudo apt-get install -y nodejs
 # auto-started system service can be stopped, and its bin dir added to PATH.
 sudo apt-get install -y postgresql git
 sudo systemctl disable --now postgresql   # optional — Gene doesn't use the system service
-echo 'export PATH="/usr/lib/postgresql/'"$(ls /usr/lib/postgresql | sort -V | tail -1)"'/bin:$PATH"' >> ~/.bashrc
-exec "$SHELL" -l
 
 # GitHub CLI (gh) — official apt repo
 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -405,9 +401,9 @@ npm run pg              # just the local Postgres (port 5434) — leave up for t
 npm run ui              # the TUI against an already-running pg (needs Node ≥26.3.0)
 npm run gene            # just the daemon poll loop against an already-running pg (no TUI)
 npm run clone           # pre-clone the team default repo(s)
-npm run reset -- CLOUD-1094            # reset one issue back to Todo   (needs Postgres up)
-npm run reset -- CLOUD-1094 --close-mr # ...and close its open MR/PR
-npm run log -- linear:CLOUD-1094       # show one issue's activity log (needs Postgres up)
+npm run reset -- APP-1094            # reset one issue back to Todo   (needs Postgres up)
+npm run reset -- APP-1094 --close-mr # ...and close its open MR/PR
+npm run log -- linear:APP-1094       # show one issue's activity log (needs Postgres up)
 npm run typecheck       # tsc --noEmit
 ```
 
@@ -432,7 +428,7 @@ separate observer or IPC.
 
 ```bash
 npm start                       # Postgres (background) + dashboard (foreground), one command — the default
-npm start -- linear:CLOUD-1094  # …focused on one issue (focus + dry-run flags pass through)
+npm start -- linear:APP-1094    # …focused on one issue (focus + dry-run flags pass through)
 npm run ui                      # dashboard only, against an already-running pg (e.g. npm run pg elsewhere)
 ```
 
@@ -470,56 +466,6 @@ Node 24), so:
 - the only runtime dependency is **`pg`** — the daemon's persistent state lives in a
   local **Postgres** (`db.ts`), brought up by `npm run pg`; env parsing stays
   hand-rolled in `config.ts`.
-
-## File map
-
-```
-src/
-  index.ts        daemon: scan → decide → dispatch (--once supported)
-  config.ts       env + constants (hand-rolled, no zod)
-  db.ts           Postgres state store: review cursor + issue activity log
-  logger.ts       timestamped server logger
-  monitor.ts      in-process event bus + agent/daemon state for the TUI (no OpenTUI)
-  decide.ts       pure (issue, comments) → Action
-  review.ts       In-Review watchdog + draft pickup: find the open MR/PR, decide re-dispatch
-  directives.ts   `!gene approve|redo|stop|retry` parser
-  prompt.ts       builds the agent's prompt (the full contract it runs under)
-  invoke.ts       worktree management + spawns `claude -p`, renders stream-json
-  lock.ts         per-issue file lock (keyed by ISSUE-ID), stale-PID reclamation
-  attachments.ts  best-effort staging of tracker image attachments into the worktree
-  reset.ts        reset one issue (worktree/branch/lock + back to Todo)
-  log.ts          show one issue's activity log (npm run log -- <sys>:<id>)
-  repos.ts        per-issue link → RepoTarget (forge/host/repoPath/subdir + defaults)
-  clone.ts        pre-clone the team default repo(s) (npm run clone)
-  tracker/
-    index.ts      Tracker interface + neutral Issue/Comment/Attachment + selectTracker
-    linear.ts     Linear impl (read via `linear api`, write via `linear issue …`)
-    trello.ts     Trello impl (bundled trello/ wrapper; agent writes via the trello CLI)
-  forge/
-    index.ts      Forge interface + selectForge(name)
-    gitlab.ts     glab implementation
-    github.ts     gh implementation
-  ui/             OpenTUI dashboard (loaded only under --ui; needs Node ≥26.3.0)
-    app.ts        startUi: mounts the persistent header + bodies, wires keys, runs the loop
-    header.ts     the pinned status block (shared by both views)
-    dashboard.ts  agents table (re-sortable) + log tail (the main screen)
-    detail.ts     per-ticket view: pinned last-5 actions + scrollable live log (history fallback) + reset
-    theme.ts      color palette, status colors/glyphs, spinner frames
-    format.ts     tiny formatters (duration, tokens, truncation, progress bar)
-ui.sh             npm start — background Postgres + foreground dashboard (real TTY)
-```
-
-## Adding a forge
-
-Implement the `Forge` interface (`src/forge/index.ts`) in a new file and register it
-in `selectForge()`. The interface covers cloning, default-branch detection, the
-agent's allowlist additions (`allowedTools()`), the MR/PR instructions injected into
-the prompt (`promptSnippet()`), closing a change request (used by `npm run reset
---close-mr`), and reading an open change request's CI + review comments — both by
-source branch (`getReviewStatus()`) and by number (`getReviewByIid()`, used to pick
-up an attached MR/PR on a human-named branch). To route issues to it, teach
-`parseRepoUrl()` in `src/repos.ts` how to recognise its host so a link maps to the new
-`ForgeName`.
 
 ## Trackers (Linear / Trello)
 
