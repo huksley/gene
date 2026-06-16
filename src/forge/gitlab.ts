@@ -79,10 +79,12 @@ export class GitlabForge implements Forge {
       "```bash",
       `git push -u origin "${ctx.branch}"`,
       "glab mr create \\",
-      ...(draft ? ["  --draft \\"] : []),
       `  --source-branch "${ctx.branch}" \\`,
       `  --target-branch "${ctx.baseBranch}" \\`,
-      '  --title "<concise, imperative title>" \\',
+      // GitLab has no draft flag in its create API — the `Draft:` title prefix is the
+      // ONLY thing that marks an MR as a draft (glab's own --draft just prepends it).
+      // Baking it into the title is more robust than a bare flag the agent might drop.
+      `  --title "${draft ? "Draft: " : ""}<concise, imperative title>" \\`,
       '  --description "$(cat <<\'EOF\'',
       "<what changed and why>",
       "",
@@ -96,7 +98,8 @@ export class GitlabForge implements Forge {
       `- The branch \`${ctx.branch}\` matches the Linear issue's branch name, so the MR auto-links to ${ctx.issueId}. Also keep the \`Linear: ${ctx.issueUrl}\` line in the description.`,
       ...(draft
         ? [
-          "- Opened as a **draft** on purpose — a human reviews it, marks it ready, and merges. Do NOT mark it ready (`glab mr update --ready`) yourself."
+          "- The **`Draft:` prefix on the title** is what makes this a draft — GitLab has no separate draft flag, it reads the prefix. Keep `Draft:` as the literal first word of `--title`; don't drop, translate, or reorder it.",
+          "- It opens as a draft on purpose: a human reviews it, marks it ready, and merges. Do NOT mark it ready (`glab mr update --ready`) yourself."
         ]
         : []),
       "- **Never merge the MR** — a human reviews and merges. Do not push to the default branch.",

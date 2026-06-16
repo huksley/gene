@@ -140,7 +140,10 @@ const readyCommand = (forge: Forge, iid: string): string =>
 /** The draft→ready guidance, conditional on draft mode (in draft mode a human readies). */
 const draftHandling = (forge: Forge, iid: string): string =>
   DRAFT_MODE
-    ? "Keep it as a **draft** — a human will mark it ready for review and merge; do NOT un-draft it."
+    ? "Keep it as a **draft** — a human will mark it ready for review and merge; do NOT un-draft it" +
+      (forge.name === "gitlab"
+        ? ", and if you edit the title keep its `Draft:` prefix (on GitLab that prefix is what holds the MR in draft)."
+        : ".")
     : `When the work is complete and CI is green, mark it ready for review: \`${readyCommand(forge, iid)}\`.`;
 
 const renderReviewContext = (rc: ReviewContext | undefined, forge: Forge): string => {

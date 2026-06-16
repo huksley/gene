@@ -531,6 +531,12 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         return;
       }
       case "d": {
+        // Hiding Done needs a configured Done state to match rows against; with none,
+        // the footer hides the toggle, so the key is a no-op too (rather than flipping
+        // an invisible flag that filters nothing).
+        if (!snapshot.daemon.doneState) {
+          return;
+        }
         // Toggle finished tickets, keeping the same ticket selected if it survives the filter.
         const ids = dashboard.getOrderedIds();
         const selId = selectedIndex >= 0 && selectedIndex < ids.length ? ids[selectedIndex] : null;
