@@ -20,12 +20,12 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 echo "UI mode requires Node 26.3.0 or later."
 
-# The server always listens on whatever pg.conf says; default to 5433 (its value
+# The server always listens on whatever pg.conf says; default to 5434 (its value
 # and db.ts's default). Used only for the readiness probe — the UI's client
 # config (.env.development / db.ts defaults) is left to decide its own port.
 host="127.0.0.1"
 port="$(grep -E '^[[:space:]]*port[[:space:]]*=' pg.conf 2>/dev/null | grep -Eo '[0-9]+' | head -1)"
-port="${port:-5433}"
+port="${port:-5434}"
 
 # First-run bootstrap (mirrors the `prepg` npm script).
 if [ ! -d data/pg ]; then

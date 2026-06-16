@@ -8,7 +8,7 @@
  * watchdog acts once per signal instead of on every poll — and a per-issue activity
  * log.
  *
- * We talk to a real Postgres over TCP (run it with `npm run pg` — port 5433, data
+ * We talk to a real Postgres over TCP (run it with `npm run pg` — port 5434, data
  * under `data/pg`; see pg.conf). Connection details come from the standard PG* env
  * vars (or a single DATABASE_URL), defaulting to that local dev server. The pool is
  * opened lazily and memoised for the process; unlike the previous embedded engine,
@@ -79,12 +79,12 @@ const isStartupError = (error: unknown): boolean => {
 /** Open the pool, wait for the server to accept queries, then apply the schema. */
 const open = async (): Promise<Pool> => {
   const url = process.env.DATABASE_URL;
-  // Discrete config defaults to the local dev server in pg.conf (127.0.0.1:5433).
+  // Discrete config defaults to the local dev server in pg.conf (127.0.0.1:5434).
   // `initdb` makes the bootstrap superuser = the OS user and trust-auths localhost,
   // so no password is needed out of the box; PGPASSWORD/PGUSER override when it is.
   const discrete = {
     host: process.env.PGHOST ?? "127.0.0.1",
-    port: Number(process.env.PGPORT ?? 5433),
+    port: Number(process.env.PGPORT ?? 5434),
     database: process.env.PGDATABASE ?? "postgres",
     user: process.env.PGUSER ?? os.userInfo().username,
     ...(process.env.PGPASSWORD ? { password: process.env.PGPASSWORD } : {})

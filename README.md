@@ -224,7 +224,7 @@ re-dispatches, draft pickups, and resets (dry-run entries are flagged). Inspect 
 issue's history with `npm run log -- <system>:<id>` (e.g. `linear:CLOUD-1094`; a bare
 id defaults the system to `GENE_TRACKER`). The store is a real Postgres, so a
 one-shot command (`log` / `reset`) reads it fine while the daemon is running — both
-just point at the same server (the local one on port 5433 by default).
+just point at the same server (the local one on port 5434 by default).
 
 ## Repo targeting (per issue)
 
@@ -261,14 +261,115 @@ All resolution logic lives in `src/repos.ts`.
   Runtime locks live in `.gene/` (gitignored); the persistent state store is a local
   **Postgres** with its data under `data/pg/` (gitignored), started by `npm run pg`.
 
+## Installation
+
+Gene is a **clone-and-run** project — there's no published package. You run it from
+a checkout, and it shells out to a few CLIs and keeps its state in a **local**
+Postgres that it brings up itself: `npm run pg` runs a throwaway cluster under
+`data/pg/` (gitignored) on port **5434** — it does **not** touch a system Postgres
+service. So "install" means: get the dependencies on your `PATH`, clone the repo,
+`npm install`.
+
+### Dependencies
+
+| Tool | Why | Needed when |
+|---|---|---|
+| **Node ≥ 26.3.0** | runtime (runs the `.ts` files directly; the [TUI](#tui-dashboard) needs 26.3.0, the console daemon runs on Node 24+) | always |
+| **PostgreSQL ≥ 14** (16 recommended) | state store — only the `initdb` + `postgres` binaries need to be on `PATH`; Gene runs its own cluster | always |
+| **git** | clones target repos + per-issue worktrees | always |
+| **claude** (Claude Code) | the agent Gene dispatches (`claude -p`) | always |
+| **gh** | GitHub forge | issues targeting `github.com` |
+| **glab** | GitLab forge | issues targeting GitLab |
+| **linear** (`@schpet/linear-cli`) | Linear backend read/write | `GENE_TRACKER=linear` |
+
+The **Trello** backend needs no extra CLI — the bundled `trello/` wrapper talks to
+the REST API directly (just `TRELLO_API_KEY` + `TRELLO_TOKEN`).
+
+### macOS (Homebrew)
+
+```bash
+# Node — Volta honours the version pinned in package.json (26.3.0)
+curl https://get.volta.sh | bash && exec "$SHELL" -l
+volta install node@26.3.0
+
+# PostgreSQL 16 — keg-only, so put its binaries (initdb/postgres) on PATH
+brew install postgresql@16
+echo 'export PATH="'"$(brew --prefix postgresql@16)"'/bin:$PATH"' >> ~/.zprofile
+exec "$SHELL" -l
+
+# git, the agent, and the forge CLIs you need
+brew install git gh                              # GitHub forge
+brew install glab                                # GitLab forge (skip if unused)
+curl -fsSL https://claude.ai/install.sh | bash  # claude (Claude Code)
+
+# Linear backend only (skip for Trello)
+npm install -g @schpet/linear-cli
+```
+
+### Linux (Debian / Ubuntu)
+
+```bash
+# Node 26 — NodeSource
+curl -fsSL https://deb.nodesource.com/setup_26.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# PostgreSQL — Gene runs its own cluster, so you only need the binaries; the
+# auto-started system service can be stopped, and its bin dir added to PATH.
+sudo apt-get install -y postgresql git
+sudo systemctl disable --now postgresql   # optional — Gene doesn't use the system service
+echo 'export PATH="/usr/lib/postgresql/'"$(ls /usr/lib/postgresql | sort -V | tail -1)"'/bin:$PATH"' >> ~/.bashrc
+exec "$SHELL" -l
+
+# GitHub CLI (gh) — official apt repo
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+sudo apt-get update && sudo apt-get install -y gh
+
+# GitLab CLI (glab) — official prebuilt release binary (skip if unused)
+GLAB_VERSION=1.102.0; arch="$(dpkg --print-architecture)"; tmp="$(mktemp -d)"
+curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${arch}.tar.gz" | tar -xz -C "$tmp"
+sudo install -m 0755 "$(find "$tmp" -type f -name glab | head -n1)" /usr/local/bin/glab
+
+# The agent, and the Linear CLI (Linear backend only)
+curl -fsSL https://claude.ai/install.sh | bash
+npm install -g @schpet/linear-cli
+```
+
+> Fedora/RHEL: `sudo dnf install nodejs postgresql-server git gh`. Arch:
+> `sudo pacman -S nodejs npm postgresql git github-cli`. On any distro you can use
+> [Volta](https://volta.sh) for Node and the prebuilt `glab`/`claude` installers
+> above — only Postgres comes from the package manager.
+
+### Get Gene
+
+```bash
+git clone https://github.com/huksley/gene.git
+cd gene
+npm install                          # dev-only deps (typescript, @types/node) + pg
+cp .env.example .env.development     # then edit it — see Setup below
+```
+
+Verify the toolchain before going further:
+
+```bash
+node --version            # ≥ 26.3.0
+initdb --version          # PostgreSQL on PATH
+claude --version
+git --version
+gh --version              # and/or: glab --version
+linear --version          # Linear backend only
+```
+
+Now continue with **[Setup](#setup)** to authenticate the CLIs and fill in
+`.env.development`.
+
 ## Setup
 
-Prerequisites: Node ≥ 26.3.0 (via [Volta](https://volta.sh) — pinned in
-`package.json`; the console daemon runs on Node 24+ too, only the
-[TUI dashboard](#tui-dashboard) needs 26.3.0), **PostgreSQL** (`brew install postgresql@16` — the daemon's state store; `npm run pg`
-init-and-runs it locally on port 5433), the `claude`, `git`, and `glab` and/or `gh`
-CLIs on `PATH`, and — for the **Linear** backend — the `linear` CLI. The **Trello** backend needs no extra CLI: it uses the
-bundled `trello/` wrapper, which only wants `TRELLO_API_KEY` + `TRELLO_TOKEN`.
+Once the [dependencies](#installation) are installed and the repo is cloned,
+authenticate the CLIs and configure your environment. The **Trello** backend needs
+no CLI login — it uses `TRELLO_API_KEY` + `TRELLO_TOKEN` (see `trello/README.md`).
 
 > Prefer isolation? The whole toolchain is packaged as a microVM — see
 > [`sandbox/`](sandbox/README.md) to run `claude -p` agents in a throwaway VM
@@ -283,9 +384,8 @@ claude  /login                                     # OAuth / Max session
 # Trello backend (GENE_TRACKER=trello): no login — mint TRELLO_API_KEY + TRELLO_TOKEN at
 #   https://trello.com/power-ups/admin and put them in .env.development (see trello/README.md)
 
-# 2. Configure
-cp .env.example .env.development                   # then edit .env.development
-npm install                                        # dev-only deps (typescript, @types/node)
+# 2. Configure (you copied .env.example → .env.development during Installation)
+$EDITOR .env.development                            # set GENE_TRACKER, secrets, repo target
 
 # 3. (Optional) pre-clone the team default repo(s)
 npm run clone
@@ -301,7 +401,7 @@ default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to
 npm start               # Postgres + the daemon (poll loop), together via concurrently
 npm run start:ui        # ...same, but with the OpenTUI dashboard (see "TUI dashboard" below)
 npm run once            # Postgres + a single scan, then exit  (great with GENE_DRY_RUN=true)
-npm run pg              # just the local Postgres (port 5433) — leave up for the commands below
+npm run pg              # just the local Postgres (port 5434) — leave up for the commands below
 npm run ui              # the OpenTUI dashboard against an already-running pg (needs Node ≥26.3.0)
 npm run clone           # pre-clone the team default repo(s)
 npm run reset -- CLOUD-1094            # reset one issue back to Todo   (needs Postgres up)

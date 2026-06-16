@@ -8,14 +8,29 @@ import { spawn } from "node:child_process";
 
 export type RunResult = { code: number; stdout: string; stderr: string };
 
+/**
+ * Default per-call timeout (ms). Bounds every short-lived CLI shell-out (linear,
+ * gh, glab, git) so a hung child can never wedge the single-threaded scan loop —
+ * the failure mode where one stalled `linear api` call freezes the whole daemon.
+ * Generous enough for a `git fetch` on a sizeable repo; override per-call for the
+ * rare slower op. The long-running `claude -p` agent spawn does NOT go through
+ * here (it lives in invoke.ts with its own hard-kill watchdog).
+ */
+export const DEFAULT_TIMEOUT_MS = 120_000;
+
 export type RunOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   /** Written to stdin then closed. Use for passing large bodies safely. */
   input?: string;
+  /**
+   * Max wall time before the child is killed and the call rejects (default 120s).
+   * Pass `0` to disable the timeout for a deliberately long-running command.
+   */
+  timeout?: number;
 };
 
-/** Run a command, capturing stdout/stderr. Never rejects on non-zero exit. */
+/** Run a command, capturing stdout/stderr. Never rejects on non-zero exit (but does on timeout). */
 export const run = (cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> =>
   new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, {
@@ -25,10 +40,39 @@ export const run = (cmd: string, args: string[], opts: RunOptions = {}): Promise
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+
+    const timeoutMs = opts.timeout ?? DEFAULT_TIMEOUT_MS;
+    // unref() so the watchdog itself never holds the event loop open at shutdown.
+    const watchdog =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            // SIGKILL: a hung CLI may ignore SIGTERM; we need it gone, not asked nicely.
+            proc.kill("SIGKILL");
+            reject(new Error(`\`${cmd} ${args.join(" ")}\` timed out after ${timeoutMs}ms`));
+          }, timeoutMs)
+        : null;
+    watchdog?.unref();
+
+    const finish = (fn: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (watchdog) {
+        clearTimeout(watchdog);
+      }
+      fn();
+    };
+
     proc.stdout?.on("data", chunk => (stdout += chunk.toString()));
     proc.stderr?.on("data", chunk => (stderr += chunk.toString()));
-    proc.on("error", reject);
-    proc.on("close", code => resolve({ code: code ?? -1, stdout, stderr }));
+    proc.on("error", err => finish(() => reject(err)));
+    proc.on("close", code => finish(() => resolve({ code: code ?? -1, stdout, stderr })));
     if (opts.input !== undefined) {
       proc.stdin?.end(opts.input);
     }
