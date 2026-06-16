@@ -253,6 +253,22 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   };
   monitor.on("change", onChange);
 
+  /**
+   * Force a clean full repaint before swapping the body (dashboard ⇆ detail).
+   * OpenTUI's per-frame composite is incremental, so flipping `visible` can leave
+   * artifacts from the view we just hid; clearing the back buffer to the bg wipes
+   * them. `setBackgroundColor` is the public lever for this (it clears
+   * `nextRenderBuffer` + requests a render) — `resize()` no-ops at unchanged
+   * dimensions, and `forceFullRepaintRequested` isn't exposed.
+   */
+  const forceRedraw = (): void => {
+    try {
+      renderer.setBackgroundColor(palette.bg);
+    } catch {
+      // Older terminals may reject the clear's OSC — purely cosmetic, ignore.
+    }
+  };
+
   // Divert the logger into the bottom pane so it never corrupts the alt-screen.
   const logSink: LogSink = {
     push: record => {
@@ -311,6 +327,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     view = "detail";
     detail.open(detailId);
     loadDetailHistory(detailId);
+    forceRedraw();
   };
 
   /**
@@ -436,6 +453,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
       switch (key.name) {
         case "escape":
           view = "dashboard";
+          forceRedraw();
           paint();
           return;
         case "q":
