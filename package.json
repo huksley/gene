@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Gene AI — Linear + GitLab autonomous code pipeline (Claude Code dispatch daemon)",
   "type": "module",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "volta": {
     "node": "26.3.0"
   },
