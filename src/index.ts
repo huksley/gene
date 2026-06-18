@@ -243,6 +243,31 @@ let wakePoll: (() => void) | null = null;
 /** Start the next scan immediately if the loop is currently waiting (else a no-op). */
 const requestScan = (): void => wakePoll?.();
 
+/**
+ * Pause flag for the scan loop. While true, {@link runForever} skips `scanOnce` — no
+ * new tracker polling or dispatching — but agents already in flight keep running
+ * (they're fire-and-forget promises, independent of the loop). Toggled by the TUI's
+ * `p`; cleared by `p` again or by `r` (refresh). See {@link setPaused}.
+ */
+let paused = false;
+
+/**
+ * Pause or resume the scan loop, mirroring the state into the monitor so the TUI can
+ * show it. Resuming wakes the interval wait so the next scan starts now — essential,
+ * because a paused loop waits without a timeout and would otherwise never wake.
+ */
+const setPaused = (value: boolean): void => {
+  if (paused === value) {
+    return;
+  }
+  paused = value;
+  monitor.setPaused(value);
+  logger.info(`${logger.tag.flow} ${value ? "paused — scan loop idle, in-flight agents keep running" : "resumed"}`);
+  if (!value) {
+    wakePoll?.();
+  }
+};
+
 /** Stop function for the active tracker watch (webhook listener), if started. */
 let stopWatch: (() => void) | null = null;
 
@@ -875,33 +900,45 @@ const runForever = async (issueFilter?: string): Promise<void> => {
   }
 
   while (true) {
-    try {
-      const found = await scanOnce(issueFilter);
-      if (!found) {
-        // Filtered run, issue not in the labelled set yet (typo, label not applied,
-        // or a transient empty list). Keep polling rather than giving up.
-        logger.info(
-          `${logger.tag.flow} issue "${issueFilter}" not found among ${env.LABEL} issues yet — ` +
-          `waiting (next poll in ${Math.round(env.POLL_INTERVAL_MS / 1000)}s)`
-        );
+    // Skip scanning while paused (`p` in the TUI) — no new tracker polling or
+    // dispatching. In-flight agents are unaffected: they're fire-and-forget and
+    // independent of this loop, so they keep running and reporting.
+    if (!paused) {
+      try {
+        const found = await scanOnce(issueFilter);
+        if (!found) {
+          // Filtered run, issue not in the labelled set yet (typo, label not applied,
+          // or a transient empty list). Keep polling rather than giving up.
+          logger.info(
+            `${logger.tag.flow} issue "${issueFilter}" not found among ${env.LABEL} issues yet — ` +
+            `waiting (next poll in ${Math.round(env.POLL_INTERVAL_MS / 1000)}s)`
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(`${logger.tag.flow} scan failed:`, message, { cause: error });
+        monitor.scanFailed(message);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error(`${logger.tag.flow} scan failed:`, message, { cause: error });
-      monitor.scanFailed(message);
     }
     // Wait for the poll interval, but wake immediately if the tracker watch signals
     // activity. The per-issue debounce (isWithinDebounceWindow) still defers work on
     // a just-edited issue to the following cycle, so an early wake can't act too soon.
+    // While paused there's no next scan to schedule, so wait with NO timeout — only a
+    // resume (setPaused(false)) or a webhook can wake us; the paused re-check at the top
+    // then skips the scan for a webhook, or runs it once `p`/`r` has cleared the flag.
     await new Promise<void>(resolve => {
-      const timer = setTimeout(() => {
-        wakePoll = null;
-        resolve();
-      }, env.POLL_INTERVAL_MS);
+      const timer = paused
+        ? null
+        : setTimeout(() => {
+            wakePoll = null;
+            resolve();
+          }, env.POLL_INTERVAL_MS);
       wakePoll = () => {
-        clearTimeout(timer);
         wakePoll = null;
-        logger.info(`${logger.tag.flow} woken early`);
+        if (timer) {
+          clearTimeout(timer);
+          logger.info(`${logger.tag.flow} woken early`);
+        }
         resolve();
       };
     });
@@ -1029,6 +1066,8 @@ const main = async (): Promise<void> => {
         // `r` on the dashboard reseeds the table *and* wakes the poll loop so the
         // next scan starts now instead of after POLL_INTERVAL_MS.
         requestScan,
+        // `p` toggles the scan loop's pause; `r` also resumes via setPaused(false).
+        setPaused,
         shutdown: gracefulShutdown,
         // `R` inside a ticket resets it (worktree/branch/lock + back to Todo),
         // reusing the same path as `npm run reset`. The pool stays open (the

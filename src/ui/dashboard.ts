@@ -286,8 +286,8 @@ export class Dashboard {
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
       : d.doneState
-        ? t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("d")} done:${fg(palette.text)(hideDone ? "hidden" : "shown")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`
-        : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`;
+        ? t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("d")} done:${fg(palette.text)(hideDone ? "hidden" : "shown")}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`
+        : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`;
   }
 
   /** Append one log record to the bottom pane (sticky-scrolled to the tail). */

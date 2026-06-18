@@ -446,7 +446,9 @@ is unaffected and still runs on Node 24+.
 Keys: `↑↓` / `j` `k` navigate (selection is hidden until you move) · `enter` / `→`
 open the selected ticket's log · `s` cycle the table sort (status → age → id; the
 selected ticket stays selected) · `c` cancel the selected running agent (press again
-within 2s to confirm) · `r` reload history from Postgres · `esc` back out of a
+within 2s to confirm) · `p` pause / resume the scan loop (paused stops polling the
+tracker for new work but lets in-flight agents finish; `r` also resumes) · `r` reload
+history from Postgres and wake the next scan · `esc` back out of a
 ticket (or clear the selection on the table) · `q` / `Ctrl+C` quit — restores the
 terminal, then shuts the daemon down gracefully. Inside a ticket, the last few
 actions stay pinned at the top while `↑↓` / `PgUp` / `PgDn` / `Home` / `End` scroll

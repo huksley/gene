@@ -94,7 +94,11 @@ export class Header {
     const uptime = humanDuration(now - d.startedAt);
     const phaseLabel = d.phase === "scanning" ? "scanning…" : d.phase === "starting" ? "starting…" : "idle";
     const phaseColor = d.phase === "scanning" ? palette.accent : palette.text;
-    if (d.nextScanAt != null && d.lastScanAt != null && d.phase !== "scanning") {
+    if (d.paused) {
+      // Paused: the scan loop is idle (no next scan to count down to), but agents keep
+      // running. Make it loud, and point at the keys that resume.
+      this.stageLine.content = t`${fg(palette.muted)("Uptime:")} ${fg(palette.text)(uptime)}    ${fg(palette.muted)("Stage:")} ${bold(fg(palette.badge)("PAUSED"))} ${fg(palette.dim)("— scan loop idle, agents still running (p/r to resume)")}`;
+    } else if (d.nextScanAt != null && d.lastScanAt != null && d.phase !== "scanning") {
       const remain = secondsUntil(d.nextScanAt, now);
       const ratio = (now - d.lastScanAt) / Math.max(1, d.pollIntervalMs);
       this.stageLine.content = t`${fg(palette.muted)("Uptime:")} ${fg(palette.text)(uptime)}    ${fg(palette.muted)("Stage:")} ${fg(phaseColor)(phaseLabel)}    ${fg(palette.muted)("Next:")} ${fg(palette.text)(`${remain}s`)} ${fg(palette.accent)(progressBar(ratio, 6))}`;

@@ -153,6 +153,11 @@ export interface DaemonState {
   doneState?: string;
   /** Coarse current phase, for the header's "Stage:" line. */
   phase: "starting" | "scanning" | "idle";
+  /**
+   * True while the scan loop is paused (`p` in the TUI): the daemon stops polling the
+   * tracker for new work, but in-flight agents keep running. `r` (refresh) also clears it.
+   */
+  paused: boolean;
   /** Epoch ms the last scan began. */
   lastScanAt?: number;
   /** Epoch ms the next scan is due — drives the "Next refresh" countdown. */
@@ -207,7 +212,8 @@ class Monitor extends EventEmitter {
     trackerInitial: "L",
     label: "Gene",
     assignee: "me",
-    phase: "starting"
+    phase: "starting",
+    paused: false
   };
 
   /** Live + recently-finished agents, keyed by issue identifier (e.g. CLOUD-1094). */
@@ -311,6 +317,19 @@ class Monitor extends EventEmitter {
   scanFailed(message: string): void {
     this.daemon.phase = "idle";
     this.daemon.lastError = message;
+    this.scheduleChange();
+  }
+
+  /**
+   * Reflect the scan loop's paused state for the view (header badge + footer toggle).
+   * State only — the daemon loop in index.ts owns the actual gating; this just mirrors
+   * it so the dashboard can show it. No-op when unchanged.
+   */
+  setPaused(paused: boolean): void {
+    if (this.daemon.paused === paused) {
+      return;
+    }
+    this.daemon.paused = paused;
     this.scheduleChange();
   }
 

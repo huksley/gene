@@ -35,6 +35,12 @@ export interface StartUiOptions {
   reconcile: () => Promise<void>;
   /** Wake the poll loop so the next scan starts now (bound to `r` on the dashboard). */
   requestScan: () => void;
+  /**
+   * Pause or resume the scan loop (bound to `p` on the dashboard). While paused the
+   * daemon stops polling the tracker for new work, but in-flight agents keep running.
+   * `r` (refresh) also resumes via `setPaused(false)`.
+   */
+  setPaused: (paused: boolean) => void;
   /** Graceful daemon shutdown (closes the DB, reports owned locks); does not exit the process. */
   shutdown: (signal: string) => Promise<void>;
   /** Reset one ticket (worktree/branch/lock + back to Todo). Bound to `R` inside a ticket. */
@@ -546,7 +552,13 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         paint();
         return;
       }
+      case "p":
+        // Toggle the scan loop's pause: paused stops new tracker polling (in-flight
+        // agents keep running); the monitor "change" it fires repaints the badge/footer.
+        options.setPaused(!snapshot.daemon.paused);
+        return;
       case "r":
+        options.setPaused(false); // refresh also resumes if paused
         options.requestScan(); // wake the poll loop so the next scan starts now
         void reseed();
         return;
