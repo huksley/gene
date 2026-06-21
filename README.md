@@ -455,7 +455,7 @@ npm run clone
 ```
 
 `.env.development` is gitignored — put your secrets there. Everything has a safe
-default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to `false`** (log-only, no writes, no spawns).
+default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to `false`** — Gene acts for real; set it to `true` for a log-only preview (no writes, no spawns).
 
 ## Usage
 
@@ -480,9 +480,9 @@ terminal UI. Because the embedded store is single-process, run `log` / `reset` w
 the daemon stopped — or set `DATABASE_URL` / `PG*` to share a Postgres (see
 [State store](#state-store)).
 
-Go live by setting `GENE_DRY_RUN=false` in `.env.development`. A dry-run scan prints
-exactly what it *would* do (decision, resolved target repo + forge, branch, prompt
-size) without touching the tracker or the forge.
+Gene acts for real by default. Set `GENE_DRY_RUN=true` in `.env.development` to
+preview first: a dry-run scan prints exactly what it *would* do (decision, resolved
+target repo + forge, branch, prompt size) without touching the tracker or the forge.
 
 ## TUI dashboard
 

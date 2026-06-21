@@ -1,9 +1,12 @@
 /**
  * Local configuration bootstrap. Loads a `gene.config` file (dotenv `KEY=VALUE`
- * syntax) from the current working directory into `process.env`, WITHOUT
- * overriding any value already present — real environment variables win over the
- * file ("env first"). This is what lets a standalone `gene` binary, dropped into a
- * folder next to a `gene.config`, pick up its settings with zero flags.
+ * syntax) into `process.env`, WITHOUT overriding any value already present — real
+ * environment variables win over the file ("env first"). This is what lets a
+ * standalone `gene` binary, dropped into a folder next to a `gene.config`, pick up
+ * its settings with zero flags.
+ *
+ * The file is `gene.config` in the current working directory by default; set
+ * `GENE_CONFIG` to load a specific file instead (absolute, or relative to the cwd).
  *
  * Imported purely for its side effect, and as the FIRST import of both logger.ts
  * and config.ts — the two earliest-evaluated leaves — so the file is loaded before
@@ -22,12 +25,20 @@ import { parseEnv } from "node:util";
 const CONFIG_FILENAME = "gene.config";
 
 const loadConfigFile = (): void => {
-  const file = path.join(process.cwd(), CONFIG_FILENAME);
+  // GENE_CONFIG, if set, names the file to load (absolute, or relative to the cwd);
+  // otherwise fall back to `gene.config` in the current working directory.
+  const override = process.env.GENE_CONFIG?.trim();
+  const file = override ? path.resolve(override) : path.join(process.cwd(), CONFIG_FILENAME);
   let text: string;
   try {
     text = fs.readFileSync(file, "utf-8");
   } catch {
-    return; // no gene.config here — env-only, which is fine
+    // An explicit GENE_CONFIG that can't be read is worth a warning; the default
+    // file being absent is normal (env-only configuration is fully supported).
+    if (override) {
+      process.stderr.write(`[gene:config] GENE_CONFIG=${file} could not be read — using the environment only\n`);
+    }
+    return;
   }
 
   let parsed: Record<string, string>;

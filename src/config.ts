@@ -167,7 +167,9 @@ export const env = {
   // Local port the webhook HTTP listener binds (your tunnel forwards here).
   WEBHOOK_PORT: int("GENE_WEBHOOK_PORT", 8473),
   MAX_CONCURRENT: Math.max(1, int("GENE_MAX_CONCURRENT", 2)),
-  DRY_RUN: bool("GENE_DRY_RUN", true),
+  // Log-only preview: when true, no tracker/forge writes and no agent spawns. Defaults
+  // to false — Gene acts for real; set GENE_DRY_RUN=true to preview safely.
+  DRY_RUN: bool("GENE_DRY_RUN", false),
   // Open every change request as a draft; a human reviews, marks it ready, and
   // merges. When on, Gene never un-drafts a CR itself (its own or a human-attached
   // one) — the "ready" transition becomes a human gate. Forge-neutral (both forges).

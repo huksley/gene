@@ -16,8 +16,8 @@
  * `npm run once`.
  *
  * The optional focus arg is `[tracker:]IDENTIFIER` — it narrows a run to a single
- * ticket (the tracker prefix, if given, must match GENE_TRACKER). Set
- * GENE_DRY_RUN=true (the default) to preview decisions without any writes.
+ * ticket (the tracker prefix, if given, must match GENE_TRACKER). Gene acts for real
+ * by default; set GENE_DRY_RUN=true to preview decisions without any writes.
  */
 
 import logger from "./logger.ts";
@@ -1030,8 +1030,9 @@ TICKET is an optional [tracker:]IDENTIFIER focus (e.g. CLOUD-1094) that narrows 
 run to a single issue; the tracker prefix, if given, must match GENE_TRACKER.
 
 Configuration is read from the environment first, then from a gene.config file
-(KEY=VALUE) in the current directory — environment values win. Set GENE_DRY_RUN=true
-(the default) to preview decisions without writing anything back.
+(KEY=VALUE) in the current directory — environment values win. Set GENE_CONFIG to
+load a specific config file instead. Gene acts for real by default; set
+GENE_DRY_RUN=true to preview decisions without writing anything back.
 `;
 
 const main = async (): Promise<void> => {
