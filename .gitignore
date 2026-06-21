@@ -7,3 +7,9 @@ node_modules
 data/
 # Local clones of target repos (kept across runs, branched into worktrees)
 repos/
+
+# Standalone build output: esbuild bundle and the SEA executable
+dist/
+/gene
+# Local standalone config (KEY=VALUE; env still wins). Holds secrets.
+gene.config

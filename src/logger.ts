@@ -1,4 +1,7 @@
 /* eslint-disable no-console */
+// First import in the graph: load gene.config into the environment (env wins)
+// before any module — including this logger — reads a GENE_* value.
+import "./bootstrap.ts";
 import chalk from "chalk";
 import { format } from "node:util";
 
@@ -57,6 +60,7 @@ export interface Logger {
     attachments: string;
     trello: string;
     linear: string;
+    update: string;
   };
   verbose: (...args: unknown[]) => void;
   info: (...args: unknown[]) => void;
@@ -225,6 +229,7 @@ const logger: Logger = {
     attachments: chalk.gray("[gene:attachments]"),
     trello: chalk.blueBright("[gene:trello]"),
     linear: chalk.blueBright("[gene:linear]"),
+    update: chalk.cyanBright("[gene:update]"),
   }
 };
 

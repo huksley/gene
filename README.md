@@ -167,7 +167,7 @@ to finish to be heard. Running CI only defers the cases where it logically must:
 a still-running pipeline can't be a *failure* yet, and a draft pickup with nothing
 new won't pile a fresh run onto mid-flight CI. With no new signal at all, the scan
 is a no-op and the daemon moves on. A per-issue cursor (the handled head SHA +
-newest comment, stored in Postgres via `db.ts`) ensures each signal triggers
+newest comment, stored in the state store via `db.ts`) ensures each signal triggers
 exactly one dispatch, not one per poll.
 
 **Auto-progress to Done on merge (`review.ts`, opt-in).** Set `<TP>_DONE_STATE`
@@ -222,9 +222,11 @@ per-issue **activity log** in the state store, keyed by `(tracker, issue id)`:
 each dispatch, the agent's start / finish (with its own final summary), review
 re-dispatches, draft pickups, and resets (dry-run entries are flagged). Inspect one
 issue's history with `npm run log -- <system>:<id>` (e.g. `linear:CLOUD-1094`; a bare
-id defaults the system to `GENE_TRACKER`). The store is a real Postgres, so a
-one-shot command (`log` / `reset`) reads it fine while the daemon is running — both
-just point at the same server (the local one on port 5434 by default).
+id defaults the system to `GENE_TRACKER`). With the **opt-in Postgres backend** the
+store is multi-connection, so a one-shot command (`log` / `reset`) reads it fine
+while the daemon runs — both point at the same server. The **default embedded store**
+is single-process: stop the daemon before running `log` / `reset`, or point both at a
+shared Postgres (`DATABASE_URL` / `PG*`). See [State store](#state-store).
 
 ## Repo targeting (per issue)
 
@@ -258,24 +260,42 @@ All resolution logic lives in `src/repos.ts`.
   created at `repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base. The
   branch name follows `GENE_BRANCH_TEMPLATE` (default `{prefix}/{identifier}-{slug}`;
   see `.env.example`).
-  Runtime locks live in `.gene/` (gitignored); the persistent state store is a local
-  **Postgres** with its data under `data/pg/` (gitignored), started by `npm run pg`.
+  Runtime locks live in `.gene/` (gitignored); the persistent **state store** needs
+  no setup — embedded PGlite under `~/.config/gene/` by default, or an external
+  Postgres when `DATABASE_URL` / `PG*` is set (see [State store](#state-store)).
+
+## State store
+
+Gene keeps its persistent state — the per-issue **review cursor** and **activity
+log** (`db.ts`) — in a small SQL store, with two backends picked automatically:
+
+- **Embedded PGlite (default)** — Postgres compiled to WASM, running in-process. No
+  server, no setup: data lives under `~/.config/gene/pgdata` (override with
+  `GENE_DB_DIR`; honours `XDG_CONFIG_HOME`). This is what makes Gene
+  **self-contained** — `npm start` just works. It is **single-process**: one Gene
+  owns the data dir behind a self-healing PID lock, so a one-shot `log` / `reset`
+  can't run *while* the daemon is up — stop it first, or use Postgres.
+- **Postgres server (opt-in)** — set `DATABASE_URL` (or any `PG*`: `PGHOST`,
+  `PGDATABASE`, …) and Gene talks to that instead. Multi-connection, so `log` /
+  `reset` work alongside a running daemon. `npm run pg` brings up a throwaway local
+  cluster under `data/pg/` (gitignored) on port **5434** if you want one locally.
+
+The schema is identical either way; switching backends starts a fresh store (state
+is not migrated between them).
 
 ## Installation
 
-Gene is a **clone-and-run** project — there's no published package. You run it from
-a checkout, and it shells out to a few CLIs and keeps its state in a **local**
-Postgres that it brings up itself: `npm run pg` runs a throwaway cluster under
-`data/pg/` (gitignored) on port **5434** — it does **not** touch a system Postgres
-service. So "install" means: get the dependencies on your `PATH`, clone the repo,
-`npm install`.
+Gene is a **clone-and-run** project — there's no published package. You run it from a
+checkout, it shells out to a few CLIs, and it keeps its state in an **embedded store
+that needs no setup** ([State store](#state-store) above — Postgres is opt-in). So
+"install" means: get the dependencies on your `PATH`, clone the repo, `npm install`.
 
 ### Dependencies
 
 | Tool | Why | Needed when |
 |---|---|---|
 | **Node ≥ 26.3.0** | runtime (runs the `.ts` files directly; the [TUI](#tui-dashboard) needs 26.3.0, the console daemon runs on Node 24+) | always |
-| **PostgreSQL ≥ 16** | state store — only the `initdb` + `postgres` binaries need to be on `PATH`; Gene runs its own instance | always |
+| **PostgreSQL ≥ 16** | state store — **optional**, only for the opt-in Postgres backend (`initdb` + `postgres` on `PATH`); the default embedded store needs nothing | optional |
 | **git** | clones target repos + per-issue worktrees | always |
 | **claude** (Claude Code) | the agent Gene dispatches (`claude -p`) | always |
 | **gh CLI** | GitHub forge | issues targeting `github.com` |
@@ -292,7 +312,8 @@ the REST API directly (just `TRELLO_API_KEY` + `TRELLO_TOKEN`).
 curl https://get.volta.sh | bash && exec "$SHELL" -l
 volta install node@26
 
-# PostgreSQL 16+ — keg-only, so put its binaries (initdb/postgres) on PATH
+# PostgreSQL 16+ — OPTIONAL (only for the opt-in Postgres backend; the default
+# embedded store needs nothing). Keg-only, so put initdb/postgres on PATH.
 brew install postgresql
 
 # git, the agent, and the forge CLIs you need
@@ -311,9 +332,11 @@ npm install -g @schpet/linear-cli
 curl -fsSL https://deb.nodesource.com/setup_26.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-# PostgreSQL — Gene runs its own cluster, so you only need the binaries; the
-# auto-started system service can be stopped, and its bin dir added to PATH.
-sudo apt-get install -y postgresql git
+# git is required; PostgreSQL is OPTIONAL (only for the opt-in Postgres backend —
+# the default embedded store needs nothing). If you do want Postgres you only need
+# the binaries; the auto-started system service can be stopped and its bin dir PATH-ed.
+sudo apt-get install -y git
+sudo apt-get install -y postgresql                              # optional — opt-in Postgres backend only
 sudo systemctl disable --now postgresql   # optional — Gene doesn't use the system service
 
 # GitHub CLI (gh) — official apt repo
@@ -333,17 +356,17 @@ curl -fsSL https://claude.ai/install.sh | bash
 npm install -g @schpet/linear-cli
 ```
 
-> Fedora/RHEL: `sudo dnf install nodejs postgresql-server git gh`. Arch:
-> `sudo pacman -S nodejs npm postgresql git github-cli`. On any distro you can use
-> [Volta](https://volta.sh) for Node and the prebuilt `glab`/`claude` installers
-> above — only Postgres comes from the package manager.
+> Fedora/RHEL: `sudo dnf install nodejs git gh` (add `postgresql-server` only for the
+> opt-in Postgres backend). Arch: `sudo pacman -S nodejs npm git github-cli` (add
+> `postgresql` for that backend). On any distro you can use [Volta](https://volta.sh)
+> for Node and the prebuilt `glab`/`claude` installers above.
 
 ### Get Gene
 
 ```bash
 git clone https://github.com/huksley/gene.git
 cd gene
-npm install                          # dev-only deps (typescript, @types/node) + pg
+npm install                          # runtime deps (pg, pglite, opentui) + dev types
 cp .env.example .env.development     # then edit it — see Setup below
 ```
 
@@ -351,11 +374,11 @@ Verify the toolchain before going further:
 
 ```bash
 node --version            # ≥ 26.3.0
-initdb --version          # PostgreSQL on PATH
 claude --version
 git --version
 gh --version              # and/or: glab --version
 linear --version          # Linear backend only
+initdb --version          # optional — only if you use the Postgres backend
 ```
 
 Now continue with **[Setup](#setup)** to authenticate the CLIs and fill in
@@ -394,22 +417,25 @@ default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to
 ## Usage
 
 ```bash
-npm start               # TUI dashboard + its Postgres — the default way to run Gene (needs Node ≥26.3.0)
-npm run console         # headless: Postgres + the daemon poll loop, logs to stdout (runs on Node 24+)
-npm run once            # Postgres + a single scan, then exit  (great with GENE_DRY_RUN=true)
-npm run pg              # just the local Postgres (port 5434) — leave up for the commands below
-npm run ui              # the TUI against an already-running pg (needs Node ≥26.3.0)
-npm run gene            # just the daemon poll loop against an already-running pg (no TUI)
+npm start               # TUI dashboard — the default way to run Gene (needs Node ≥26.3.0)
+npm run console         # headless daemon poll loop, logs to stdout (runs on Node 24+)
+npm run once            # a single scan, then exit  (great with GENE_DRY_RUN=true)
+npm run ui              # just the TUI (needs Node ≥26.3.0)
+npm run gene            # just the daemon poll loop (no TUI)
 npm run clone           # pre-clone the team default repo(s)
-npm run reset -- APP-1094            # reset one issue back to Todo   (needs Postgres up)
+npm run pg              # OPTIONAL local Postgres (port 5434) — only for the Postgres backend
+npm run reset -- APP-1094            # reset one issue back to Todo   (stop the daemon first; see State store)
 npm run reset -- APP-1094 --close-mr # ...and close its open MR/PR
-npm run log -- linear:APP-1094       # show one issue's activity log (needs Postgres up)
+npm run log -- linear:APP-1094       # show one issue's activity log (stop the daemon first; see State store)
 npm run typecheck       # tsc --noEmit
 ```
 
-`npm start` is the **default** — the TUI dashboard with its Postgres in one command.
-Prefer headless (CI, a server, or Node < 26.3.0)? `npm run console` runs the same
-poll loop with plain stdout logging and no terminal UI.
+`npm start` is the **default** — the TUI dashboard, with the embedded state store
+opened in-process (no server to start). Prefer headless (CI, a server, or Node <
+26.3.0)? `npm run console` runs the same poll loop with plain stdout logging and no
+terminal UI. Because the embedded store is single-process, run `log` / `reset` with
+the daemon stopped — or set `DATABASE_URL` / `PG*` to share a Postgres (see
+[State store](#state-store)).
 
 Go live by setting `GENE_DRY_RUN=false` in `.env.development`. A dry-run scan prints
 exactly what it *would* do (decision, resolved target repo + forge, branch, prompt
@@ -427,16 +453,16 @@ live log), and inline agent cancellation / reset. The poll loop runs in the
 separate observer or IPC.
 
 ```bash
-npm start                       # Postgres (background) + dashboard (foreground), one command — the default
+npm start                       # dashboard (foreground) with the embedded store — one command, the default
 npm start -- linear:APP-1094    # …focused on one issue (focus + dry-run flags pass through)
-npm run ui                      # dashboard only, against an already-running pg (e.g. npm run pg elsewhere)
+npm run ui                      # same dashboard (identical to npm start; the embedded store opens in-process)
 ```
 
-`npm start` runs Postgres in the background and the dashboard in the foreground
-(see `ui.sh`) — a full-screen TUI must own the terminal, so it
-*can't* be hosted under a stdio multiplexer like `concurrently` (which would
-leave the renderer with no TTY: a tiny window and a dead keyboard). It reuses a
-Postgres that's already listening, and stops only the one it started.
+`npm start` runs the dashboard in the foreground (see `ui.sh`) and opens the state
+store in-process — no background server to manage. A full-screen TUI must own the
+terminal, so it *can't* be hosted under a stdio multiplexer like `concurrently`
+(which would leave the renderer with no TTY: a tiny window and a dead keyboard),
+which is why `npm start` is a thin foreground wrapper rather than a multiplexed call.
 
 Requires **Node ≥ 26.3.0** — OpenTUI's native renderer loads over FFI, which the
 `ui` script enables (`--experimental-ffi`). On an older Node it prints install
@@ -465,9 +491,9 @@ Node 24), so:
 - no TypeScript-only runtime constructs (enums, namespaces, constructor parameter
   properties) — strip-only mode rejects them;
 - env is loaded by `node --env-file-if-exists=.env.development` (in the npm scripts);
-- the only runtime dependency is **`pg`** — the daemon's persistent state lives in a
-  local **Postgres** (`db.ts`), brought up by `npm run pg`; env parsing stays
-  hand-rolled in `config.ts`.
+- runtime dependencies stay few — the state store (`db.ts`) is **embedded PGlite** by
+  default (zero-setup, in-process) with **`pg`** for an opt-in external Postgres; env
+  parsing stays hand-rolled in `config.ts`.
 
 ## Trackers (Linear / Trello)
 
@@ -525,8 +551,9 @@ document them in `.env.example`.
   every MR/PR as a draft and never marks it ready — a human reviews, marks it ready,
   and merges. Off by default; works on both GitLab and GitHub.
 - **Two-repo** model (orchestrator vs cloned targets); worktrees branch off the clone.
-- Native Node 24 TS — **no build**, `.ts` imports, `--env-file`; **one runtime dep**
-  (`pg`, talking to a local Postgres for state).
+- Native Node 24 TS — **no build**, `.ts` imports, `--env-file`; state is a
+  **self-contained embedded store** (PGlite) by default, with `pg` for an opt-in
+  external Postgres.
 - Description **section enforcement is opt-in** (`GENE_REQUIRE_SECTIONS`) — off by
   default (free-form); when set, a missing section sends the issue to Blocked with a
   request to fill it in. See [Writing tickets](#writing-tickets).

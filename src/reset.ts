@@ -25,6 +25,7 @@ import { run } from "./exec.ts";
 import { logEvent, closeDb } from "./db.ts";
 import { tracker, findIssue } from "./tracker/index.ts";
 import { selectForge } from "./forge/index.ts";
+import { inSea } from "./sea-assets.ts";
 
 /** Every local clone under the repos root (a dir containing `.git`), with its repoPath. */
 const findClones = (): { localPath: string; repoPath: string }[] => {
@@ -197,6 +198,13 @@ export const resetIssue = async (identifier: string, options: ResetOptions = {})
 
 /** True when this file was run directly (`node src/reset.ts …`), not imported. */
 const isMainModule = (): boolean => {
+  // Inside the single executable this file is bundled (imported for `resetIssue`), never
+  // the entry point — but import.meta.url and process.argv[1] both resolve to the binary,
+  // which would make the comparison below a false positive and auto-run the reset CLI on
+  // every `gene` launch. The reset CLI is a dev-only entry; it doesn't exist in the binary.
+  if (inSea()) {
+    return false;
+  }
   const entry = process.argv[1];
   if (!entry) {
     return false;

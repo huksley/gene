@@ -1,6 +1,6 @@
 {
   "name": "geneai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Gene AI — Linear + GitLab autonomous code pipeline (Claude Code dispatch daemon)",
   "type": "module",
   "license": "Apache-2.0",
@@ -10,27 +10,21 @@
   "scripts": {
     "prepg": "if [ ! -d data/pg ]; then mkdir -p data/pg; initdb -D data/pg; fi",
     "pg": "trap 'kill 0' SIGINT; postgres -D data/pg --config-file=pg.conf",
-    "gene": "node --env-file-if-exists=.env.development src/index.ts",
-    "gene:once": "node --env-file-if-exists=.env.development src/index.ts --once",
-    "ui": "node --experimental-ffi --disable-warning=ExperimentalWarning --env-file-if-exists=.env.development src/index.ts --ui",
-    "console": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene\"",
-    "start": "bash ui.sh",
-    "once": "concurrently -k -s first -n pg,gene \"npm run pg\" \"npm run gene:once\"",
-    "clone": "node --env-file-if-exists=.env.development src/clone.ts",
-    "reset": "node --env-file-if-exists=.env.development src/reset.ts",
-    "log": "node --env-file-if-exists=.env.development src/log.ts",
-    "trello": "node --env-file-if-exists=.env.development trello/cli.ts",
-    "webhook": "node --env-file-if-exists=.env.development src/webhook.ts",
+    "gene": "node --experimental-ffi --disable-warning=ExperimentalWarning --env-file-if-exists=.env.development src/index.ts",
+    "headless": "node --env-file-if-exists=.env.development src/index.ts --headless",
+    "once": "node --env-file-if-exists=.env.development src/index.ts --once",
+    "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'src/**/*.test.ts'"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
-    "concurrently": "^10.0.3",
+    "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.2",
     "@opentui/core": "^0.4.1",
     "chalk": "^5.6.2",
     "pg": "^8.21.0"

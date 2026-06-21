@@ -1,14 +1,18 @@
 /**
  * Environment + constants for the Gene pipeline. Hand-rolled (no zod) to keep
- * runtime dependencies minimal — the `pg` Postgres client (state store, see db.ts)
- * is the only one — and let Node execute the TypeScript directly. Invalid values
+ * runtime dependencies few — the state store (db.ts) is embedded PGlite by default,
+ * with `pg` for an external Postgres — and let Node execute the TypeScript directly. Invalid values
  * collect into a list and exit(1) with a friendly message rather than throwing
  * deep in a module.
  *
- * Values are read from the process environment, which `node --env-file-if-exists`
- * has already populated from `.env.development`.
+ * Values are read from the process environment. In development `node
+ * --env-file-if-exists` populates it from `.env.development`; for the standalone
+ * binary the bootstrap import below fills any unset keys from a local `gene.config`
+ * (env always wins). Either way, by the time this module evaluates, process.env is
+ * authoritative.
  */
 
+import "./bootstrap.ts";
 import path from "node:path";
 import logger from "./logger.ts";
 
@@ -207,7 +211,7 @@ if (problems.length > 0) {
   for (const problem of problems) {
     logger.error(`  - ${problem}`);
   }
-  logger.error("\nSet values in .env.development (gitignored). See .env.example.");
+  logger.error("\nSet values in the environment, .env.development (dev), or gene.config (standalone). See .env.example.");
   /* eslint-enable no-console */
   process.exit(1);
 }

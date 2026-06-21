@@ -7,11 +7,13 @@
  * its forge repo and dispatched to a `claude -p` agent in a per-issue worktree;
  * the agent does the code work and writes back to the tracker + the forge itself.
  *
- * Usage:
- *   npm run gene                          # forever (poll loop), every Gene issue
- *   npm run gene:once                     # single scan, then exit
- *   npm run gene -- linear:CLOUD-1094     # focus loop: poll, but only that one ticket
- *   npm run gene:once -- CLOUD-1094       # focus once: that ticket only, then exit
+ * Usage (standalone binary):
+ *   gene                          # dashboard (default), every Gene issue
+ *   gene CLOUD-1094               # dashboard, focused on one ticket
+ *   gene --headless               # poll loop, plain console log, every Gene issue
+ *   gene --once CLOUD-1094        # single scan of that ticket, then exit
+ * In dev the same paths run via `npm run gene` (dashboard) / `npm run headless` /
+ * `npm run once`.
  *
  * The optional focus arg is `[tracker:]IDENTIFIER` — it narrows a run to a single
  * ticket (the tracker prefix, if given, must match GENE_TRACKER). Set
@@ -36,6 +38,9 @@ import { closeDb, findInterruptedRuns, logEvent, readTokenTotal } from "./db.ts"
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
+import { importLegacy } from "./import-legacy.ts";
+import { inSea, extractAsset, readVersion } from "./sea-assets.ts";
+import { selfUpdate } from "./update.ts";
 
 const summarizeAction = (action: Action): string => {
   switch (action.kind) {
@@ -964,7 +969,7 @@ export const gracefulShutdown = async (signal: string): Promise<void> => {
   if (owned.length > 0) {
     logger.info(
       `${logger.tag.flow} received ${signal} — ${owned.length} issue(s) still in flight: ${owned.join(", ")}. ` +
-      `Left in "${env.ACTIVE_STATE}"; re-trigger or \`npm run gene:reset -- <ID>\` as needed.`
+      `Left in "${env.ACTIVE_STATE}"; re-trigger to resume (or reset the ticket from the dashboard).`
     );
   } else {
     logger.info(`${logger.tag.flow} received ${signal} — nothing in flight, exiting`);
@@ -1011,9 +1016,67 @@ const parseIssueFilter = (argv: string[]): string | undefined => {
   return identifier;
 };
 
+const HELP = `gene — autonomous Linear/GitLab code pipeline
+
+Usage:
+  gene [TICKET]              Launch the dashboard (default).
+  gene --headless [TICKET]   Run the daemon without the dashboard (logs to stdout).
+  gene --once [TICKET]       Run a single scan, then exit.
+  gene --update [--force]    Download and install the latest release in place.
+  gene --help, -h            Show this help.
+  gene --version, -v         Print the version.
+
+TICKET is an optional [tracker:]IDENTIFIER focus (e.g. CLOUD-1094) that narrows the
+run to a single issue; the tracker prefix, if given, must match GENE_TRACKER.
+
+Configuration is read from the environment first, then from a gene.config file
+(KEY=VALUE) in the current directory — environment values win. Set GENE_DRY_RUN=true
+(the default) to preview decisions without writing anything back.
+`;
+
 const main = async (): Promise<void> => {
+  const argv = process.argv.slice(2);
+
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(HELP);
+    return;
+  }
+  if (argv.includes("--version") || argv.includes("-v")) {
+    process.stdout.write(`gene ${readVersion()}\n`);
+    return;
+  }
+
+  if (argv.includes("--update")) {
+    const ok = await selfUpdate({ force: argv.includes("--force") });
+    process.exit(ok ? 0 : 1);
+  }
+
+  // Undocumented: replay a legacy SQL dump into the configured store (ideally a
+  // shared Postgres) and exit. Kept off the help text on purpose.
+  const legacyIdx = argv.indexOf("--import-legacy");
+  if (legacyIdx !== -1) {
+    const file = argv[legacyIdx + 1];
+    if (!file) {
+      logger.error(`${logger.tag.flow} --import-legacy needs a path to a .sql dump`);
+      process.exit(1);
+    }
+    try {
+      await importLegacy(file);
+    } catch (error) {
+      logger.error(`${logger.tag.flow} import failed:`, error instanceof Error ? error.message : error, { cause: error });
+      await closeDb();
+      process.exit(1);
+    }
+    await closeDb();
+    return;
+  }
+
   const issueFilter = parseIssueFilter(process.argv);
-  const useUi = process.argv.includes("--ui");
+  const once = argv.includes("--once");
+  // The dashboard is the default; --headless (alias --console / --no-ui) runs the
+  // daemon as a plain console log instead. --once is inherently headless.
+  const headless = argv.includes("--headless") || argv.includes("--console") || argv.includes("--no-ui");
+  const useUi = !once && !headless;
 
   // Load lifecycle observers (GENE_PLUGINS) once, before any scan can emit an event.
   await setupPlugins();
@@ -1025,7 +1088,7 @@ const main = async (): Promise<void> => {
     process.on("SIGTERM", () => handleShutdown("SIGTERM"));
   }
 
-  if (process.argv.includes("--once")) {
+  if (once) {
     publishDaemonConfig();
     const found = await scanOnce(issueFilter);
     if (!found) {
@@ -1045,9 +1108,17 @@ const main = async (): Promise<void> => {
   }
 
   if (useUi) {
+    // Inside the single executable the OpenTUI native library is embedded as an
+    // asset; extract it and hand its path to the bundled platform shim BEFORE the UI
+    // module (and thus @opentui/core) loads. In dev the real platform package
+    // resolves the dylib itself, so this is skipped.
+    if (inSea()) {
+      (globalThis as { __GENE_OPENTUI_DYLIB__?: string }).__GENE_OPENTUI_DYLIB__ =
+        extractAsset("libopentui.dylib", "libopentui.dylib");
+    }
     // Dynamic import so @opentui/core (and its native FFI renderer) is loaded ONLY
-    // in UI mode — console mode never touches FFI and keeps running on Node 24.
-    // startUi mounts the renderer, kicks off the poll loop, and owns shutdown.
+    // in UI mode — headless mode never touches FFI. startUi mounts the renderer,
+    // kicks off the poll loop, and owns shutdown.
     try {
       const { startUi } = await import("./ui/app.ts");
       // Populate the monitor before startUi reads its first snapshot, so the header
@@ -1069,15 +1140,14 @@ const main = async (): Promise<void> => {
         // `p` toggles the scan loop's pause; `r` also resumes via setPaused(false).
         setPaused,
         shutdown: gracefulShutdown,
-        // `R` inside a ticket resets it (worktree/branch/lock + back to Todo),
-        // reusing the same path as `npm run reset`. The pool stays open (the
-        // daemon owns it) — resetIssue doesn't close the DB, only the CLI does.
+        // `R` inside a ticket resets it (worktree/branch/lock + back to Todo). The
+        // pool stays open (the daemon owns it) — resetIssue doesn't close the DB.
         reset: identifier => resetIssue(identifier)
       });
     } catch (error) {
       logger.error(
-        `${logger.tag.flow} could not start the TUI dashboard — it needs Node ≥ 26.3.0 launched with ` +
-        `--experimental-ffi. Use \`npm run ui\` (which sets the flag), or \`npm run gene\` for the plain console.`,
+        `${logger.tag.flow} could not start the dashboard — it needs Node ≥ 26.3.0 with ` +
+        `--experimental-ffi. Run \`gene --headless\` for the plain console instead.`,
         error instanceof Error ? error.message : error
       );
       process.exit(1);
@@ -1085,9 +1155,10 @@ const main = async (): Promise<void> => {
     return;
   }
 
+  // Headless daemon (the previous default): plain console log, no TUI.
   publishDaemonConfig();
-  // Console mode has no seed to refresh, so just close orphaned runs and restore the
-  // lifetime token total before the first scan picks the still-active tickets back up.
+  // No dashboard to reseed, so just close orphaned runs and restore the lifetime
+  // token total before the first scan picks the still-active tickets back up.
   await reconcileInterruptedRuns();
   await seedTokenTotals();
   await runForever(issueFilter);
