@@ -17,8 +17,10 @@ set -euo pipefail
 OWNER="huksley"
 REPO="gene"
 BIN="gene"
-# Asset names to try, in priority order. Keep in sync with ASSET_CANDIDATES in src/update.ts.
-ASSET_CANDIDATES=("gene-darwin-arm64" "gene-macos-arm64" "gene")
+# Assets to try, in priority order. Published assets are gzipped (.gz) and decompressed
+# on install; the plain names are a fallback for older releases. Keep in sync with
+# ASSET_CANDIDATES in src/update.ts.
+ASSET_CANDIDATES=("gene-darwin-arm64.gz" "gene-macos-arm64.gz" "gene.gz" "gene-darwin-arm64" "gene-macos-arm64" "gene")
 
 INSTALL_DIR="${GENE_INSTALL_DIR:-}"
 VERSION="${GENE_VERSION:-}"
@@ -28,7 +30,9 @@ warn() { printf '\033[33m[gene:install]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m[gene:install]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,16p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+  # Print the leading comment block (minus the shebang), stripping "# ", and stop at
+  # the first non-comment line. Robust to the header growing; no-ops when piped (no $0 file).
+  awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0" 2>/dev/null || true
   exit 0
 }
 
@@ -105,32 +109,51 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 # ---- download the first asset that exists --------------------------------
-DL="${TMP}/${BIN}"
+RAW="${TMP}/asset"
 ASSET=""
 for candidate in "${ASSET_CANDIDATES[@]}"; do
-  if fetch_to "${BASE}/${candidate}" "$DL"; then
+  if fetch_to "${BASE}/${candidate}" "$RAW"; then
     ASSET="$candidate"
     break
   fi
 done
 [ -n "$ASSET" ] || die "no macOS arm64 asset found at ${BASE} (looked for: ${ASSET_CANDIDATES[*]}). Are there published releases?"
-[ -s "$DL" ] || die "downloaded file is empty."
-say "downloaded ${ASSET} ($(($(wc -c <"$DL") / 1000000)) MB)"
+[ -s "$RAW" ] || die "downloaded file is empty."
+say "downloaded ${ASSET} ($(($(wc -c <"$RAW") / 1000000)) MB)"
 
-# ---- optional checksum verification (best effort) ------------------------
+# ---- optional checksum verification of the downloaded asset (best effort) ----
 if fetch_to "${BASE}/${ASSET}.sha256" "${TMP}/sum"; then
   SUMTOOL=""
   command -v shasum >/dev/null 2>&1 && SUMTOOL="shasum -a 256"
   [ -z "$SUMTOOL" ] && command -v sha256sum >/dev/null 2>&1 && SUMTOOL="sha256sum"
   if [ -n "$SUMTOOL" ]; then
     want="$(awk '{print $1}' "${TMP}/sum")"
-    got="$($SUMTOOL "$DL" | awk '{print $1}')"
+    got="$($SUMTOOL "$RAW" | awk '{print $1}')"
     if [ -n "$want" ] && [ "$want" != "$got" ]; then
       die "checksum mismatch (expected ${want}, got ${got}) — refusing to install."
     fi
     say "checksum verified."
   fi
 fi
+
+# ---- decompress if the asset is gzipped ----------------------------------
+DL="${TMP}/${BIN}"
+case "$ASSET" in
+  *.gz)
+    say "decompressing…"
+    if command -v gzip >/dev/null 2>&1; then
+      gzip -dc "$RAW" > "$DL" || die "failed to decompress ${ASSET} (corrupt download?)."
+    elif command -v gunzip >/dev/null 2>&1; then
+      gunzip -c "$RAW" > "$DL" || die "failed to decompress ${ASSET} (corrupt download?)."
+    else
+      die "need gzip (or gunzip) to decompress ${ASSET}."
+    fi
+    ;;
+  *)
+    mv -f "$RAW" "$DL"
+    ;;
+esac
+[ -s "$DL" ] || die "binary is empty after unpacking."
 
 # ---- make it runnable ----------------------------------------------------
 chmod 0755 "$DL"

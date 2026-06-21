@@ -11,5 +11,13 @@ repos/
 # Standalone build output: esbuild bundle and the SEA executable
 dist/
 /gene
+# Release artifacts produced by `node build.mjs` (uploaded to GitHub releases):
+# the gzipped binary + its .sha256, and any platform-named copies.
+/gene-*
 # Local standalone config (KEY=VALUE; env still wins). Holds secrets.
 gene.config
+/gene-darwin-arm64*
+/gene-linux-arm64*
+/gene-linux-x64*
+/gene-windows-x64*
+/gene-macos-arm64*

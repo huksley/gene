@@ -6,15 +6,17 @@
  * `process.execPath` to swap. In a dev checkout `process.execPath` is `node`, so we
  * refuse and point at `git pull` instead. macOS arm64 is the only published target.
  *
- * The swap is careful: download to a sibling temp file (same dir → atomic rename),
- * make it executable + ad-hoc signed, stash the current binary as `<bin>.old`, move
- * the new one into place, then verify it runs `--version`; on any failure the old
- * binary is restored. Replacing the file a process is currently executing is safe on
- * Unix — the running image keeps the old inode until it exits.
+ * Published assets are gzipped (`gene-macos-arm64.gz`) and decompressed on the fly as
+ * they download. The swap is careful: stream into a sibling temp file (same dir →
+ * atomic rename), make it executable + ad-hoc signed, stash the current binary as
+ * `<bin>.old`, move the new one into place, then verify it runs `--version`; on any
+ * failure the old binary is restored. Replacing the file a process is currently
+ * executing is safe on Unix — the running image keeps the old inode until it exits.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -27,11 +29,18 @@ const OWNER = "huksley";
 const REPO = "gene";
 
 /**
- * Release asset names to try, in priority order. The build publishes the macOS arm64
- * binary as `gene-darwin-arm64`; the bare `gene` fallback covers a release that just
- * uploaded the build output verbatim. Keep in sync with install.sh's candidate list.
+ * Release assets to try, in priority order. Published assets are gzipped (`.gz`) and
+ * decompressed while downloading; the plain-binary names are kept as a fallback for
+ * older releases. Keep in sync with install.sh's ASSET_CANDIDATES.
  */
-const ASSET_CANDIDATES = ["gene-darwin-arm64", "gene-macos-arm64", "gene"];
+const ASSET_CANDIDATES: { name: string; gzip: boolean }[] = [
+  { name: "gene-darwin-arm64.gz", gzip: true },
+  { name: "gene-macos-arm64.gz", gzip: true },
+  { name: "gene.gz", gzip: true },
+  { name: "gene-darwin-arm64", gzip: false },
+  { name: "gene-macos-arm64", gzip: false },
+  { name: "gene", gzip: false }
+];
 
 interface ReleaseAsset {
   name: string;
@@ -157,12 +166,15 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
     logger.warn(`${tag} release ${latest} is older than the running ${current} — reinstalling anyway (--force).`);
   }
 
-  // 3. Pick a matching asset.
-  const asset = ASSET_CANDIDATES.map(name => release.assets?.find(a => a.name === name)).find(Boolean);
+  // 3. Pick a matching asset, carrying whether it needs decompressing.
+  const asset = ASSET_CANDIDATES.map(c => {
+    const found = release.assets?.find(a => a.name === c.name);
+    return found ? { ...found, gzip: c.gzip } : undefined;
+  }).find(Boolean);
   if (!asset) {
     const have = (release.assets ?? []).map(a => a.name).join(", ") || "none";
     logger.error(
-      `${tag} release ${latest} has no macOS arm64 asset (looked for ${ASSET_CANDIDATES.join("/")}; found: ${have}).`
+      `${tag} release ${latest} has no macOS arm64 asset (looked for ${ASSET_CANDIDATES.map(c => c.name).join("/")}; found: ${have}).`
     );
     return false;
   }
@@ -170,7 +182,9 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
   // 4. Stream the download to a sibling temp file (same dir → atomic rename later).
   const dir = path.dirname(target);
   const tmp = path.join(dir, `.gene.update.${process.pid}`);
-  logger.info(`${tag} downloading ${asset.name} (${(asset.size / 1e6).toFixed(1)} MB) for ${latest}…`);
+  logger.info(
+    `${tag} downloading ${asset.name} (${(asset.size / 1e6).toFixed(1)} MB${asset.gzip ? " gzipped" : ""}) for ${latest}…`
+  );
   try {
     const res = await fetch(asset.browser_download_url, {
       headers: { "User-Agent": ghHeaders()["User-Agent"] },
@@ -179,7 +193,11 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
     if (!res.ok || !res.body) {
       throw new Error(`HTTP ${res.status} ${res.statusText}`);
     }
-    await pipeline(Readable.fromWeb(res.body as WebReadableStream<Uint8Array>), fs.createWriteStream(tmp, { mode: 0o755 }));
+    const source = Readable.fromWeb(res.body as WebReadableStream<Uint8Array>);
+    const dest = fs.createWriteStream(tmp, { mode: 0o755 });
+    // gunzip on the fly for a `.gz` asset. The gzip trailer carries a CRC32 + length,
+    // so a truncated or corrupt download throws here rather than installing garbage.
+    await (asset.gzip ? pipeline(source, zlib.createGunzip(), dest) : pipeline(source, dest));
   } catch (error) {
     safeUnlink(tmp);
     logger.error(`${tag} download failed:`, error instanceof Error ? error.message : error);
@@ -193,7 +211,13 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
   const backup = `${target}.old`;
   try {
     const size = fs.statSync(tmp).size;
-    if (asset.size && size !== asset.size) {
+    if (size === 0) {
+      throw new Error("downloaded file is empty");
+    }
+    // For a plain asset, asset.size is the on-disk size and must match exactly. For a
+    // gzipped asset, asset.size is the *compressed* size — gunzip already verified
+    // integrity above — so we only guard against an empty result.
+    if (!asset.gzip && asset.size && size !== asset.size) {
       throw new Error(`size mismatch (got ${size}, expected ${asset.size}) — download truncated`);
     }
     fs.chmodSync(tmp, 0o755);

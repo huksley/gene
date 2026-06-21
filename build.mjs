@@ -21,8 +21,11 @@
 import * as esbuild from "esbuild";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
+import crypto from "node:crypto";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const p = (...s) => path.join(root, ...s);
@@ -111,4 +114,14 @@ if (process.platform === "darwin") {
 }
 
 fs.chmodSync(p("gene"), 0o755);
-console.log("✓ done — ./gene");
+
+// Package the release artifact: gzip the binary and write its sha256. This `.gz` is
+// what gets uploaded to the GitHub release; `gene --update` and install.sh download it
+// and decompress on install. Keep the asset name in sync with ASSET_CANDIDATES.
+const asset = "gene-macos-arm64";
+console.log(`• packaging release artifact → ${asset}.gz`);
+await pipeline(fs.createReadStream(p("gene")), zlib.createGzip({ level: 9 }), fs.createWriteStream(p(`${asset}.gz`)));
+const sha = crypto.createHash("sha256").update(fs.readFileSync(p(`${asset}.gz`))).digest("hex");
+fs.writeFileSync(p(`${asset}.gz.sha256`), `${sha}  ${asset}.gz\n`);
+const gzMB = (fs.statSync(p(`${asset}.gz`)).size / 1e6).toFixed(1);
+console.log(`✓ done — ./gene  +  ${asset}.gz (${gzMB} MB) + .sha256`);

@@ -285,10 +285,54 @@ is not migrated between them).
 
 ## Installation
 
-Gene is a **clone-and-run** project — there's no published package. You run it from a
-checkout, it shells out to a few CLIs, and it keeps its state in an **embedded store
-that needs no setup** ([State store](#state-store) above — Postgres is opt-in). So
-"install" means: get the dependencies on your `PATH`, clone the repo, `npm install`.
+Two ways to run Gene: the **prebuilt standalone binary** (macOS arm64 — one
+self-contained `gene` executable, no Node or `npm install`), or **from a source
+checkout** (any platform; how you develop on it). Either way Gene shells out to a few
+CLIs (`claude`, `git`, your forge CLI, …) and keeps its state in an **embedded store
+that needs no setup** ([State store](#state-store) — Postgres is opt-in).
+
+### Standalone binary (macOS arm64)
+
+Install — or upgrade — to the latest release with one command. It drops a `gene` binary
+on your `PATH` (`/usr/local/bin` if writable, else `~/.local/bin`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huksley/gene/main/install.sh | bash
+```
+
+Pass options after `-s --` to choose where it lands or pin a release:
+
+```bash
+# install into a specific directory
+curl -fsSL https://raw.githubusercontent.com/huksley/gene/main/install.sh | bash -s -- --dir ~/.local/bin
+# or a specific release tag
+curl -fsSL https://raw.githubusercontent.com/huksley/gene/main/install.sh | bash -s -- --version v1.2.3
+```
+
+Once installed, **update in place** from the running binary:
+
+```bash
+gene --update            # download + install the latest release (atomic, with rollback)
+gene --update --force    # reinstall even if already on the latest
+gene --version
+gene --help
+```
+
+The binary bundles the embedded state store, so it needs no Node and no `npm install` —
+but Gene still shells out to the runtime CLIs (`claude`, `git`, `gh`/`glab`, and
+`linear` for the Linear backend). Install whichever you need from the
+[Dependencies](#dependencies) table below.
+
+> Releases are published as a gzipped `gene-macos-arm64.gz` asset (with a matching
+> `.sha256`); both the installer and `gene --update` download and decompress it,
+> verifying the checksum when present. Linux/Intel builds aren't published — run from
+> source there.
+
+### From a source checkout
+
+Run Gene from a Node checkout — the way you develop on it, and the only option off
+macOS arm64. "Install" here means: get the dependencies on your `PATH`, clone the repo,
+`npm install`.
 
 ### Dependencies
 
@@ -411,8 +455,7 @@ npm run clone
 ```
 
 `.env.development` is gitignored — put your secrets there. Everything has a safe
-default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to
-`true`** (log-only, no writes, no spawns).
+default; see `.env.example` for the full list. **`GENE_DRY_RUN` defaults to `false`** (log-only, no writes, no spawns).
 
 ## Usage
 
