@@ -16,6 +16,10 @@ import { BoxRenderable, StyledText, TextRenderable, bold, dim, fg, t, type CliRe
 import { AgentStatuses, type AgentStatus, type DaemonState, type MonitorSnapshot } from "../monitor.ts";
 import { compactTokens, humanDuration, progressBar, secondsUntil, truncate } from "./format.ts";
 import { palette, statusColor, statusGlyph, statusLabel } from "./theme.ts";
+import { readVersion } from "../sea-assets.ts";
+
+/** Build version (e.g. "1.1.2"), resolved once at load — it never changes at runtime. */
+const VERSION = readVersion();
 
 /** The status header renderable tree + its imperative update surface. */
 export class Header {
@@ -82,8 +86,8 @@ export class Header {
     const width = this.renderer.width;
 
     this.titleLine.content = d.dryRun
-      ? t`${bold(fg(palette.accent)("GENE AI"))}  ${dim("·")}  ${fg(palette.info)(`${d.tracker}/${d.label}`)}  ${dim("·")}  ${fg(palette.muted)("assignee:")} ${d.assignee}   ${bold(fg(palette.badge)("[DRY-RUN]"))}`
-      : t`${bold(fg(palette.accent)("GENE AI"))}  ${dim("·")}  ${fg(palette.info)(`${d.tracker}/${d.label}`)}  ${dim("·")}  ${fg(palette.muted)("assignee:")} ${d.assignee}`;
+      ? t`${fg(palette.accent)("🧬")} ${bold(fg(palette.accent)("GENE AI"))} ${fg(palette.muted)(VERSION)}  ${dim("·")}  ${fg(palette.info)(`${d.tracker}/${d.label}`)}  ${dim("·")}  ${fg(palette.muted)("assignee:")} ${d.assignee}   ${bold(fg(palette.badge)("[DRY-RUN]"))}`
+      : t`${fg(palette.accent)("🧬")} ${bold(fg(palette.accent)("GENE AI"))} ${fg(palette.muted)(VERSION)}  ${dim("·")}  ${fg(palette.info)(`${d.tracker}/${d.label}`)}  ${dim("·")}  ${fg(palette.muted)("assignee:")} ${d.assignee}`;
 
     const running = snapshot.agents.filter(a => a.status === "running").length;
     const queued = snapshot.agents.filter(a => a.status === "queued").length;
