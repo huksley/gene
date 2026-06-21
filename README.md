@@ -3,7 +3,8 @@
 AI agent which gets work done.
 From ticket to pull request in minutes, without touching a code.
 
-<img width="1316" height="837" alt="image" src="https://github.com/user-attachments/assets/96d01720-895f-4d49-a31f-5d9bfb2f6157" />
+<img width="1505" height="898" alt="Screenshot 2026-06-21 at 21 01 27" src="https://github.com/user-attachments/assets/86c5d374-5889-464b-b8d6-f715cc9463e0" />
+
 
 ## Workflow
 
