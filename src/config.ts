@@ -157,7 +157,7 @@ export const env = {
   REPO_MAP: optional("GENE_REPO_MAP"),
   REPO_URL: optional("GENE_REPO_URL"),
 
-  REPOS_DIR: str("GENE_REPOS_DIR", "repos"),
+  REPOS_DIR: str("GENE_REPOS_DIR", ".gene/repos"),
   POLL_INTERVAL_MS: int("GENE_POLL_INTERVAL_MS", 60_000),
   DEBOUNCE_MS: int("GENE_DEBOUNCE_MS", 30_000),
   // Public callback URL Trello calls (e.g. a cloudflared tunnel pointing at the
@@ -226,7 +226,13 @@ export const REPO_ROOT = process.cwd();
 export const GENE_DIR = path.join(REPO_ROOT, ".gene");
 export const LOCK_DIR = path.join(GENE_DIR, "locks");
 
-/** Absolute directory under which target repos are cloned and kept. */
+/**
+ * Absolute directory under which target repos are cloned and kept. Set by
+ * GENE_REPOS_DIR: a relative value is resolved under REPO_ROOT, an absolute one is
+ * used verbatim. Defaults to `.gene/repos` — inside the gitignored `.gene` runtime
+ * dir (alongside `locks/`), so on-demand clones never surface as untracked files in
+ * the orchestrator checkout.
+ */
 export const REPOS_ROOT = path.isAbsolute(env.REPOS_DIR)
   ? env.REPOS_DIR
   : path.join(REPO_ROOT, env.REPOS_DIR);

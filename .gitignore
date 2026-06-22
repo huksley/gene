@@ -1,11 +1,11 @@
 node_modules
 .env.development
 
-# Gene pipeline runtime state
+# Gene pipeline runtime state (locks; default .gene/repos clones — see GENE_REPOS_DIR)
 .gene/
 # Local Postgres state store (initdb'd by `npm run prepg`, data lives here)
 data/
-# Local clones of target repos (kept across runs, branched into worktrees)
+# Legacy / GENE_REPOS_DIR=repos clone location (default moved under .gene/ above)
 repos/
 
 # Standalone build output: esbuild bundle and the SEA executable

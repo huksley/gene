@@ -1018,7 +1018,7 @@ const parseIssueFilter = (argv: string[]): string | undefined => {
   return identifier;
 };
 
-const HELP = `gene — autonomous Linear/GitLab code pipeline
+const HELP = `gene 🧬 — autonomous AI harness powered by Claude Code: from a ticket to a mergeable pull request, completely automated
 
 Usage:
   gene [TICKET]              Launch the dashboard (default).

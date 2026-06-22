@@ -1,7 +1,6 @@
 # 🧬 Gene AI
 
-AI agent which gets work done.
-From ticket to pull request in minutes, without touching a code.
+**Gene AI is an autonomous AI harness powered by Claude Code — from a ticket to a mergeable pull request, completely automated.**
 
 <img width="1505" height="898" alt="Screenshot 2026-06-21 at 21 01 27" src="https://github.com/user-attachments/assets/86c5d374-5889-464b-b8d6-f715cc9463e0" />
 
@@ -255,10 +254,11 @@ All resolution logic lives in `src/repos.ts`.
 
 - **geneai** (this repo) — the orchestrator. All pipeline code is in `src/`.
 
-- **target repos** — cloned under `repos/<repoPath>/` (gitignored) and kept.
+- **target repos** — cloned under `.gene/repos/<repoPath>/` (gitignored; set by
+  `GENE_REPOS_DIR`) and kept.
   A repo is cloned **on demand** the first time an issue targets it; `npm run clone`
   pre-clones the team defaults so the common path is warm. Per-issue worktrees are
-  created at `repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base. The
+  created at `.gene/repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base. The
   branch name follows `GENE_BRANCH_TEMPLATE` (default `{prefix}/{identifier}-{slug}`;
   see `.env.example`).
   Runtime locks live in `.gene/` (gitignored); the persistent **state store** needs

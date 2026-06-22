@@ -1,8 +1,8 @@
 {
   "name": "geneai",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
-  "description": "Gene AI — Linear + GitLab autonomous code pipeline (Claude Code dispatch daemon)",
+  "description": "🧬 Gene AI is an autonomous AI harness powered by Claude Code — from a ticket to a mergeable pull request, completely automated.",
   "type": "module",
   "license": "Apache-2.0",
   "volta": {
