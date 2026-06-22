@@ -563,7 +563,12 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         void reseed();
         return;
       case "escape":
+        // Clear the selection and force a clean full redraw. paint() alone is
+        // incremental, so it can't wipe artifacts left by a resize or a stray
+        // write — forceRedraw() clears the back buffer first. Mirrors the detail
+        // view's escape, which is the only other place that refreshes the screen.
         selectedIndex = -1;
+        forceRedraw();
         paint();
         return;
       default:

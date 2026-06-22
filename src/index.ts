@@ -41,6 +41,7 @@ import { resetIssue } from "./reset.ts";
 import { importLegacy } from "./import-legacy.ts";
 import { inSea, extractAsset, readVersion } from "./sea-assets.ts";
 import { selfUpdate } from "./update.ts";
+import { runSandbox } from "./sandbox.ts";
 
 const summarizeAction = (action: Action): string => {
   switch (action.kind) {
@@ -1023,6 +1024,7 @@ Usage:
   gene --headless [TICKET]   Run the daemon without the dashboard (logs to stdout).
   gene --once [TICKET]       Run a single scan, then exit.
   gene --update [--force]    Download and install the latest release in place.
+  gene sandbox [CMD ...]     Build/run the embedded microsandbox (try: gene sandbox help).
   gene --help, -h            Show this help.
   gene --version, -v         Print the version.
 
@@ -1037,6 +1039,13 @@ GENE_DRY_RUN=true to preview decisions without writing anything back.
 
 const main = async (): Promise<void> => {
   const argv = process.argv.slice(2);
+
+  // `gene sandbox …` forwards every remaining arg to the embedded microsandbox
+  // driver (base/run/versions/help/…). It does its own flag parsing, so this runs
+  // before gene's own --help/--version handling.
+  if (argv[0] === "sandbox") {
+    process.exit(await runSandbox(argv.slice(1)));
+  }
 
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP);

@@ -19,7 +19,8 @@ import path from "node:path";
 import readline from "node:readline";
 import logger from "./logger.ts";
 import { monitor, type AgentEvent, type TokenUsage } from "./monitor.ts";
-import { env, REPO_ROOT, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
+import { env, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
+import { sandboxScriptPath } from "./sandbox.ts";
 import { addWorktree, fetch } from "./git.ts";
 import { logEvent } from "./db.ts";
 import { setActiveTimeout, type ActiveTimeout } from "./timer.ts";
@@ -294,9 +295,6 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 /** Grace between SIGTERM and SIGKILL when a run overruns GENE_AGENT_MAX_PROCESSING_TIME. */
 const KILL_GRACE_MS = 10_000;
 
-/** Path to the microsandbox driver (used only when GENE_SANDBOX is set). */
-const SANDBOX_SCRIPT = path.join(REPO_ROOT, "sandbox", "sandbox.sh");
-
 /** The `claude -p` CLI args — identical whether we spawn it directly or sandboxed. */
 const getAgentArgs = (prompt: string, allowedTools: string[]): string[] => [
   "-p",
@@ -344,7 +342,7 @@ const getSpawnCommand = (
   }
 
   return {
-    command: SANDBOX_SCRIPT,
+    command: sandboxScriptPath(),
     args: [
       "run",
       "--inherit",

@@ -1,6 +1,6 @@
 {
   "name": "geneai",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "private": true,
   "description": "Gene AI — Linear + GitLab autonomous code pipeline (Claude Code dispatch daemon)",
   "type": "module",
@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.2",
+    "@huksley/trello-cli": "^1.0.0",
     "@opentui/core": "^0.4.1",
     "chalk": "^5.6.2",
     "pg": "^8.21.0"

@@ -9,6 +9,7 @@
 #   • gh                 GitHub CLI       (github.com repos / PRs)
 #   • glab               GitLab CLI       (gitlab.* repos / MRs)
 #   • linear             schpet/linear-cli (Linear issues / comments)
+#   • trello-cli         @huksley/trello-cli (Trello cards / comments)
 #   • ntn                Notion CLI (ntn.dev) — Notion API / pages / workers
 #
 # This is a *base* image — it ships the toolchain only, no application code.
@@ -17,7 +18,7 @@
 FROM ubuntu:24.04
 
 LABEL org.opencontainers.image.title="geneai-sandbox-base" \
-      org.opencontainers.image.description="Base sandbox image for the Gene AI pipeline (claude, gh, glab, linear, ntn)"
+      org.opencontainers.image.description="Base sandbox image for the Gene AI pipeline (claude, gh, glab, linear, trello-cli, ntn)"
 
 # Pin-able tool versions (override with `--build-arg`).
 ARG NODE_MAJOR=24
@@ -98,6 +99,14 @@ RUN set -eux; \
 # ── linear (schpet/linear-cli) — npm global; postinstall fetches the binary ────
 RUN set -eux; \
     npm install -g @schpet/linear-cli; \
+    npm cache clean --force
+
+# ── trello-cli (@huksley/trello-cli) — npm global; Trello write-back CLI ───────
+# The daemon's `claude -p` agents call `trello-cli comment|move|create|lists …`
+# to write back to Trello (see src/tracker/trello.ts), authenticating with
+# TRELLO_API_KEY + TRELLO_TOKEN proxied in by `sandbox.sh --inherit`.
+RUN set -eux; \
+    npm install -g @huksley/trello-cli; \
     npm cache clean --force
 
 # ── Non-root user ──────────────────────────────────────────────────────────────
@@ -230,6 +239,7 @@ RUN set -eux; \
     gh --version; \
     glab --version; \
     linear --version; \
+    trello-cli --version; \
     claude --version; \
     ntn --version; \
     docker --version

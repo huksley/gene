@@ -1,14 +1,14 @@
 /**
- * Trello tracker. Reads and writes go through the bundled, dependency-free Trello
- * REST wrapper (../../trello): `createTrelloClient()` authenticates with
+ * Trello tracker. Reads and writes go through the dependency-free Trello REST
+ * wrapper from @huksley/trello-cli: `createTrelloClient()` authenticates with
  * TRELLO_API_KEY + TRELLO_TOKEN — Trello requires BOTH on every call. The one
  * thing the wrapper doesn't cover, attachments, is done here with direct REST:
  * listing via key+token query auth, downloading via an OAuth Authorization header.
  *
  * The spawned agent can't import the wrapper (it runs inside a different repo's
- * worktree), so it writes back by invoking the bundled CLI directly:
- * `node <REPO_ROOT>/trello/cli.ts comment|move …` (allowedTools: `Bash(node *)`),
- * inheriting the same TRELLO_* creds from the environment.
+ * worktree), so it writes back via the `trello-cli` bin from that same package
+ * (installed on PATH): `trello-cli comment|move …` (allowedTools:
+ * `Bash(trello-cli *)`), inheriting the same TRELLO_* creds from the environment.
  *
  * Semantics mirror Linear: the Gene *label* marks ownership, a *list* is the
  * lifecycle state (the card's list name = stateName), and "assigned to me" filters
@@ -17,10 +17,10 @@
  */
 
 import logger from "../logger.ts";
-import { env, REPO_ROOT } from "../config.ts";
+import { env } from "../config.ts";
 import { buildBranchName, choosePrefix } from "../branch.ts";
 import { fetchRetryTimeout } from "../fetch.ts";
-import { createTrelloClient } from "../../trello/index.ts";
+import { createTrelloClient } from "@huksley/trello-cli";
 import type {
   TrelloCard,
   TrelloClient,
@@ -28,7 +28,7 @@ import type {
   TrelloLabel,
   TrelloList,
   TrelloMember
-} from "../../trello/index.ts";
+} from "@huksley/trello-cli";
 import type { Attachment, Comment, Issue, Tracker } from "./index.ts";
 import { collectAttachmentRefsFromText, isStageableName, type AttachmentRef } from "../attachment-refs.ts";
 import { ensureTrelloWebhook, startTrelloWebhookListener } from "./trello/webhook.ts";
@@ -361,19 +361,19 @@ export class TrelloTracker implements Tracker {
 
   /**
    * Prompt block: how the agent comments / moves the card. The agent runs in a
-   * different repo's worktree, so it invokes the bundled CLI by absolute path
-   * (`node <REPO_ROOT>/trello/cli.ts …`), inheriting the TRELLO_* creds. The
-   * Blocked/In-Review list ids are embedded directly when the board metadata is
-   * already cached (it is — listIssues() warms it during the scan).
+   * different repo's worktree, so it invokes the standalone `trello-cli` (on PATH),
+   * inheriting the TRELLO_* creds. The Blocked/In-Review list ids are embedded
+   * directly when the board metadata is already cached (it is — listIssues() warms
+   * it during the scan).
    */
   writeBackSnippet(issue: Issue): string {
-    const cli = `node ${REPO_ROOT}/trello/cli.ts`;
+    const cli = "trello-cli";
     const moveLine = (state: string, id: string | null): string =>
       id
         ? `  - "${state}" → \`${cli} move ${issue.id} ${id}\``
         : `  - "${state}" → \`${cli} move ${issue.id} <listId>\` (find the list id below)`;
     return [
-      "# How to write back to Trello (use the bundled trello CLI)",
+      "# How to write back to Trello (use the trello-cli command)",
       "",
       "These commands inherit your Trello credentials from the environment — run them from anywhere.",
       `This card's id is \`${issue.id}\`.`,
@@ -393,10 +393,10 @@ export class TrelloTracker implements Tracker {
    * field, so the link is a `Parent: <url>` first description line; the card must also carry
    * the Gene label, land in the trigger list, and (when ASSIGNEE=me) have the bot as a member
    * so the next scan picks it up. The label/list/member ids are resolved from the warm meta
-   * cache and baked into the command (the bundled CLI takes ids straight through).
+   * cache and baked into the command (trello-cli takes ids straight through).
    */
   subcardSnippet(issue: Issue): string {
-    const cli = `node ${REPO_ROOT}/trello/cli.ts`;
+    const cli = "trello-cli";
     const todoList = listIdForState(env.TRIGGER_STATE);
     const geneLabelId = (labelsCache ?? []).find(l => l.name.toLowerCase() === env.LABEL.toLowerCase())?.id;
     const meId = meCache?.id;
@@ -428,7 +428,7 @@ export class TrelloTracker implements Tracker {
   }
 
   allowedTools(): string[] {
-    return ["Bash(node *)"];
+    return ["Bash(trello-cli *)"];
   }
 
   /**

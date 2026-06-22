@@ -50,17 +50,18 @@ export const textAsset = (key: string): string =>
   new TextDecoder().decode(getRawAsset(key));
 
 /**
- * Materialise an embedded binary asset to a file and return its path. Native
- * libraries (the OpenTUI dylib) must live on disk to be dlopen'd; we extract once
- * to a per-user temp dir and reuse it when the size already matches.
+ * Materialise an embedded asset to `<tmpdir>/<subdir>/<filename>` and return its
+ * path. Things that must live on disk to be used — the OpenTUI dylib (dlopen'd), the
+ * sandbox.sh launcher + its Dockerfile (spawned / read by docker) — are extracted
+ * once and reused when the size already matches. `mode` sets the file permissions
+ * (0o755 for executables, 0o644 for plain data).
  */
-export const extractAsset = (key: string, filename: string): string => {
-  const dir = path.join(os.tmpdir(), "gene-sea");
+export const extractAssetTo = (subdir: string, key: string, filename: string, mode = 0o755): string => {
+  const dir = path.join(os.tmpdir(), subdir);
   fs.mkdirSync(dir, { recursive: true });
   const dest = path.join(dir, filename);
 
-  const raw = getRawAsset(key); // ArrayBuffer
-  const buf = Buffer.from(raw);
+  const buf = Buffer.from(getRawAsset(key)); // ArrayBuffer → Buffer
 
   let needWrite = true;
   try {
@@ -68,9 +69,13 @@ export const extractAsset = (key: string, filename: string): string => {
   } catch {
     // not present yet — write it
   }
-  if (needWrite) fs.writeFileSync(dest, buf, { mode: 0o755 });
+  if (needWrite) fs.writeFileSync(dest, buf, { mode });
   return dest;
 };
+
+/** Extract an embedded asset into the shared `gene-sea` temp dir (executable mode). */
+export const extractAsset = (key: string, filename: string): string =>
+  extractAssetTo("gene-sea", key, filename, 0o755);
 
 /**
  * Resolve the package version: from the embedded package.json asset in a SEA,
