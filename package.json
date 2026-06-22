@@ -1,6 +1,6 @@
 {
   "name": "geneai",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "Gene AI — Linear + GitLab autonomous code pipeline (Claude Code dispatch daemon)",
   "type": "module",

@@ -1,7 +1,7 @@
 /**
  * Thin async wrappers around child_process.spawn. Every external integration in
  * this project (linear, glab, gh, git, claude) shells out, so the capture /
- * throw / inherit patterns live here once.
+ * throw / stream patterns live here once.
  */
 
 import { spawn } from "node:child_process";
@@ -92,14 +92,78 @@ export const runOrThrow = async (
   return result;
 };
 
-/** Run a command with inherited stdio (streams straight to the daemon console). */
-export const runInherit = (cmd: string, args: string[], opts: RunOptions = {}): Promise<number> =>
+/**
+ * Run a command, delivering its output to `onLine` one line at a time instead of
+ * inheriting the terminal. Unlike a raw `stdio: "inherit"`, this NEVER writes to
+ * the real stdout/stderr — so it is safe under the TUI, whose log sink owns the
+ * alt-screen (a stray write there corrupts the dashboard). Callers route `onLine`
+ * to the logger, so the output lands in the log pane under the dashboard and on
+ * the console when headless — exactly like every other log line.
+ *
+ * Because we pipe rather than inherit, the child sees a non-TTY and tools like
+ * git drop their in-place "Receiving objects: …%" progress meter on their own;
+ * any line that still arrives with `\r` redraw frames is collapsed to its final
+ * frame so the log shows the result, not every intermediate tick.
+ *
+ * No timeout by default (0): this is for deliberately long-running ops like a
+ * fresh `git clone`. Pass `opts.timeout` to bound it.
+ */
+export const runStreaming = (
+  cmd: string,
+  args: string[],
+  onLine: (line: string) => void,
+  opts: RunOptions = {}
+): Promise<number> =>
   new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, {
       cwd: opts.cwd,
       env: opts.env ?? process.env,
-      stdio: "inherit"
+      stdio: ["ignore", "pipe", "pipe"]
     });
-    proc.on("error", reject);
-    proc.on("close", code => resolve(code ?? -1));
+
+    const timeoutMs = opts.timeout ?? 0;
+    const watchdog =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            proc.kill("SIGKILL");
+            reject(new Error(`\`${cmd} ${args.join(" ")}\` timed out after ${timeoutMs}ms`));
+          }, timeoutMs)
+        : null;
+    watchdog?.unref();
+
+    // Buffer each pipe and flush on newline. Within a logical line, keep only the
+    // text after the last `\r` (a progress meter's latest frame); drop blank lines.
+    const pump = (stream: NodeJS.ReadableStream | null): void => {
+      if (!stream) {
+        return;
+      }
+      let buf = "";
+      const flush = (raw: string): void => {
+        const cr = raw.lastIndexOf("\r");
+        const line = (cr >= 0 ? raw.slice(cr + 1) : raw).trimEnd();
+        if (line) {
+          onLine(line);
+        }
+      };
+      stream.on("data", chunk => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          flush(buf.slice(0, nl));
+          buf = buf.slice(nl + 1);
+        }
+      });
+      stream.on("end", () => flush(buf));
+    };
+    pump(proc.stdout);
+    pump(proc.stderr);
+
+    proc.on("error", err => {
+      watchdog && clearTimeout(watchdog);
+      reject(err);
+    });
+    proc.on("close", code => {
+      watchdog && clearTimeout(watchdog);
+      resolve(code ?? -1);
+    });
   });

@@ -61,6 +61,7 @@ export interface Logger {
     trello: string;
     linear: string;
     update: string;
+    export: string;
   };
   verbose: (...args: unknown[]) => void;
   info: (...args: unknown[]) => void;
@@ -230,6 +231,7 @@ const logger: Logger = {
     trello: chalk.blueBright("[gene:trello]"),
     linear: chalk.blueBright("[gene:linear]"),
     update: chalk.cyanBright("[gene:update]"),
+    export: chalk.cyanBright("[gene:export]"),
   }
 };
 

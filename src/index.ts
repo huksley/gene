@@ -42,6 +42,7 @@ import { importLegacy } from "./import-legacy.ts";
 import { inSea, extractAsset, readVersion } from "./sea-assets.ts";
 import { selfUpdate } from "./update.ts";
 import { runSandbox } from "./sandbox.ts";
+import { runExport } from "./export.ts";
 
 const summarizeAction = (action: Action): string => {
   switch (action.kind) {
@@ -1025,6 +1026,7 @@ Usage:
   gene --once [TICKET]       Run a single scan, then exit.
   gene --update [--force]    Download and install the latest release in place.
   gene sandbox [CMD ...]     Build/run the embedded microsandbox (try: gene sandbox help).
+  gene export [FILE]         Stream the whole state store to JSON (default: gene-export.json).
   gene --help, -h            Show this help.
   gene --version, -v         Print the version.
 
@@ -1045,6 +1047,22 @@ const main = async (): Promise<void> => {
   // before gene's own --help/--version handling.
   if (argv[0] === "sandbox") {
     process.exit(await runSandbox(argv.slice(1)));
+  }
+
+  // `gene export [FILE]` streams the whole state store to a JSON file, then exits.
+  // A leading-dash arg isn't a path (so `export --foo` won't create a file named
+  // "--foo") — fall back to the default name in that case.
+  if (argv[0] === "export") {
+    const fileArg = argv[1] && !argv[1].startsWith("-") ? argv[1] : undefined;
+    try {
+      await runExport(fileArg);
+    } catch (error) {
+      logger.error(`${logger.tag.export} export failed:`, error instanceof Error ? error.message : error);
+      await closeDb();
+      process.exit(1);
+    }
+    await closeDb();
+    return;
   }
 
   if (argv.includes("--help") || argv.includes("-h")) {

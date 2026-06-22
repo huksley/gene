@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import logger from "../logger.ts";
 import { env } from "../config.ts";
-import { run, runInherit } from "../exec.ts";
+import { run, runStreaming } from "../exec.ts";
 import { detectDefaultBranch, fetch } from "../git.ts";
 import type { RepoTarget } from "../repos.ts";
 import type {
@@ -54,7 +54,12 @@ export class GitlabForge implements Forge {
     }
     logger.info(`[gitlab] cloning ${repo.repoPath} from ${repo.host} -> ${dest}`);
     const env = { ...process.env, GITLAB_HOST: repo.host };
-    const code = await runInherit("glab", ["repo", "clone", repo.repoPath, dest], { env });
+    const code = await runStreaming(
+      "glab",
+      ["repo", "clone", repo.repoPath, dest],
+      line => logger.info(`[gitlab] ${line}`),
+      { env }
+    );
     if (code !== 0) {
       throw new Error(
         `glab repo clone ${repo.repoPath} failed (exit ${code}). ` +

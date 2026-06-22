@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import logger from "../logger.ts";
 import { env } from "../config.ts";
-import { run, runInherit } from "../exec.ts";
+import { run, runStreaming } from "../exec.ts";
 import { detectDefaultBranch, fetch } from "../git.ts";
 import type { RepoTarget } from "../repos.ts";
 import type {
@@ -90,7 +90,12 @@ export class GithubForge implements Forge {
     if (repo.host !== "github.com") {
       env.GH_HOST = repo.host;
     }
-    const code = await runInherit("gh", ["repo", "clone", repo.repoPath, dest], { env });
+    const code = await runStreaming(
+      "gh",
+      ["repo", "clone", repo.repoPath, dest],
+      line => logger.info(`[github] ${line}`),
+      { env }
+    );
     if (code !== 0) {
       throw new Error(`gh repo clone ${repo.repoPath} failed (exit ${code}). Run \`gh auth login\` first.`);
     }
