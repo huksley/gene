@@ -21,7 +21,7 @@
                       └─────────────┘   needs a human decision
 ```
 
-Gene AI watches your issue tracker — **Linear** or **Trello** — for issues labelled
+Gene AI watches your issue tracker — **Linear** or **Trello** — for issues (or Trello cards) labelled
 **`Gene`**, and for each one dispatches a `claude` agent — running in a dedicated git
 worktree — to do the work and open a change request. Each issue chooses its own target
 repo (and the assigned forge) from a link in the issue, so one tracker can drive
@@ -29,35 +29,36 @@ repo (and the assigned forge) from a link in the issue, so one tracker can drive
 
 ## Writing tickets
 
-Gene only acts on an issue when **all** of these hold — so a ticket needs:
+Gene only acts on an issue when **all** of these hold — so an issue needs:
 
-- **the `Gene` label** — the ownership tag the daemon filters on (never removed by the pipeline);
+- **the `Gene` label** — the ownership tag the daemon filters on (never removed the Gene AI);
 - **an assignee of you** — the tracker user Gene is authenticated as (`LINEAR_ASSIGNEE` /
   `TRELLO_ASSIGNEE`, default `me`; set `any` to drop the filter, or a specific user to
   work on their behalf);
 - **a target repo** — a GitLab/GitHub link in the description (the **first** link wins;
-  comments are a fallback), or a team mapped via `GENE_REPO_MAP` / `GENE_REPO_URL`
-  (see [Repo targeting](#repo-targeting-per-issue));
-- **state `Todo`** — the trigger for new work. The other states are reactions to
+  comments are a fallback), or mapped via `GENE_REPO_MAP` / `GENE_REPO_URL`
+  (see [Repo targeting](#repo-targeting-per-issue)); also fallbacks to local repo url,
+  if local working dir for Gene is a git repo.
+- **state `Todo`** — the trigger for new agent task. The other states are reactions to
   comments / CI, see the [lifecycle table](#lifecycle-tracker-workflow-states).
 
-Write the **description** for an engineer picking it up cold — the agent sees only the
-issue, its comments, and the repo. Say **what** and **why**, not how, and paste
-screenshots / logs (image attachments are staged into the worktree).
+Write the **description** for an engineer who would pick it up cold — the agent sees only the
+issue, its comments, and the repo. Say **what** and **why**, not how, and attach to issue
+screenshots / logs (image attachments and markdown files are added as temporary files into 
+the worktree Gene agent works on).
 
 When `GENE_REQUIRE_SECTIONS` is set, the description **must** carry those headings with
 a non-empty body, or Gene replies asking for them and moves the issue to **Blocked**
-until you fill them in. The recommended shape (and what this deployment requires —
-`## Problem,## Acceptance criteria`):
+until you fill them in. The recommended sections are:
 
-- **`## Problem`** — the symptom or desired change, with enough context to reproduce or locate it.
+- **`## Problem`** — the bug or desired change, with enough context to reproduce or locate it.
 - **`## Acceptance criteria`** — what "done" looks like, concretely, including
-  *"tests added/updated for this scenario"*.
+  *"unit tests/e2e tests etc added/updated for this issue"*.
 
 ## How it works
 
-The **orchestrator** checks issues, decides, posts a start comment, moves the
-issue to *In Progress*, and holds a per-issue lock. The **spawned agent** does
+The **orchestrator** checks issue tracker, decides, posts a start comment, moves the
+issue to *In Progress**, clones the repo to a worktree and downloads any attachment. The **spawned Claude Code** does
 everything else — code changes, the merge/pull request, and the tracker write-back
 (comments + the terminal state move).
 
