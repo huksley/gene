@@ -2,6 +2,15 @@
 
 **Gene AI is an autonomous AI harness powered by Claude Code — from a ticket to a mergeable pull request, completely automated.**
 
+Gene AI is a console app you run on your machine. It watches your issue tracker — **Linear** or **Trello** — for tickets labelled **`Gene`** and assigned to you, and for each one dispatches a [Claude Code](https://github.com/anthropics/claude-code) agent in a
+dedicated git worktree to do the work and open a pull/merge request. It then watches
+that change request through review and CI — replying to comments, fixing CI failures — until it's ready to merge. **Gene opens change requests but never merges them itself**, so you stay in control where it matters.
+
+It's the personal, unattended *harness* around `claude`, not a replacement for it: watching the tracker, the ticket lifecycle, per-issue multi-repo/forge routing, and the review/CI re-dispatch loop are what Gene adds. If you already drive Claude
+Code by hand, Gene is what runs it for you — from a ticket — while you do something more meaningful.
+
+> **Status:** open source (**Apache-2.0**) and under active development. The prebuilt binary is **macOS arm64**; on other platforms, build manually from the source code.
+
 <img width="1505" height="898" alt="Screenshot 2026-06-21 at 21 01 27" src="https://github.com/user-attachments/assets/86c5d374-5889-464b-b8d6-f715cc9463e0" />
 
 
@@ -33,23 +42,22 @@ repo (and the assigned forge) from a link in the issue, so one tracker can drive
 
 Gene only acts on an issue when **all** of these hold — so an issue needs:
 
-- **the `Gene` label** — the ownership tag the daemon filters on (never removed the Gene AI);
+- **the `Gene` label** — the ownership tag the daemon filters on (never removed by Gene);
 - **an assignee of you** — the tracker user Gene is authenticated as (`LINEAR_ASSIGNEE` /
   `TRELLO_ASSIGNEE`, default `me`; set `any` to drop the filter, or a specific user to
   work on their behalf);
 - **a target repo** — a GitLab/GitHub link in the description (the **first** link wins;
   comments are a fallback), or mapped via `GENE_REPO_MAP` / `GENE_REPO_URL`
-  (see [Repo targeting](#repo-targeting-per-issue)); also fallbacks to local repo url,
-  if local working dir for Gene is a git repo.
+  (see [Repo targeting](#repo-targeting-per-issue)); it also falls back to the local repo
+  URL when Gene's working directory is itself a git repo.
 - **state `Todo`** — the trigger for new agent task. The other states are reactions to
-  comments / CI, see the [lifecycle table](#lifecycle-tracker-workflow-states).
+  comments / CI, see the [lifecycle table](#lifecycle-issue-states).
 
 Write the **description** for an engineer who would pick it up without any prior knowledge — the agent sees only the
-issue, its comments, and the repo. Say **what** and **why**, not how, and attach to issue
-screenshots / logs (image attachments and markdown files are added as temporary files into 
-the worktree Gene agent works on).
+issue, its comments, and the repo. Say **what** and **why**, not how, and attach screenshots / logs to the issue (image attachments and markdown files are added as temporary files into 
+the worktree the agent works in).
 
-Recommended: set `GENE_REQUIRE_SECTIONS` for the issue description have those headings so 
+Recommended: set `GENE_REQUIRE_SECTIONS` to require specific headings in the issue description so 
 Gene will know what to do. If set, and missing, Gene will reply asking for them and moves
 the issue to **Blocked** until you fill them in. The recommended sections are:
 
@@ -58,31 +66,31 @@ the issue to **Blocked** until you fill them in. The recommended sections are:
 
 ## How it works
 
-The **Gene AI** checks issue tracker, decides, posts a start comment, moves the
-issue to *In Progress**, clones the repo to a worktree and downloads any attachment. 
-The **spawned Claude Code** does everything else — code changes, the merge/pull request, 
+**Gene** checks the issue tracker, decides, posts a start comment, moves the
+issue to **In Progress**, clones the repo into a worktree, and downloads any attachments. 
+The **spawned Claude Code agent** does everything else — code changes, the merge/pull request, 
 and the tracker write-back (comments + the terminal state move).
 
 ## Lifecycle (issue states)
 
-The lifecycle is driven by the issue **status** in Linear, or **list** on which Trello the card is on.
-Each scan, for every eligible issue, Gene makes decision what to do next:
+The lifecycle is driven by the issue **status** in Linear, or the **list** the card is on in Trello.
+Each scan, for every eligible issue, Gene decides what to do next:
 
 | Tracker state | What the daemon sees | What Gene does |
 |---|---|---|
 | **Todo** | a change request is already attached | **continues** that change request on its own branch — skips planning |
 | **Todo** | no change request yet | starts **from scratch**: plan → code → open the MR/PR → **In Review** |
 | **In Progress** | a new human comment | hands it to the work in flight as **feedback** |
-| **Blocked** | a new human reply | **resumes** — Gene had asked a question or proposed a plan which human need to confirm |
+| **Blocked** | a new human reply | **resumes** — Gene had asked a question or proposed a plan that a human needs to confirm |
 | **In Review** | a new review comment on the change request | re-dispatches Claude Code to **address** it — acts **even while CI is still running** |
 | **In Review** | the CI/CD for a change request **failed** | re-dispatches Claude Code to **address** the failure |
 | **In Review** | nothing new (quiet; CI green or still running) | **no-op** — waits for the next signal |
-| **In Review** | the change request have been **merged** | moves issue to → **Done** (when `LINEAR_DONE_STATE` is set) |
+| **In Review** | the change request has been **merged** | moves issue to → **Done** (when `LINEAR_DONE_STATE` is set) |
 
 Eligibility (label `Gene`, **assigned to you**, a target repo) and what to put in the
 description are covered in **[Writing tickets](#writing-tickets)**.
 
-The `Gene` label is an **ownership tag and is never removed by the pipeline.**
+The `Gene` label is an **ownership tag** and is never removed by the pipeline.
 Each scan watches `Gene` issues in **{Todo, In Progress, Blocked, In Review}** and
 handles ongoing work — active conversations (In Progress / Blocked) and open change
 requests (In Review) — *before* picking up new Todo work.
@@ -182,6 +190,33 @@ while the daemon runs — both point at the same server. The **default embedded 
 is single-process: stop the daemon before running `log` / `reset`, or point both at a
 shared Postgres (`DATABASE_URL` / `PG*`). See [State store](#state-store).
 
+## Safety and control
+
+Gene runs unattended and acts with your credentials, so the guardrails are deliberate:
+
+- **It never merges.** Gene opens and updates change requests, and can mark a draft
+  ready for review, but it never merges a PR/MR or pushes to your default branch —
+  merging is always a human action.
+- **Draft mode is a hard human gate.** With `GENE_DRAFT_CHANGE_REQUEST=true` every
+  change request opens as a **draft** and Gene never marks it ready; a human reviews and
+  promotes it.
+- **Dry run.** `GENE_DRY_RUN=true` makes a full pass with **no tracker/forge writes and
+  no agent spawns** — it just logs what it *would* do. The best way to try it on a real
+  board.
+- **It only touches tickets you opt in.** A ticket is acted on only when it carries the
+  **`Gene`** label **and** is assigned to you (`*_ASSIGNEE`); everything else is skipped.
+- **Secrets stay local.** Config splits into a committed `gene.config` and a gitignored
+  `.gene.config` (keys, tokens), with real env always winning. Your `ANTHROPIC_API_KEY`
+  is handed to the agent **only** when you opt into API billing — otherwise it's stripped
+  from the agent's environment.
+- **Optional sandbox.** Set `GENE_SANDBOX=true` to run each `claude -p` agent inside a
+  throwaway microVM instead of on your host (see [`sandbox/`](sandbox/README.md)).
+- **Self-hosted, no phone-home.** Gene runs on your machine; its only outbound calls are
+  to your tracker, your forge, and the Claude API (via `claude`).
+- **Stuck runs fail safe.** A stalled or interrupted agent is retried, then parked in
+  **Blocked** with a comment rather than left hanging In Progress — and the worktree is
+  preserved so a reply resumes it.
+
 ## Repo targeting (per issue)
 
 An issue declares its target repo simply by including a **GitLab or GitHub link**
@@ -201,13 +236,13 @@ https://github.com/example/example-repo                                   → gi
 ```
 
 Issues with **no link** fall back to a per-team default repo, overridable via the `GENE_REPO_URL` env var or 
-the `GENE_REPO_MAP` env var (a JSON object of `team key → repo URL`). If you are running Gene from git repo, 
-it uses local repo as the default.
+the `GENE_REPO_MAP` env var (a JSON object of `team key → repo URL`). If you run Gene from inside a git repo, 
+that local repo becomes the default.
 
 ## Repository model
 
 - **target repos** — cloned under `.gene/repos/<repoPath>/` (gitignored; can be changed by `GENE_REPOS_DIR`).
-  A repo is cloned **on demand** the first time an issue targets it; Per-issue worktrees are
+  A repo is cloned **on demand** the first time an issue targets it; per-issue worktrees are
   created at `.gene/repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base. The
   branch name follows `GENE_BRANCH_TEMPLATE` (default `{prefix}/{identifier}-{slug}`;
   see `.env.example`).
@@ -233,6 +268,20 @@ log** (`db.ts`) — in a small PostgreSQL store, with two backends picked automa
 
 The schema is identical either way; switching backends starts a fresh store (state
 is not migrated between them).
+
+## Requirements
+
+- **Claude Code** — Gene shells out to `claude -p`, so you need either a Claude
+  subscription (`claude /login`) or an `ANTHROPIC_API_KEY` with API billing
+  (`GENE_CLAUDE_API_BILLING=true`). **This is where the cost is:** Gene itself is free
+  and open source, but every dispatch — the initial work, plus each re-dispatch for a CI
+  failure or review comment — is a real `claude` run. Token usage scales with ticket
+  complexity and `GENE_MAX_CONCURRENT`; start with `GENE_DRY_RUN=true` and low
+  concurrency to get a feel for it.
+- **An issue tracker** — a Linear or Trello account (`GENE_TRACKER`).
+- **A change request forge and its CLI** — `gh` (GitHub) and/or `glab` (GitLab), authenticated; plus `git`, and the `linear` CLI for the Linear backend.
+- **OS** — the prebuilt binary is **macOS arm64** only. On Linux/Windows, run from
+  source with Node 26 (`npm start`); everything but the single-file binary works the same.
 
 ## Installation
 
@@ -270,8 +319,8 @@ but Gene still shells out to the runtime CLIs (`claude`, `git`, `gh`/`glab`, and
 
 ## Dependencies
 
-Once the Gene is, authenticate the CLIs and configure your environment. The **Trello** backend needs
-no CLI login — it uses `TRELLO_API_KEY` + `TRELLO_TOKEN` via @huksley/trello-cli optionally installed CLI.
+Once Gene is installed, authenticate the CLIs and configure your environment. The **Trello** backend needs
+no CLI login — it uses `TRELLO_API_KEY` + `TRELLO_TOKEN` via the optional @huksley/trello-cli.
 
 > Prefer isolation? The whole toolchain is packaged as a microVM — see
 > [`sandbox/`](sandbox/README.md) to run `claude -p` agents in a throwaway VM
@@ -302,13 +351,15 @@ LINEAR_DONE_STATE=Done
 GENE_REQUIRE_SECTIONS=## Problem,## Acceptance criteria
 # How often recheck the issue tracker
 GENE_POLL_INTERVAL_MS=30000
-# How much tasks to do at the same time
+# How many tasks to run at the same time
 GENE_MAX_CONCURRENT=4
 LINEAR_IGNORE_COMMENTS=!review,/review
 GITHUB_IGNORE_COMMENTS=/review,/linear
-DRAFT_CHANGE_REQUEST=true
+GENE_DRAFT_CHANGE_REQUEST=true
 # Additional allowed tools for Claude Code
 GENE_ALLOWED_TOOLS="Bash(ntn *)"
+# Optional: run the agent in a sandbox
+GENE_SANDBOX=false
 END
 
 # Secrets (never commit to the repo, add to .gitignore)
@@ -316,6 +367,9 @@ cat >.gene.config<<END
 LINEAR_API_KEY=yourapikey
 END
 
+# Opt-in to the sandbox (experimental, optional)
+# install microsandbox from https://microsandbox.dev/
+npm install -g microsandbox
 
 # 3. Run Gene
 gene
@@ -344,6 +398,59 @@ cards it watches) and accepts an optional **`TRELLO_LIST_MAP`** (JSON `state-nam
 list-id`) for when a board's list names differ from the state names. See
 `.env.example` for the full list, and `trello/README.md` for minting the key + token.
 
-Two honest differences from Linear: Trello has **no MR/PR ↔ card auto-link** (the
-agent instead links the change request in the card's description/comments,
-and the assignee filter matches a **Trello username**, not an email (`me` / `any` work identically).
+Two honest differences from Linear: Trello has **no MR/PR ↔ card auto-link**, so the
+agent links the change request in the card's description/comments instead; and the
+assignee filter matches a **Trello username**, not an email (`me` / `any` work
+identically).
+
+## FAQ
+
+**Does Gene merge code by itself?**
+No. It opens and updates pull/merge requests and can mark a draft ready for review, but
+a human always does the merge — and with `GENE_DRAFT_CHANGE_REQUEST=true` it won't even
+mark them ready. See [Safety and control](#safety-and-control).
+
+**What does it cost to run?**
+Gene is free and open source (Apache-2.0). The cost is whatever Claude Code costs you: it
+runs `claude -p` under your subscription or `ANTHROPIC_API_KEY`. Each dispatch is a real
+run, and re-dispatches (CI failures, review replies) add up, so token usage scales with
+ticket complexity and `GENE_MAX_CONCURRENT`.
+
+**Are my code or secrets sent anywhere? Does it phone home?**
+No phone-home — Gene is self-hosted. Your code reaches Anthropic exactly as it would if
+you ran Claude Code by hand. Secrets stay in your gitignored `.gene.config`/environment,
+and your API key is handed to the agent only when you turn on API billing.
+
+**Is it macOS only?**
+The prebuilt binary is macOS arm64. On Linux/Windows you run from source with Node 26 —
+same behaviour, just no single-file binary.
+
+**Why not just use Claude Code (or aider) directly?**
+Gene is the harness *around* `claude`, not a replacement: it polls your tracker, drives
+the ticket lifecycle, routes each issue to its own repo/forge, re-dispatches on CI
+failures and review comments, and recovers from crashes — so a ticket becomes a PR while
+you're doing something else.
+
+**What if it gets something wrong or gets stuck?**
+You review every PR before it merges, and draft mode adds a gate. A stalled or
+interrupted run is retried and then parked in **Blocked** with a comment, not left
+hanging — and the worktree is kept so your reply resumes it. Run with `GENE_DRY_RUN=true`
+first to watch its decisions with zero writes.
+
+**Can I run it headless on a server?**
+Yes — `gene --headless` runs the daemon without the TUI dashboard, logging to stdout
+(`gene --once` does a single scan and exits). Point it at an external Postgres
+(`DATABASE_URL`) if you want to inspect state while it runs.
+
+**Which trackers and forges are supported?**
+Trackers: **Linear** and **Trello**. Forges: **GitHub** and **GitLab**, chosen per issue
+from the repo link. Jira, GitHub Issues, and Bitbucket aren't supported yet.
+
+**Does it work on monorepos?**
+Yes — a `…/tree/<branch>/<path>` deep link in the ticket scopes the agent to that
+subdirectory and base branch. See [Repo targeting](#repo-targeting-per-issue).
+
+**How do I try it safely first?**
+Set `GENE_DRY_RUN=true` and a low `GENE_MAX_CONCURRENT`, label one throwaway ticket, and
+watch the logs — Gene reports what it *would* do without writing to your tracker or forge
+or spawning agents.
