@@ -204,12 +204,9 @@ Issues with **no link** fall back to a per-team default repo, overridable via th
 the `GENE_REPO_MAP` env var (a JSON object of `team key → repo URL`). If you are running Gene from git repo, 
 it uses local repo as the default.
 
-## Multi-repo model
+## Repository model
 
-- **geneai** (this repo) — the orchestrator. All pipeline code is in `src/`.
-
-- **target repos** — cloned under `.gene/repos/<repoPath>/` (gitignored; set by
-  `GENE_REPOS_DIR`) and kept.
+- **target repos** — cloned under `.gene/repos/<repoPath>/` (gitignored; can be changed by `GENE_REPOS_DIR`).
   A repo is cloned **on demand** the first time an issue targets it; Per-issue worktrees are
   created at `.gene/repos/.worktrees/<repoPath>/<ISSUE-ID>`, branched off the base. The
   branch name follows `GENE_BRANCH_TEMPLATE` (default `{prefix}/{identifier}-{slug}`;
