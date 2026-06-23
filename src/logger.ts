@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
-// First import in the graph: load gene.config into the environment (env wins)
-// before any module — including this logger — reads a GENE_* value.
+// First import in the graph: load gene.config + .gene.config into the environment
+// (env wins) before any module — including this logger — reads a GENE_* value.
 import "./bootstrap.ts";
 import chalk from "chalk";
 import { format } from "node:util";

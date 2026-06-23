@@ -1033,10 +1033,11 @@ Usage:
 TICKET is an optional [tracker:]IDENTIFIER focus (e.g. CLOUD-1094) that narrows the
 run to a single issue; the tracker prefix, if given, must match GENE_TRACKER.
 
-Configuration is read from the environment first, then from a gene.config file
-(KEY=VALUE) in the current directory — environment values win. Set GENE_CONFIG to
-load a specific config file instead. Gene acts for real by default; set
-GENE_DRY_RUN=true to preview decisions without writing anything back.
+Configuration is read from the environment first, then from .gene.config (secrets and
+per-machine overrides; gitignored) and gene.config (committed defaults) in the current
+directory. Both are optional KEY=VALUE files and earlier sources win:
+env > .gene.config > gene.config. Set GENE_CONFIG to relocate gene.config. Gene acts
+for real by default; set GENE_DRY_RUN=true to preview decisions without writing back.
 `;
 
 const main = async (): Promise<void> => {
