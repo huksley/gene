@@ -50,6 +50,8 @@ interface ReleaseAsset {
 interface Release {
   tag_name: string;
   html_url: string;
+  /** Release notes (markdown). Included in the `releases/latest` response. */
+  body?: string;
   assets?: ReleaseAsset[];
 }
 
@@ -92,6 +94,24 @@ const compareVersions = (a: string, b: string): number => {
     }
   }
   return 0;
+};
+
+/**
+ * Condense GitHub release notes to their first `maxParagraphs` paragraphs for an
+ * at-a-glance "what's new" preview during an upgrade. Paragraphs are blocks separated
+ * by one or more blank lines; each is trimmed and empty blocks dropped. Returns "" when
+ * there is nothing to show.
+ */
+export const releaseNotesSummary = (body: string | null | undefined, maxParagraphs = 2): string => {
+  if (!body) {
+    return "";
+  }
+  const paragraphs = body
+    .replace(/\r\n/g, "\n")
+    .split(/\n[ \t]*\n+/)
+    .map(p => p.trim())
+    .filter(Boolean);
+  return paragraphs.slice(0, maxParagraphs).join("\n\n");
 };
 
 const safeUnlink = (file: string): void => {
@@ -164,6 +184,15 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
   }
   if (cmp < 0 && options.force) {
     logger.warn(`${tag} release ${latest} is older than the running ${current} — reinstalling anyway (--force).`);
+  }
+
+  // When genuinely upgrading, preview what's new: the first two paragraphs of the
+  // GitHub release notes (already in the API response above) before the download.
+  if (cmp > 0) {
+    const notes = releaseNotesSummary(release.body);
+    if (notes) {
+      logger.info(`${tag} what's new in ${latest}:\n${notes}`);
+    }
   }
 
   // 3. Pick a matching asset, carrying whether it needs decompressing.

@@ -13,7 +13,7 @@
  * throws otherwise, which `index.ts` catches to print install guidance.
  */
 
-import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core";
+import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent, type Selection } from "@opentui/core";
 
 import logger, { setLogSink, type LogSink } from "../logger.ts";
 import { monitor, DONE_STAGE, type AgentState, type AgentStatus } from "../monitor.ts";
@@ -449,6 +449,17 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
     process.exit(0);
   };
+
+  // Mouse-drag selection → system clipboard. Mouse tracking is on, so the terminal's
+  // own copy can't see a drag; bridge OpenTUI's selection to the clipboard via OSC 52
+  // (works over SSH too). ⌘C isn't deliverable to a TUI on macOS, so selecting *is* the
+  // copy. Terminals without OSC 52 support silently no-op.
+  renderer.on("selection", (selection: Selection) => {
+    const text = selection.getSelectedText();
+    if (text && renderer.isOsc52Supported()) {
+      renderer.copyToClipboardOSC52(text);
+    }
+  });
 
   renderer.keyInput.on("keypress", (key: KeyEvent) => {
     if (key.ctrl && key.name === "c") {
