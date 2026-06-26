@@ -90,7 +90,9 @@ const BASE_ALLOWED_TOOLS = [
   "Write",
   // Search
   "Grep",
-  "Glob"
+  "Glob",
+  // Web
+  "WebFetch"
 ];
 
 export type InvokeInputs = {
