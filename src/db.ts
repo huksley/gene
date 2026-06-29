@@ -370,6 +370,45 @@ const openPglite = async (): Promise<Db> => {
 /** Open the configured engine (PGlite by default, Postgres when env points at one). */
 const open = (signal?: AbortSignal): Promise<Db> => (pgConfigured() ? openPg(signal) : openPglite());
 
+/**
+ * Repair the BIGSERIAL sequence behind issue_log.id when it has fallen behind the rows
+ * actually present. A legacy import (import-legacy.ts) replays a dump that inserts rows
+ * with their original explicit ids, which does NOT advance the sequence; left unrepaired
+ * the next live insert reuses an existing id and dies with a duplicate-key error on
+ * issue_log_pkey. Called on every open so a store imported by an older build self-heals
+ * on the next launch — no need to re-run --import-legacy.
+ *
+ * It's a single atomic statement that only advances the sequence when nextval() would
+ * actually collide (next value <= MAX(id)), so in normal operation it's a no-op and never
+ * moves the sequence backward — safe to run on a shared Postgres while the daemon writes.
+ * Best-effort: a repair failure must never block opening the store.
+ */
+export const resyncIssueLogSeq = async (db: Db): Promise<void> => {
+  try {
+    const { rows } = await db.query<{ seq: string | null }>(
+      "SELECT pg_get_serial_sequence('issue_log', 'id') AS seq",
+    );
+    const seq = rows[0]?.seq;
+    if (!seq) return; // column isn't serial-backed (shouldn't happen) — nothing to repair
+    // The aggregate subquery yields exactly one row; WHERE prunes it unless the sequence
+    // is behind, so setval() is evaluated only when a repair is actually needed. A non-empty
+    // result means it fired. setval(seq, MAX(id), true) makes the next nextval() return MAX+1.
+    const res = await db.query<{ setval: string }>(
+      `SELECT setval('${seq}'::regclass, m.mx, true)
+         FROM (SELECT MAX(id) AS mx FROM issue_log) m
+        WHERE m.mx IS NOT NULL
+          AND m.mx >= (SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM ${seq})`,
+    );
+    if (res.rows.length > 0) {
+      logger.warn(
+        `${logger.tag.db} issue_log id sequence was behind existing rows; resynced (next id ${BigInt(res.rows[0].setval) + 1n})`,
+      );
+    }
+  } catch (error) {
+    logger.warn(`${logger.tag.db} issue_log sequence resync skipped: ${(error as Error).message}`);
+  }
+};
+
 /** Lazily open (and migrate) the store; the same instance is reused thereafter. */
 export const getDb = async (): Promise<Db> => {
   if (!dbPromise) {
@@ -380,10 +419,17 @@ export const getDb = async (): Promise<Db> => {
     }
     logger.info(`${logger.tag.db} opening state store (${pgConfigured() ? "Postgres" : "embedded PGlite"})`);
     openAbort = new AbortController();
-    dbPromise = open(openAbort.signal).catch(error => {
-      dbPromise = null; // allow a later retry rather than wedging on a transient failure
-      throw error;
-    });
+    dbPromise = open(openAbort.signal)
+      // Self-heal a sequence left behind by a prior legacy import, so an already-imported
+      // store recovers on the next launch without having to re-run --import-legacy.
+      .then(async db => {
+        await resyncIssueLogSeq(db);
+        return db;
+      })
+      .catch(error => {
+        dbPromise = null; // allow a later retry rather than wedging on a transient failure
+        throw error;
+      });
   }
   return dbPromise;
 };

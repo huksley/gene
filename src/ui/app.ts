@@ -469,6 +469,11 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     if (view === "detail") {
       switch (key.name) {
         case "escape":
+          // Dismiss a lingering drag-selection highlight too: the renderer keeps the
+          // selection (and repaints it every frame) until cleared, so forceRedraw alone
+          // can't wipe it — clearSelection notifies the touched renderables to repaint
+          // without the highlight. No-op when nothing is selected.
+          renderer.clearSelection();
           view = "dashboard";
           forceRedraw();
           paint();
@@ -574,10 +579,14 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         void reseed();
         return;
       case "escape":
-        // Clear the selection and force a clean full redraw. paint() alone is
-        // incremental, so it can't wipe artifacts left by a resize or a stray
-        // write — forceRedraw() clears the back buffer first. Mirrors the detail
-        // view's escape, which is the only other place that refreshes the screen.
+        // Drop a lingering drag-selection highlight (from copy-to-clipboard): the
+        // renderer holds the selection and repaints it every frame until cleared, so
+        // forceRedraw — which only clears the back buffer — can't wipe it. clearSelection
+        // tells the touched renderables to repaint without the highlight; no-op if none.
+        renderer.clearSelection();
+        // Also drop the table-row selection and force a clean redraw. paint() alone is
+        // incremental, so it can't wipe artifacts left by a resize or a stray write —
+        // forceRedraw() clears the back buffer first.
         selectedIndex = -1;
         forceRedraw();
         paint();

@@ -1,6 +1,6 @@
 {
   "name": "geneai",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "private": true,
   "description": "🧬 Gene AI is an autonomous AI harness powered by Claude Code — from a ticket to a mergeable pull request, completely automated.",
   "type": "module",
