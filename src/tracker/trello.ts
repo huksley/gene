@@ -328,6 +328,39 @@ export class TrelloTracker implements Tracker {
   }
 
   /**
+   * Drop the Gene label from a card (so the daemon stops picking it up). Best-effort:
+   * a REST failure is warned and folded into a `false` return (never thrown), matching
+   * the Linear tracker's contract so the caller can keep the row on a failed removal.
+   * Resolves `true` when the label is gone (removed now, or already absent). No-op that
+   * resolves `true` under dry-run.
+   */
+  async removeGeneLabel(issue: Issue): Promise<boolean> {
+    if (env.DRY_RUN) {
+      logger.info(`[trello] (dry-run) would remove "${env.LABEL}" label from ${issue.identifier}`);
+      return true;
+    }
+    try {
+      // Trello's idLabels replaces the whole set, so re-send the card's labels minus Gene.
+      const card = await trello().getCard(issue.id);
+      const want = env.LABEL.toLowerCase();
+      const remaining = card.labels.filter(l => l.name.toLowerCase() !== want);
+      if (remaining.length === card.labels.length) {
+        logger.info(`[trello] ${issue.identifier} has no "${env.LABEL}" label — nothing to remove`);
+        return true;
+      }
+      await trello().updateCard(issue.id, { idLabels: remaining.map(l => l.id) });
+      logger.info(`[trello] removed "${env.LABEL}" label from ${issue.identifier}`);
+      return true;
+    } catch (error) {
+      logger.warn(
+        `[trello] could not remove "${env.LABEL}" label from ${issue.identifier} (leaving it):`,
+        error instanceof Error ? error.message : error
+      );
+      return false;
+    }
+  }
+
+  /**
    * Whether a card is assigned to the user Gene works for (env.ASSIGNEE):
    *   - "me"  → the authenticated Trello user is a member of the card;
    *   - "any" → no filter;

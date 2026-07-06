@@ -152,7 +152,10 @@ class Row {
   private label: TextRenderable;
 
   constructor(renderer: CliRenderer, index: number) {
-    this.label = new TextRenderable(renderer, { id: `gene-row-${index}-label`, content: "", selectable: false });
+    // Selectable (the Text default): a mouse drag can only *start* on a selectable
+    // renderable, so opting rows out made the whole table a dead zone for the
+    // drag-to-copy gesture (app.ts's "selection" handler).
+    this.label = new TextRenderable(renderer, { id: `gene-row-${index}-label`, content: "" });
     this.box = new BoxRenderable(renderer, {
       id: `gene-row-${index}`,
       width: "100%",
@@ -286,8 +289,8 @@ export class Dashboard {
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
       : d.doneState
-        ? t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("d")} done:${fg(palette.text)(hideDone ? "hidden" : "shown")}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`
-        : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("q")} quit`;
+        ? t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("d")} done:${fg(palette.text)(hideDone ? "hidden" : "shown")}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("R")} remove  ${fg(palette.muted)("q")} quit`
+        : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("R")} remove  ${fg(palette.muted)("q")} quit`;
   }
 
   /** Append one log record to the bottom pane (sticky-scrolled to the tail). */

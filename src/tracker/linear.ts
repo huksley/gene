@@ -130,6 +130,14 @@ const ATTACHMENTS_QUERY =
   "query Attachments($id: String!) { issue(id: $id) { attachments(first: 50) " +
   "{ nodes { title url sourceType } } } }";
 
+// The list query only carries label *names*; removing one needs its id, so refetch
+// the issue's labels with ids first, then detach the Gene label by id.
+const LABELS_QUERY =
+  "query IssueLabels($id: String!) { issue(id: $id) { labels(first: 50) { nodes { id name } } } }";
+
+const REMOVE_LABEL_MUTATION =
+  "mutation RemoveLabel($id: String!, $labelId: String!) { issueRemoveLabel(id: $id, labelId: $labelId) { success } }";
+
 /** Ensure a comment body carries the agent marker so the daemon recognises it later. */
 const withAgentMarker = (body: string): string =>
   body.includes(env.AGENT_MARKER) ? body : `${body}\n\n${env.AGENT_MARKER}`;
@@ -266,6 +274,48 @@ export class LinearTracker implements Tracker {
       ...workspaceArgs()
     ]);
     logger.info(`[linear] moved ${issue.identifier} → "${stateName}"`);
+  }
+
+  /**
+   * Drop the Gene label from an issue (so the daemon stops picking it up). Best-effort:
+   * some workspaces/CLIs may reject the label mutation, so a failure is warned and
+   * folded into a `false` return (never thrown) — the caller keeps the row on the board.
+   * Resolves `true` when the label is gone (removed now, or already absent). No-op that
+   * resolves `true` under dry-run.
+   */
+  async removeGeneLabel(issue: Issue): Promise<boolean> {
+    if (env.DRY_RUN) {
+      logger.info(`[linear] (dry-run) would remove "${env.LABEL}" label from ${issue.identifier}`);
+      return true;
+    }
+    try {
+      const data = await api<{ issue: { labels: { nodes: { id: string; name: string }[] } } | null }>(LABELS_QUERY, {
+        id: issue.id
+      });
+      const label = (data.issue?.labels.nodes ?? []).find(l => l.name.toLowerCase() === env.LABEL.toLowerCase());
+      if (!label) {
+        logger.info(`[linear] ${issue.identifier} has no "${env.LABEL}" label — nothing to remove`);
+        return true;
+      }
+      // The mutation reports its own outcome — a `success: false` (e.g. permissions) comes
+      // back without a GraphQL error, so check it rather than assume the write landed.
+      const result = await api<{ issueRemoveLabel: { success: boolean } }>(REMOVE_LABEL_MUTATION, {
+        id: issue.id,
+        labelId: label.id
+      });
+      if (!result.issueRemoveLabel.success) {
+        logger.warn(`[linear] issueRemoveLabel reported failure for ${issue.identifier} (leaving "${env.LABEL}")`);
+        return false;
+      }
+      logger.info(`[linear] removed "${env.LABEL}" label from ${issue.identifier}`);
+      return true;
+    } catch (error) {
+      logger.warn(
+        `[linear] could not remove "${env.LABEL}" label from ${issue.identifier} (leaving it):`,
+        error instanceof Error ? error.message : error
+      );
+      return false;
+    }
   }
 
   /**

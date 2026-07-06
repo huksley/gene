@@ -82,6 +82,15 @@ export interface Tracker {
   postComment(issue: Issue, body: string): Promise<void>;
   /** Move an issue to a lifecycle state by name. Honours GENE_DRY_RUN (log-only). */
   moveToState(issue: Issue, stateName: string): Promise<void>;
+  /**
+   * Drop the Gene ownership label (env.LABEL) from an issue so the daemon stops
+   * managing it — the inverse of the label filter listIssues() applies. Resolves to
+   * `true` when the issue no longer carries the label (removed now, or wasn't there)
+   * and `false` when the removal failed — best-effort, so a backend error is warned
+   * and folded into `false` rather than thrown, letting the caller keep the row. A
+   * dry-run is a no-op that resolves `true`. Honours GENE_DRY_RUN (log-only).
+   */
+  removeGeneLabel(issue: Issue): Promise<boolean>;
 
   /** Whether an issue is assigned to the user Gene works for (env.ASSIGNEE). */
   isAssignedToOwner(issue: Issue): boolean;

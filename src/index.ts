@@ -24,7 +24,7 @@ import logger from "./logger.ts";
 import { monitor } from "./monitor.ts";
 import { env, WATCHED_STATES } from "./config.ts";
 import { decideAction, type Action } from "./decide.ts";
-import { tracker } from "./tracker/index.ts";
+import { tracker, findIssue } from "./tracker/index.ts";
 import type { Comment, Issue } from "./tracker/index.ts";
 import { resolveTarget, targetLabel, localPathFor, type RepoTarget } from "./repos.ts";
 import { selectForge, type Forge } from "./forge/index.ts";
@@ -1171,7 +1171,39 @@ const main = async (): Promise<void> => {
         shutdown: gracefulShutdown,
         // `R` inside a ticket resets it (worktree/branch/lock + back to Todo). The
         // pool stays open (the daemon owns it) — resetIssue doesn't close the DB.
-        reset: identifier => resetIssue(identifier)
+        reset: identifier => resetIssue(identifier),
+        // Shift+`R` on the dashboard removes a ticket from Gene: drop the Gene label so
+        // the next scan won't pick it up again (the UI cancels any live agent first).
+        // Local worktree/branch are left intact — use reset for that. Drop the label
+        // FIRST and only persist the `removed` event once it's actually gone, so a failed
+        // removal leaves the ticket on the board (returning `false` tells the UI to keep
+        // the row). The `removed` event is what drops the row for good: buildHistorySeed
+        // skips a group whose `removed` is its latest run event (a re-dispatch logs a fresh
+        // `dispatch`/`agent-start` after it, so the row returns on its own). Under dry-run
+        // nothing is written, so the event is skipped too (else it would hide the row for
+        // good despite the label never being touched).
+        removeFromGene: async identifier => {
+          const issue = await findIssue(identifier);
+          const markRemoved = async (): Promise<void> => {
+            if (!env.DRY_RUN) {
+              await logEvent({ tracker: tracker.name, identifier, event: "removed", detail: `dropped from ${env.LABEL}` });
+            }
+          };
+          if (!issue) {
+            // Not among the Gene-labelled issues — it may already be out of the label.
+            // Nothing to clear, so treat it as removed and drop the (stale) row.
+            logger.warn(
+              `${logger.tag.flow} could not find ${identifier} on ${tracker.name} — it may already be out of ${env.LABEL}; dropping it from the dashboard`
+            );
+            await markRemoved();
+            return true;
+          }
+          const removed = await tracker.removeGeneLabel(issue);
+          if (removed) {
+            await markRemoved();
+          }
+          return removed;
+        }
       });
     } catch (error) {
       logger.error(

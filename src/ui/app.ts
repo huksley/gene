@@ -13,9 +13,20 @@
  * throws otherwise, which `index.ts` catches to print install guidance.
  */
 
-import { BoxRenderable, createCliRenderer, type CliRenderer, type KeyEvent, type Selection } from "@opentui/core";
+import {
+  BoxRenderable,
+  TextRenderable,
+  bold,
+  createCliRenderer,
+  fg,
+  t,
+  type CliRenderer,
+  type KeyEvent,
+  type Selection
+} from "@opentui/core";
 
 import logger, { setLogSink, type LogSink } from "../logger.ts";
+import { copyToClipboard } from "./clipboard.ts";
 import { monitor, DONE_STAGE, type AgentState, type AgentStatus } from "../monitor.ts";
 import { readIssueLog, type IssueLogRow } from "../db.ts";
 import { Dashboard, nextSortMode, type SortMode } from "./dashboard.ts";
@@ -45,6 +56,14 @@ export interface StartUiOptions {
   shutdown: (signal: string) => Promise<void>;
   /** Reset one ticket (worktree/branch/lock + back to Todo). Bound to `R` inside a ticket. */
   reset: (identifier: string) => Promise<void>;
+  /**
+   * Remove one ticket from Gene: drop the Gene label so the next scan won't pick it up
+   * again. Bound to Shift+`R` on the dashboard. Leaves the local worktree/branch alone
+   * (that's `reset`); the UI cancels any live agent before calling this. Resolves `true`
+   * when the label is gone (so the UI hides the row) and `false` when the removal failed
+   * (the ticket stays in Gene, so the row stays on the board).
+   */
+  removeFromGene: (identifier: string) => Promise<boolean>;
 }
 
 /**
@@ -109,6 +128,21 @@ const buildHistorySeed = (rows: IssueLogRow[]): AgentState[] => {
   for (const [id, list] of groups) {
     const first = list[0];
     const last = list[list.length - 1];
+    // Dropped from Gene (Shift+R) — keep it off the table for good. We skip the whole
+    // group (rather than deriving a status from `removed`) so it can't mis-flip a Done
+    // row's status. The trigger is "`removed` with no run *started* after it": removing a
+    // live ticket cancels its agent, and that `agent-cancelled` lands AFTER `removed`, so
+    // keying on `last.event` alone would miss it and resurrect the row as "cancelled".
+    // A real re-dispatch logs a fresh `dispatch`/`agent-start` after `removed`, which
+    // makes the row return on its own.
+    const lastStart = Math.max(
+      list.findLastIndex(r => r.event === "dispatch"),
+      list.findLastIndex(r => r.event === "agent-start")
+    );
+    const lastRemoved = list.findLastIndex(r => r.event === "removed");
+    if (lastRemoved > lastStart) {
+      continue;
+    }
     const dispatch = list.findLast(r => r.event === "dispatch");
     const parsed = dispatch ? parseDispatchDetail(dispatch.detail) : undefined;
     // The dispatch row persists the issue title in its `data` JSONB (index.ts).
@@ -184,6 +218,24 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   app.add(detail.root);
   detail.root.visible = false;
 
+  // Floating copy-confirmation toast (opencode-style). Mounted on the renderer root
+  // with absolute position + zIndex so it overlays whichever body is visible — one
+  // toast serves every view. Hidden until showToast(); paint() expires it.
+  const toast = new BoxRenderable(renderer, {
+    id: "gene-toast",
+    position: "absolute",
+    right: 2,
+    bottom: 1,
+    zIndex: 10,
+    paddingLeft: 1,
+    paddingRight: 1,
+    backgroundColor: palette.selection,
+    visible: false
+  });
+  const toastText = new TextRenderable(renderer, { id: "gene-toast-text", content: "", selectable: false });
+  toast.add(toastText);
+  renderer.root.add(toast);
+
   let view: "dashboard" | "detail" = "dashboard";
   let detailId = "";
   let selectedIndex = -1;
@@ -201,7 +253,19 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let resetArmedId: string | null = null;
   let resetArmedAt = 0;
   let resetBusyId: string | null = null;
+  // Shift+R on the dashboard removes the selected ticket from Gene — armed on the
+  // first press, confirmed by a second within 2s (mirrors the reset/cancel arms).
+  let removeArmedId: string | null = null;
+  let removeArmedAt = 0;
+  let removeBusyId: string | null = null;
+  // Tickets dropped from Gene this session. The dashboard is a run-history view, not a
+  // live label-membership view — rows come from the monitor + the issue_log seed, not
+  // tracker.listIssues() — so dropping the label alone leaves the existing row in place.
+  // We hide these ids so removal visibly takes effect now; buildHistorySeed keeps them
+  // gone after a restart (it skips any issue whose latest logged event is `removed`).
+  const removedIds = new Set<string>();
   let quitArmedAt = 0; // when q was pressed while agents are still running (double-press to confirm)
+  let toastAt = 0; // when the copy toast was shown; paint() hides it 2s later
   let detailToken = 0;
   let quitting = false;
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -217,16 +281,31 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     if (resetArmedId && now - resetArmedAt > 2000) {
       resetArmedId = null;
     }
+    if (removeArmedId && now - removeArmedAt > 2000) {
+      removeArmedId = null;
+    }
     if (quitArmedAt && now - quitArmedAt > 2000) {
       quitArmedAt = 0;
+    }
+    if (toastAt && now - toastAt > 2000) {
+      toastAt = 0;
+      toast.visible = false;
+      // The toast floats outside both bodies, so the incremental composite never
+      // repaints what it covered — clear the back buffer to wipe its cells.
+      forceRedraw();
     }
     // Stamp the live tracker state (from the daemon's per-scan side-map) onto every
     // row — live and seed alike — so the STATE column is populated for reconstructed
     // rows too, not just this session's live agents.
-    const agents = mergeAgents(snapshot.agents, historySeed).map(a => {
-      const lifecycleState = monitor.getIssueState(a.id) ?? a.lifecycleState;
-      return lifecycleState === a.lifecycleState ? a : { ...a, lifecycleState };
-    });
+    const agents = mergeAgents(snapshot.agents, historySeed)
+      // Drop rows removed from Gene this session. The guard keeps a re-dispatched
+      // ticket visible: if the label drop failed and the daemon picked it up again,
+      // its fresh *running* agent shows through rather than staying hidden.
+      .filter(a => !removedIds.has(a.id) || a.status === "running")
+      .map(a => {
+        const lifecycleState = monitor.getIssueState(a.id) ?? a.lifecycleState;
+        return lifecycleState === a.lifecycleState ? a : { ...a, lifecycleState };
+      });
     const merged = { daemon: snapshot.daemon, agents, tokens: snapshot.tokens };
     // The status header is pinned at the top, above whichever body is shown.
     header.render(merged, now);
@@ -235,7 +314,11 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
       dashboard.root.visible = true;
       const notice = quitArmedAt
         ? "Agents still running — press q again within 2s to quit, or Q to quit now"
-        : undefined;
+        : removeBusyId
+          ? `Removing ${removeBusyId} from ${snapshot.daemon.label}…`
+          : removeArmedId
+            ? `Press R again within 2s to remove ${removeArmedId} from ${snapshot.daemon.label} — drops the label so it stops picking it up`
+            : undefined;
       dashboard.render(merged, { selectedIndex, frame, now, sort: sortMode, hideDone, notice });
     } else {
       dashboard.root.visible = false;
@@ -273,6 +356,14 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     } catch {
       // Older terminals may reject the clear's OSC — purely cosmetic, ignore.
     }
+  };
+
+  /** Flash the floating toast for 2s (paint() expires it, like the armed notices). */
+  const showToast = (message: string, color: string): void => {
+    toastText.content = t`${bold(fg(color)(message))}`;
+    toastAt = Date.now();
+    toast.visible = true;
+    paint();
   };
 
   // Divert the logger into the bottom pane so it never corrupts the alt-screen.
@@ -329,6 +420,10 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     if (selectedIndex < 0 || selectedIndex >= ids.length) {
       return;
     }
+    // Leaving the dashboard cancels a pending remove-arm — otherwise it would survive the
+    // detail round-trip (open → escape) and let a single Shift+R back on the dashboard
+    // confirm removal without a fresh double-press.
+    removeArmedId = null;
     detailId = ids[selectedIndex];
     view = "detail";
     detail.open(detailId);
@@ -407,6 +502,60 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   };
 
   /**
+   * Remove the selected dashboard ticket from Gene; double-press Shift+R within 2s
+   * confirms (mirrors armReset). Acts on the highlighted row — a second press on a
+   * different row re-arms rather than removing the first, so nav can't misfire it.
+   */
+  const armRemove = (): void => {
+    if (removeBusyId) {
+      return;
+    }
+    const ids = dashboard.getOrderedIds();
+    if (selectedIndex < 0 || selectedIndex >= ids.length) {
+      return;
+    }
+    const id = ids[selectedIndex];
+    const now = Date.now();
+    if (removeArmedId === id && now - removeArmedAt <= 2000) {
+      removeArmedId = null;
+      void doRemove(id);
+    } else {
+      removeArmedId = id;
+      removeArmedAt = now;
+    }
+  };
+
+  /** Cancel any live agent for the ticket, drop its Gene label, then refresh the table. */
+  const doRemove = async (id: string): Promise<void> => {
+    removeBusyId = id;
+    paint();
+    // Stop Gene acting on it immediately if an agent is live (the label drop only
+    // governs future scans). Its worktree/branch are left for `reset` to clean.
+    const agent = monitor.getAgent(id);
+    if (agent && agent.status === "running") {
+      monitor.requestCancel(id);
+    }
+    try {
+      // Hide the row only when the label actually came off (removeFromGene also logs a
+      // `removed` event so buildHistorySeed keeps it hidden after a restart). A failed
+      // removal (returns false) leaves the ticket in Gene, so its row stays on the board.
+      if (await options.removeFromGene(id)) {
+        removedIds.add(id);
+        // The removed row drops out of getOrderedIds(); keep the highlight in range so it
+        // doesn't silently point at the ticket that shifted up (mirrors the s/d handlers).
+        paint();
+        const count = dashboard.getOrderedIds().length;
+        selectedIndex = count === 0 ? -1 : Math.min(selectedIndex, count - 1);
+      }
+    } catch (error) {
+      logger.error("remove from Gene failed:", error instanceof Error ? error.message : error);
+    } finally {
+      removeBusyId = null;
+    }
+    paint();
+  };
+
+  /**
    * Quit, but guard against losing in-flight work: if any agent is still running,
    * the first `q` arms a confirmation (footer notice) and a second `q` within 2s
    * quits. `force` (Shift+Q) always quits immediately. With nothing running, plain
@@ -450,15 +599,27 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     process.exit(0);
   };
 
-  // Mouse-drag selection → system clipboard. Mouse tracking is on, so the terminal's
-  // own copy can't see a drag; bridge OpenTUI's selection to the clipboard via OSC 52
-  // (works over SSH too). ⌘C isn't deliverable to a TUI on macOS, so selecting *is* the
-  // copy. Terminals without OSC 52 support silently no-op.
+  // Mouse-drag selection → system clipboard, opencode-style. Mouse tracking is on,
+  // so the terminal's own selection/⌘C can't see a drag — selecting *is* the copy.
+  // The renderer emits "selection" exactly once, when the drag finishes: copy the
+  // text (OSC 52 + the platform clipboard tool — see ./clipboard.ts for why both),
+  // drop the highlight immediately, and confirm with the floating toast.
   renderer.on("selection", (selection: Selection) => {
-    const text = selection.getSelectedText();
-    if (text && renderer.isOsc52Supported()) {
-      renderer.copyToClipboardOSC52(text);
+    // Strip per-line trailing pad spaces — the table's fixed-width columns would
+    // otherwise bloat every pasted line to the full terminal width.
+    const text = selection.getSelectedText().replace(/[ \t]+$/gm, "");
+    if (!text) {
+      return;
     }
+    renderer.clearSelection();
+    void copyToClipboard(renderer, text).then(copied => {
+      if (copied) {
+        const lines = text.split("\n").length;
+        showToast(lines > 1 ? `✓ copied ${lines} lines` : "✓ copied to clipboard", palette.good);
+      } else {
+        showToast("✗ copy failed — no clipboard tool", palette.bad);
+      }
+    });
   });
 
   renderer.keyInput.on("keypress", (key: KeyEvent) => {
@@ -574,6 +735,12 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         options.setPaused(!snapshot.daemon.paused);
         return;
       case "r":
+        if (key.shift) {
+          // Shift+R removes the selected ticket from Gene (double-press to confirm).
+          armRemove();
+          paint();
+          return;
+        }
         options.setPaused(false); // refresh also resumes if paused
         options.requestScan(); // wake the poll loop so the next scan starts now
         void reseed();
