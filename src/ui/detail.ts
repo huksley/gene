@@ -18,7 +18,8 @@
  *    falls back to the full persisted history here, so old tickets stay browsable.
  *
  * `esc` (handled by the controller) returns to the dashboard; `c` cancels the live
- * agent (or, when there's nothing to cancel, shows why for 2s); `R` resets the ticket.
+ * agent (or, when there's nothing to cancel, shows why for 2s); `R` resets the ticket;
+ * `F` forks the ticket's branch into the dir Gene was launched from.
  */
 
 import {
@@ -236,7 +237,7 @@ export class Detail {
 
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
-      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} reset  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
+      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} reset  ${fg(palette.muted)("F")} fork  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
 
     // Live pane: stream the agent's events if it has any, else fall back to the
     // full persisted history so a finished ticket stays browsable.

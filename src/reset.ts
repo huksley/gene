@@ -28,7 +28,7 @@ import { selectForge } from "./forge/index.ts";
 import { inSea } from "./sea-assets.ts";
 
 /** Every local clone under the repos root (a dir containing `.git`), with its repoPath. */
-const findClones = (): { localPath: string; repoPath: string }[] => {
+export const findClones = (): { localPath: string; repoPath: string }[] => {
   const found: { localPath: string; repoPath: string }[] = [];
   const walk = (dir: string): void => {
     if (existsSync(path.join(dir, ".git"))) {
@@ -54,7 +54,7 @@ const findClones = (): { localPath: string; repoPath: string }[] => {
 };
 
 /** Branches in the clone whose name contains the issue identifier (Linear lowercases it). */
-const listMatchingBranches = async (localPath: string, identifier: string): Promise<string[]> => {
+export const listMatchingBranches = async (localPath: string, identifier: string): Promise<string[]> => {
   const result = await run("git", [
     "-C",
     localPath,

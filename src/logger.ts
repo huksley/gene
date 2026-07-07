@@ -49,6 +49,7 @@ export interface Logger {
     invoke: string;
     review: string;
     reset: string;
+    fork: string;
     log: string;
     lock: string;
     fetch: string;
@@ -219,6 +220,7 @@ const logger: Logger = {
     invoke: chalk.gray("[gene:invoke]"),
     review: chalk.gray("[gene:review]"),
     reset: chalk.gray("[gene:reset]"),
+    fork: chalk.gray("[gene:fork]"),
     log: chalk.gray("[gene:log]"),
     lock: chalk.gray("[gene:lock]"),
     fetch: chalk.gray("[gene:fetch]"),

@@ -38,6 +38,7 @@ import { closeDb, findInterruptedRuns, logEvent, readTokenTotal } from "./db.ts"
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
+import { forkIssue } from "./fork.ts";
 import { importLegacy } from "./import-legacy.ts";
 import { inSea, extractAsset, readVersion } from "./sea-assets.ts";
 import { selfUpdate } from "./update.ts";
@@ -1172,6 +1173,10 @@ const main = async (): Promise<void> => {
         // `R` inside a ticket resets it (worktree/branch/lock + back to Todo). The
         // pool stays open (the daemon owns it) — resetIssue doesn't close the DB.
         reset: identifier => resetIssue(identifier),
+        // `F` inside a ticket checks its work branch out into the dir Gene was launched
+        // from (REPO_ROOT), when that dir shares the ticket repo's origin and has a clean
+        // tree. Purely local (fetch + checkout) — no tracker/forge writes, never throws.
+        fork: identifier => forkIssue(identifier),
         // Shift+`R` on the dashboard removes a ticket from Gene: drop the Gene label so
         // the next scan won't pick it up again (the UI cancels any live agent first).
         // Local worktree/branch are left intact — use reset for that. Drop the label

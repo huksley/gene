@@ -64,6 +64,14 @@ export interface StartUiOptions {
    * (the ticket stays in Gene, so the row stays on the board).
    */
   removeFromGene: (identifier: string) => Promise<boolean>;
+  /**
+   * Fork one ticket's work branch into the directory Gene was launched from. Bound to
+   * `F` inside a ticket (double-press to confirm). Checks that dir shares the ticket
+   * repo's origin and has a clean tree, then fetches + checks the branch out there.
+   * Purely local (never throws); resolves `{ ok, message }` and the UI toasts
+   * `message` either way (green on success, red on a refused/failed fork).
+   */
+  fork: (identifier: string) => Promise<{ ok: boolean; message: string }>;
 }
 
 /**
@@ -253,6 +261,11 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let resetArmedId: string | null = null;
   let resetArmedAt = 0;
   let resetBusyId: string | null = null;
+  // `F` inside a ticket forks its branch into the dir Gene was launched from — armed on
+  // the first press, confirmed by a second within 2s (mirrors the reset/cancel arms).
+  let forkArmedId: string | null = null;
+  let forkArmedAt = 0;
+  let forkBusyId: string | null = null;
   // Shift+R on the dashboard removes the selected ticket from Gene — armed on the
   // first press, confirmed by a second within 2s (mirrors the reset/cancel arms).
   let removeArmedId: string | null = null;
@@ -280,6 +293,9 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
     if (resetArmedId && now - resetArmedAt > 2000) {
       resetArmedId = null;
+    }
+    if (forkArmedId && now - forkArmedAt > 2000) {
+      forkArmedId = null;
     }
     if (removeArmedId && now - removeArmedAt > 2000) {
       removeArmedId = null;
@@ -331,7 +347,11 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
             ? `Press r again within 2s to reset ${detailId} — removes worktree/branch, moves it back to Todo`
             : cancelArmedId === detailId
               ? `Press c again within 2s to cancel ${detailId}`
-              : cancelNotice ?? undefined;
+              : forkBusyId === detailId
+                ? `Forking ${detailId}…`
+                : forkArmedId === detailId
+                  ? `Press F again within 2s to fork ${detailId} — checks its branch out here if origin matches and the tree is clean`
+                  : cancelNotice ?? undefined;
       detail.render(agents.find(a => a.id === detailId), frame, now, notice);
     }
   };
@@ -498,6 +518,40 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
       loadDetailHistory(id);
     }
     void reseed();
+    paint();
+  };
+
+  /** Fork the open ticket's branch into REPO_ROOT; double-press F within 2s confirms (mirrors armReset). */
+  const armFork = (): void => {
+    if (view !== "detail" || !detailId || forkBusyId) {
+      return;
+    }
+    const now = Date.now();
+    if (forkArmedId === detailId && now - forkArmedAt <= 2000) {
+      const id = detailId;
+      forkArmedId = null;
+      void doFork(id);
+    } else {
+      forkArmedId = detailId;
+      forkArmedAt = now;
+    }
+  };
+
+  /** Check the ticket's branch out into REPO_ROOT, then toast the outcome (green/red). */
+  const doFork = async (id: string): Promise<void> => {
+    forkBusyId = id;
+    paint();
+    try {
+      // forkIssue never throws — it reports refusals (origin mismatch, dirty tree, no
+      // branch) as { ok:false }, so a plain message is enough to explain either result.
+      const result = await options.fork(id);
+      showToast(result.ok ? `✓ ${result.message}` : `✗ ${result.message}`, result.ok ? palette.good : palette.bad);
+    } catch (error) {
+      logger.error("fork failed:", error instanceof Error ? error.message : error);
+      showToast("✗ fork failed", palette.bad);
+    } finally {
+      forkBusyId = null;
+    }
     paint();
   };
 
@@ -676,6 +730,12 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         case "c":
           // `c` cancels the ticket's live agent (or explains for 2s why it can't).
           armCancel();
+          paint();
+          return;
+        case "f":
+          // `F` (and lowercase f) forks the ticket's branch into the dir Gene was
+          // launched from (double-press to confirm); the outcome shows as a toast.
+          armFork();
           paint();
           return;
         default:
