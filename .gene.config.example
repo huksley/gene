@@ -159,8 +159,9 @@ GENE_DRY_RUN=false
 
 # Open every change request as a DRAFT (`glab mr create --draft` / `gh pr create
 # --draft`). When true, Gene also never marks a CR ready itself — a human reviews,
-# marks it ready, and merges (the "ready" step becomes a human gate). Applies to
-# both forges. Default false (Gene opens ready-for-review CRs).
+# marks it ready, and merges (the "ready" step becomes a human gate). Enforced: when a
+# run finishes, a CR the agent left ready for review is pushed back to draft. Applies
+# to both forges. Default false (Gene opens ready-for-review CRs).
 GENE_DRAFT_CHANGE_REQUEST=false
 GENE_CLAUDE_BIN=claude
 

@@ -83,6 +83,13 @@ export interface Forge {
    * issue, which may live on a branch other than the issue's. Null if unreadable.
    */
   getReviewByIid(repo: RepoTarget, iid: string): Promise<ChangeRequestReview | null>;
+  /**
+   * Force a change request back to draft / work-in-progress. Used to enforce draft
+   * mode after an agent run (see draft.ts) — the agent is *told* to keep the CR a
+   * draft, this is what makes it true. Returns false when the forge refused (e.g. a
+   * plan without draft PRs); never throws.
+   */
+  markDraft(repo: RepoTarget, iid: string): Promise<boolean>;
 }
 
 export const selectForge = (name: "gitlab" | "github"): Forge =>

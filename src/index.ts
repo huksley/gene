@@ -32,6 +32,7 @@ import { commitsBehind, detectDefaultBranch } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
 import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, findOpenChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
+import { redraft } from "./draft.ts";
 import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts";
 import { dispatch as dispatchPluginEvent, setupPlugins } from "./plugins/index.ts";
 import { closeDb, findInterruptedRuns, logEvent, readTokenTotal } from "./db.ts";
@@ -353,6 +354,34 @@ const processIssue = async (issue: Issue): Promise<boolean> => {
   return dispatchAgent(issue, comments, target, forge, intent);
 };
 
+/**
+ * Draft mode is a human gate, and the prompt asking the agent for a draft is only a
+ * request (see draft.ts) — so when a run finishes, overrule an agent that left its
+ * change request ready for review. Off by default; when GENE_DRAFT_CHANGE_REQUEST is
+ * unset this costs nothing. Best-effort: a forge hiccup here never fails the run.
+ */
+const enforceDraftMode = async (
+  issue: Issue,
+  comments: Comment[],
+  target: RepoTarget,
+  forge: Forge
+): Promise<void> => {
+  if (!env.DRAFT_CHANGE_REQUEST) {
+    return;
+  }
+  try {
+    const detail = await redraft(await findOpenChangeRequest(issue, comments, target, forge), target, forge);
+    if (detail) {
+      await record(issue, "draft-enforced", detail);
+    }
+  } catch (error) {
+    logger.warn(
+      `${logger.tag.flow} [${issue.identifier}] draft-mode enforcement failed:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+};
+
 type DispatchExtras = {
   /** Forge review state to feed the prompt (review-fix / continue). */
   reviewContext?: ReviewContext;
@@ -498,6 +527,7 @@ const dispatchAgent = async (
       if (stalled && !monitor.isCancelled(issue.identifier)) {
         await postStalledBlock(issue, result);
       }
+      await enforceDraftMode(issue, comments, target, forge);
     })
     .catch(error => {
       logger.error(

@@ -296,4 +296,17 @@ export class GithubForge implements Forge {
     }
     return this.buildReview(v, await this.reviewComments(repo, String(v.number)));
   }
+
+  async markDraft(repo: RepoTarget, iid: string): Promise<boolean> {
+    // `gh pr ready --undo` is the un-ready direction; GitHub rejects it for repos on
+    // a plan without draft PRs and for PRs already in a merge queue.
+    const res = await run("gh", ["pr", "ready", String(iid), "-R", repo.repoPath, "--undo"], {
+      env: this.ghEnv(repo)
+    });
+    if (res.code !== 0) {
+      logger.warn(`[github] gh pr ready --undo #${iid} failed: ${(res.stderr || res.stdout).trim().slice(0, 300)}`);
+      return false;
+    }
+    return true;
+  }
 }

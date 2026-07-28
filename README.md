@@ -199,7 +199,8 @@ Gene runs unattended and acts with your credentials, so the guardrails are delib
   merging is always a human action.
 - **Draft mode is a hard human gate.** With `GENE_DRAFT_CHANGE_REQUEST=true` every
   change request opens as a **draft** and Gene never marks it ready; a human reviews and
-  promotes it.
+  promotes it. This is enforced, not just requested: when a run finishes, Gene checks the
+  change request and pushes it back to draft if the agent left it ready for review.
 - **Dry run.** `GENE_DRY_RUN=true` makes a full pass with **no tracker/forge writes and
   no agent spawns** — it just logs what it *would* do. The best way to try it on a real
   board.

@@ -172,7 +172,8 @@ export const env = {
   DRY_RUN: bool("GENE_DRY_RUN", false),
   // Open every change request as a draft; a human reviews, marks it ready, and
   // merges. When on, Gene never un-drafts a CR itself (its own or a human-attached
-  // one) — the "ready" transition becomes a human gate. Forge-neutral (both forges).
+  // one) — the "ready" transition becomes a human gate. Enforced after each run, not
+  // just asked of the agent (see draft.ts). Forge-neutral (both forges).
   DRAFT_CHANGE_REQUEST: bool("GENE_DRAFT_CHANGE_REQUEST", false),
   CLAUDE_BIN: str("GENE_CLAUDE_BIN", "claude"),
 

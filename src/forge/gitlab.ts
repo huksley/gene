@@ -205,4 +205,18 @@ export class GitlabForge implements Forge {
     }
     return this.buildReview(repo, mr);
   }
+
+  async markDraft(repo: RepoTarget, iid: string): Promise<boolean> {
+    // glab's `--draft` re-applies the `Draft:` title prefix server-side, which is the
+    // only thing GitLab reads as "draft" (see promptSnippet). No cwd here, so target
+    // the project explicitly with -R.
+    const res = await run("glab", ["mr", "update", String(iid), "--draft", "-R", repo.repoPath], {
+      env: { ...process.env, GITLAB_HOST: repo.host }
+    });
+    if (res.code !== 0) {
+      logger.warn(`[gitlab] glab mr update !${iid} --draft failed: ${(res.stderr || res.stdout).trim().slice(0, 300)}`);
+      return false;
+    }
+    return true;
+  }
 }
