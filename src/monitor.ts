@@ -54,8 +54,8 @@ export interface TokenUsage {
  * for a run whose daemon was killed mid-flight — `agent-start` was recorded but no
  * outcome ever followed (see src/db.ts findInterruptedRuns + the startup reconcile).
  */
-export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | "cancelled" | "blocked" | "interrupted";
-export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled", "blocked", "interrupted"];
+export type AgentStatus = "queued" | "running" | "done" | "error" | "timeout" | "cancelled" | "blocked" | "interrupted" | "idle";
+export const AgentStatuses: AgentStatus[] = ["queued", "running", "done", "error", "timeout", "cancelled", "blocked", "interrupted", "idle"];
 
 /**
  * Terminal STAGE shown once an issue reaches the tracker's Done state — it replaces
@@ -111,6 +111,10 @@ export interface AgentState {
   repoLabel?: string;
   /** Work branch the agent's worktree is on, e.g. "fix/abc-123" — for the detail header. */
   branch?: string;
+  /** True when this row is a recurring program (rendered with the ⟳ glyph, restable at rest). */
+  isProgram?: boolean;
+  /** The program ticket's description body, stashed for the detail view's section breakdown. */
+  description?: string;
 }
 
 /** Summary counts from one scan cycle (mirrors the daemon's scan-summary log). */
@@ -358,6 +362,30 @@ class Monitor extends EventEmitter {
     agent.toolCount = 0;
     agent.tokens = undefined;
     agent.pid = undefined;
+    this.scheduleChange();
+  }
+
+  /**
+   * Upsert a program's dashboard row so a resting program is visible and selectable.
+   * A brand-new row is created `idle` (at rest); an existing row keeps its status —
+   * so a queued/running/finished program is never downgraded back to `idle`. Always
+   * (re)stamps the program flag, stage, title, lifecycle state, and description.
+   */
+  setProgramRow(id: string, title: string, state: string, description?: string): void {
+    const existed = this.agents.has(id);
+    const agent = this.upsert(id);
+    agent.isProgram = true;
+    agent.stage = "program";
+    if (title) {
+      agent.title = title;
+    }
+    agent.lifecycleState = state;
+    if (description !== undefined) {
+      agent.description = description;
+    }
+    if (!existed) {
+      agent.status = "idle"; // fresh resting row (upsert defaults to "queued")
+    }
     this.scheduleChange();
   }
 

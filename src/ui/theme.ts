@@ -56,6 +56,8 @@ export const statusColor = (status: AgentStatus): string => {
       return palette.warn;
     case "interrupted":
       return palette.muted; // a ghost row from a dead daemon — faded, not alarming
+    case "idle":
+      return palette.dim; // a program at rest — subdued
   }
 };
 
@@ -78,11 +80,16 @@ export const statusGlyph = (status: AgentStatus): string => {
       return "⏸"; // halted, awaiting a human reply
     case "interrupted":
       return "↯"; // run severed when its daemon was killed mid-flight
+    case "idle":
+      return "·"; // a program at rest between runs
   }
 };
 
 /** Upper-case status label for the detail header. */
 export const statusLabel = (status: AgentStatus): string => status.toUpperCase();
+
+/** Marks a recurring program in the dashboard's ticket column. */
+export const PROGRAM_GLYPH = "⟳";
 
 /** Braille spinner frames; advance one per animation tick on running rows. */
 export const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;

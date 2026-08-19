@@ -190,6 +190,44 @@ while the daemon runs — both point at the same server. The **default embedded 
 is single-process: stop the daemon before running `log` / `reset`, or point both at a
 shared Postgres (`DATABASE_URL` / `PG*`). See [State store](#state-store).
 
+## Programs
+
+A **program** is a recurring, on-demand job rather than a one-off change. It is a
+ticket carrying the **program label** (`LINEAR_PROGRAM_LABEL` / `TRELLO_PROGRAM_LABEL`,
+default `Program`) whose description has three sections:
+
+- **`## Trigger`** — when/why it should run (informational in this phase — see below).
+- **`## Workflow`** — the steps the agent performs on each run.
+- **`## Acceptance criteria`** — what a successful run looks like.
+
+Require them with `GENE_PROGRAM_REQUIRE_SECTIONS` (defaults to those three; empty = no
+gate), and grant a program agent extra tools — on top of the base set + tracker (+ the
+forge CLI, when the program links a repo) — with `GENE_PROGRAM_ALLOWED_TOOLS`
+(e.g. `Bash(pup *),Bash(datadog *)`).
+
+Unlike a normal ticket, a program **never opens a change request** and is **never moved
+to Done**. It runs, **writes its result back to the ticket** (a comment, and it may open
+child tickets — those carry the `Gene` label, never `Program`), and returns to its
+**resting state**. Each run is ephemeral: no lingering In-Review, no merge, no lifecycle
+progression.
+
+**Firing a program** From the dashboard, select a program row and press **`g`** (press
+`g` again within 2 s to confirm). Gene moves it to **In Progress** for the run, then
+restores its resting state when it finishes. Pressing `g` on an already-running program
+**restarts** it (cancels the live run and re-fires). Programs are marked in the list with
+the **⟳** glyph; **`Shift+P`** toggles a programs-only view, and opening a program shows
+the **live agent progress** while it runs — and its activity log at rest — exactly like a
+coding ticket. (The program's definition lives on the ticket itself.)
+
+**Clarification loop** A program can stop mid-run to ask a question — it posts the
+question and moves the ticket to **Blocked**. Reply on the ticket (e.g. `!gene approve`,
+or just answer the question) and the next scan **resumes** the run from where it paused —
+the same Blocked → resume flow as a coding ticket.
+
+**Triggers are a later phase.** Today programs fire **manually** (the `g` key). The
+`## Trigger` section is recorded but automatic firing — from CI failures or
+monitoring/alerting signals — is planned for a future release.
+
 ## Safety and control
 
 Gene runs unattended and acts with your credentials, so the guardrails are deliberate:

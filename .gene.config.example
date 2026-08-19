@@ -20,6 +20,12 @@ LINEAR_WORKSPACE=
 # label is an ownership tag and is NEVER removed by the pipeline.
 LINEAR_LABEL=Gene
 
+# Programs mode: an issue carrying THIS label is a recurring program — you fire it
+# on demand from the TUI (press `g`) and it writes its result back to the ticket
+# instead of opening a change request. Sections: ## Trigger, ## Workflow,
+# ## Acceptance criteria. Ownership tag, never removed. Default "Program".
+# LINEAR_PROGRAM_LABEL=Program
+
 # Whom Gene works for. Only issues assigned to this user are picked up:
 #   me          the authenticated Linear user (default)
 #   any         no assignee filter — every Gene issue, including unassigned
@@ -60,6 +66,12 @@ TRELLO_LIST_MAP=
 
 # Cards carrying this label are picked up. Ownership tag — NEVER removed by Gene.
 TRELLO_LABEL=Gene
+
+# Programs mode: a card carrying THIS label is a recurring program — you fire it on
+# demand from the TUI (press `g`) and it writes its result back to the card instead
+# of opening a change request. Sections: ## Trigger, ## Workflow,
+# ## Acceptance criteria. Ownership tag, never removed. Default "Program".
+# TRELLO_PROGRAM_LABEL=Program
 
 # Whom Gene works for (Trello exposes usernames, not emails):
 #   me            the authenticated Trello user is a member of the card (default)
@@ -103,6 +115,15 @@ GENE_BRANCH_TEMPLATE="{prefix}/{identifier}-{slug}"
 # Comma-separated markdown headings required in a description before work starts
 # (e.g. "## Problem,## Acceptance criteria"). Empty = don't enforce.
 GENE_REQUIRE_SECTIONS=
+
+# Programs mode, tracker-neutral knobs (see LINEAR_PROGRAM_LABEL /
+# TRELLO_PROGRAM_LABEL above). GENE_PROGRAM_REQUIRE_SECTIONS lists the markdown
+# headings a program ticket must contain before it fires (default: the three
+# below); empty = no gate. GENE_PROGRAM_ALLOWED_TOOLS grants extra tools to a
+# program agent on top of the base set + tracker (+ forge when the program links a
+# repo), e.g. Bash(pup *),Bash(datadog *). Comma-separated.
+# GENE_PROGRAM_REQUIRE_SECTIONS=## Trigger,## Workflow,## Acceptance criteria
+# GENE_PROGRAM_ALLOWED_TOOLS=
 
 # --- Comment ignore patterns (tracker + forge, all optional) -----------------
 # Comments matching any pattern here do NOT wake Gene: a matching comment on the

@@ -239,8 +239,9 @@ export class Detail {
       ? t`${bold(fg(palette.warn)(notice))}`
       : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} reset  ${fg(palette.muted)("F")} fork  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
 
-    // Live pane: stream the agent's events if it has any, else fall back to the
-    // full persisted history so a finished ticket stays browsable.
+    // Live pane: stream the agent's events while a run is live — programs and coding
+    // tickets alike — else fall back to the full persisted history. (A program at rest
+    // shows its activity log, not a "waiting…" placeholder: it isn't waiting for output.)
     if (agent && agent.events.length > 0) {
       if (this.liveMode !== "live") {
         this.clearLive();
@@ -249,10 +250,11 @@ export class Detail {
       }
       this.appendLiveDelta(agent);
       this.liveLabel.content = this.sectionLabel("live log");
-    } else if (agent) {
-      // Agent attached but no events yet (queued / just dispatched). The persisted
-      // history is already pinned in "recent actions" above, so don't replay it
-      // here — just wait for the stream to start (avoids a duplicated log).
+    } else if (agent && !agent.isProgram) {
+      // Coding ticket attached but no events yet (queued / just dispatched). The
+      // persisted history is already pinned in "recent actions" above, so don't replay
+      // it here — just wait for the stream to start (avoids a duplicated log). A program
+      // is excluded: at rest it has no live run, so it falls through to its activity log.
       if (this.liveMode !== "waiting") {
         this.clearLive();
         this.addLiveLine("waiting for agent output…", palette.dim);

@@ -15,7 +15,7 @@ import { BoxRenderable, StyledText, TextRenderable, bold, dim, fg, t, type CliRe
 
 import { AgentStatuses, type AgentStatus, type DaemonState, type MonitorSnapshot } from "../monitor.ts";
 import { compactTokens, humanDuration, progressBar, secondsUntil, truncate } from "./format.ts";
-import { palette, statusColor, statusGlyph, statusLabel } from "./theme.ts";
+import { palette, statusColor, statusGlyph, statusLabel, PROGRAM_GLYPH } from "./theme.ts";
 import { readVersion } from "../sea-assets.ts";
 
 /** Build version (e.g. "1.1.2"), resolved once at load — it never changes at runtime. */
@@ -91,9 +91,13 @@ export class Header {
 
     const running = snapshot.agents.filter(a => a.status === "running").length;
     const queued = snapshot.agents.filter(a => a.status === "queued").length;
-    this.agentsLine.content = queued > 0
-      ? t`${fg(palette.muted)("Agents:")}  ${bold(fg(running > 0 ? palette.accent : palette.text)(`${running}/${d.maxConcurrent}`))} running  ${dim("·")}  ${fg(palette.info)(`${queued} queued`)}`
-      : t`${fg(palette.muted)("Agents:")}  ${bold(fg(running > 0 ? palette.accent : palette.text)(`${running}/${d.maxConcurrent}`))} running`;
+    const programs = snapshot.agents.filter(a => a.isProgram).length;
+    // Nested `t` fragments stringify to "[object Object]", so keep this one flat: each
+    // optional segment is a single coloured chunk (separator included) that collapses to
+    // "" when absent — no trailing whitespace in the common no-queue/no-program case.
+    const queuedChunk = queued > 0 ? fg(palette.info)(`  ·  ${queued} queued`) : "";
+    const programsChunk = programs > 0 ? fg(palette.accent)(`  ·  ${PROGRAM_GLYPH} ${programs} programs`) : "";
+    this.agentsLine.content = t`${fg(palette.muted)("Agents:")}  ${bold(fg(running > 0 ? palette.accent : palette.text)(`${running}/${d.maxConcurrent}`))} running${queuedChunk}${programsChunk}`;
 
     const uptime = humanDuration(now - d.startedAt);
     const phaseLabel = d.phase === "scanning" ? "scanning…" : d.phase === "starting" ? "starting…" : "idle";

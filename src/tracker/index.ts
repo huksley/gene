@@ -68,6 +68,8 @@ export interface Tracker {
 
   /** All issues carrying the Gene label, any state (the caller buckets by state). */
   listIssues(): Promise<Issue[]>;
+  /** List tickets carrying the program label (mirrors listIssues but for PROGRAM_LABEL). */
+  listPrograms(label: string): Promise<Issue[]>;
   /** Chronologically-sorted comments for an issue. */
   getComments(issue: Issue): Promise<Comment[]>;
   /** Links/attachments on an issue (used for MR/PR discovery in review.ts). */

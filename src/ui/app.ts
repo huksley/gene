@@ -72,6 +72,12 @@ export interface StartUiOptions {
    * `message` either way (green on success, red on a refused/failed fork).
    */
   fork: (identifier: string) => Promise<{ ok: boolean; message: string }>;
+  /**
+   * Fire a program now — queue a manual run of the selected `Program`-labelled ticket
+   * (or restart it if one is already running). Bound to `g` on a program row (Task 9).
+   * Clears any pause and wakes the poll loop so the next scan cycle runs it.
+   */
+  fireProgram: (identifier: string) => void;
 }
 
 /**
@@ -249,6 +255,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let selectedIndex = -1;
   let sortMode: SortMode = "status";
   let hideDone = false; // done tickets are shown by default; `d` toggles them off
+  let onlyPrograms = false; // all rows shown by default; Shift+P filters to ⟳ programs only
   let frame = 0;
   let snapshot = monitor.getState();
   let historySeed: AgentState[] = [];
@@ -271,6 +278,10 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let removeArmedId: string | null = null;
   let removeArmedAt = 0;
   let removeBusyId: string | null = null;
+  // `g` on a program row fires it now (or restarts a running one) — armed on the first
+  // press, confirmed by a second within 2s (mirrors the reset/cancel/remove arms).
+  let fireArmedId: string | null = null;
+  let fireArmedAt = 0;
   // Tickets dropped from Gene this session. The dashboard is a run-history view, not a
   // live label-membership view — rows come from the monitor + the issue_log seed, not
   // tracker.listIssues() — so dropping the label alone leaves the existing row in place.
@@ -299,6 +310,9 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
     if (removeArmedId && now - removeArmedAt > 2000) {
       removeArmedId = null;
+    }
+    if (fireArmedId && now - fireArmedAt > 2000) {
+      fireArmedId = null;
     }
     if (quitArmedAt && now - quitArmedAt > 2000) {
       quitArmedAt = 0;
@@ -335,7 +349,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
           : removeArmedId
             ? `Press R again within 2s to remove ${removeArmedId} from ${snapshot.daemon.label} — drops the label so it stops picking it up`
             : undefined;
-      dashboard.render(merged, { selectedIndex, frame, now, sort: sortMode, hideDone, notice });
+      dashboard.render(merged, { selectedIndex, frame, now, sort: sortMode, hideDone, onlyPrograms, notice });
     } else {
       dashboard.root.visible = false;
       detail.root.visible = true;
@@ -610,6 +624,37 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   };
 
   /**
+   * Fire the selected program now (or restart it if a run is live); double-press `g`
+   * within 2s confirms (mirrors armRemove). Toasts and no-ops on a non-program row.
+   */
+  const armFireProgram = (): void => {
+    const ids = dashboard.getOrderedIds();
+    if (selectedIndex < 0 || selectedIndex >= ids.length) {
+      return;
+    }
+    const id = ids[selectedIndex];
+    // Look the row up in the SAME merged set the dashboard renders (live agents +
+    // history seed), since getOrderedIds() is built from that — snapshot.agents alone
+    // would miss a program row reconstructed from the log before the first scan.
+    const agent = mergeAgents(snapshot.agents, historySeed).find(a => a.id === id);
+    if (!agent || !agent.isProgram) {
+      showToast(`${id} is not a program`, palette.warn);
+      return;
+    }
+    const running = agent.status === "running" || agent.status === "queued";
+    const now = Date.now();
+    if (fireArmedId === id && now - fireArmedAt <= 2000) {
+      fireArmedId = null;
+      options.fireProgram(id);
+      showToast(running ? `⟳ restarting ${id}` : `⟳ firing ${id}`, palette.info);
+    } else {
+      fireArmedId = id;
+      fireArmedAt = now;
+      showToast(running ? `press g again to RESTART ${id}` : `press g again to fire ${id}`, palette.warn);
+    }
+  };
+
+  /**
    * Quit, but guard against losing in-flight work: if any agent is still running,
    * the first `q` arms a confirmation (footer notice) and a second `q` within 2s
    * quits. `force` (Shift+Q) always quits immediately. With nothing running, plain
@@ -789,7 +834,24 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         paint();
         return;
       }
+      case "g":
+        // Fire (or restart) the selected program now; double-press within 2s confirms.
+        // No-op with a toast on a non-program row.
+        armFireProgram();
+        paint();
+        return;
       case "p":
+        if (key.shift) {
+          // Shift+P toggles the ⟳ programs-only filter, keeping the same ticket selected
+          // if it survives the filter (mirrors the s/d handlers).
+          const ids = dashboard.getOrderedIds();
+          const selId = selectedIndex >= 0 && selectedIndex < ids.length ? ids[selectedIndex] : null;
+          onlyPrograms = !onlyPrograms;
+          paint(); // re-filters the table and refreshes getOrderedIds()
+          selectedIndex = selId ? dashboard.getOrderedIds().indexOf(selId) : -1;
+          paint();
+          return;
+        }
         // Toggle the scan loop's pause: paused stops new tracker polling (in-flight
         // agents keep running); the monitor "change" it fires repaints the badge/footer.
         options.setPaused(!snapshot.daemon.paused);

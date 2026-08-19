@@ -49,3 +49,23 @@ test("setIssueState records state without conjuring an agent row", () => {
   assert.equal(monitor.getIssueState("STATE-GHOST"), "In Progress");
   assert.equal(monitor.getAgent("STATE-GHOST"), undefined);
 });
+
+test("setProgramRow creates an idle, program-flagged row", () => {
+  monitor.setProgramRow("PRG-1", "Nightly triage", "Todo");
+  const row = monitor.getState().agents.find(a => a.id === "PRG-1");
+  assert.ok(row);
+  assert.equal(row!.isProgram, true);
+  assert.equal(row!.stage, "program");
+  assert.equal(row!.status, "idle");
+  assert.equal(row!.lifecycleState, "Todo");
+});
+
+test("setProgramRow does not downgrade a running program to idle", () => {
+  monitor.agentDispatched("PRG-2", "program", "(no repo)", undefined, "Running one");
+  monitor.agentSpawned("PRG-2", 12345, () => {}); // flips the row to "running"
+  monitor.setProgramRow("PRG-2", "Running one", "In Progress");
+  const row = monitor.getState().agents.find(a => a.id === "PRG-2");
+  assert.ok(row);
+  assert.equal(row!.isProgram, true);
+  assert.notEqual(row!.status, "idle"); // stays running, not reset to idle
+});

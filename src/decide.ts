@@ -27,8 +27,9 @@ export type Action =
   | { kind: "feedback"; latestUserCommentId: string }
   | { kind: "check-review" };
 
-/** Headings (from GENE_REQUIRE_SECTIONS) that are absent or have an empty body. */
-const findMissingSections = (desc: string, required: string[]): string[] => {
+/** Headings (from GENE_REQUIRE_SECTIONS) that are absent or have an empty body.
+ *  Exported so the programs flow can reuse it for its own section gate. */
+export const findMissingSections = (desc: string, required: string[]): string[] => {
   const text = desc || "";
   return required.filter(section => {
     const headingPattern = new RegExp(

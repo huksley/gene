@@ -21,21 +21,26 @@ export type PromptIntent =
   | "resume"
   | "feedback"
   | "review-fix"
-  | "continue";
+  | "continue"
+  | "program";
 
 export type PromptInputs = {
   issue: Issue;
   comments: Comment[];
   worktreePath: string;
-  baseBranch: string;
   intent: PromptIntent;
   attachmentRelativePaths: string[];
-  commitsBehind: number;
-  forge: Forge;
+  // The following are required for coding intents but absent for the "program"
+  // intent (repo-optional, no change request). buildPrompt guards them.
+  baseBranch?: string;
+  commitsBehind?: number;
+  forge?: Forge;
   /** Branch actually checked out in the worktree (the issue's, or a continued CR's). */
-  workBranch: string;
+  workBranch?: string;
   /** "host/repoPath" of the resolved target repo, for the prompt header. */
-  repoLabel: string;
+  repoLabel?: string;
+  /** True when a program run has a git worktree; false for a scratch dir. Program intent only. */
+  hasRepo?: boolean;
   /** Monorepo subdirectory to scope work to, if the issue link pinned one. */
   subdir?: string;
   /** Forge review state (failing CI / new comments), present only for review-fix. */
@@ -112,7 +117,12 @@ const intentInstructions: Record<PromptIntent, string> = {
       "merges — and move the issue to the review state. "
       : "When it's complete and CI is green, mark it ready for review (un-draft it) and move the issue to " +
       "the review state. ") +
-    "If you're blocked or need a decision, comment and move to the blocked state instead."
+    "If you're blocked or need a decision, comment and move to the blocked state instead.",
+  "program":
+    "You are executing a recurring **program**, not a one-off coding task. Carry out the steps in the " +
+    "program's `## Workflow` section, then judge your result against its `## Acceptance criteria`. " +
+    "Investigate and act (run commands, read logs/CI/monitoring as the workflow directs). You do NOT " +
+    "open a change request and you do NOT push code."
 };
 
 const renderScope = (subdir: string | undefined): string => {
@@ -283,7 +293,64 @@ const renderDriftAdvice = (n: number, baseBranch: string): string => {
   ].join(" ");
 };
 
+/**
+ * The prompt for a recurring **program** run. Repo-optional (a git worktree when the
+ * program targets a repo, else a scratch dir) and never opens a change request — the
+ * agent writes back to the ticket and may spawn child coding tickets.
+ */
+const buildProgramPrompt = (inputs: PromptInputs): string => {
+  const { issue, worktreePath, hasRepo, attachmentRelativePaths } = inputs;
+  const workspace = hasRepo
+    ? `# Working tree\n\nYou are in a git worktree at \`${worktreePath}\`. Read and run things here, but do NOT commit, push, or open a change request — this is a program run, not a coding task.`
+    : `# Working directory\n\nYou are in a scratch working directory at \`${worktreePath}\` (no git repository). Use it for any temporary files.`;
+
+  const attachments =
+    attachmentRelativePaths.length > 0
+      ? `\n\n# Attachments\n\nFiles staged for you: ${attachmentRelativePaths.map(p => `\`${p}\``).join(", ")}.`
+      : "";
+
+  return [
+    `# Program: ${issue.identifier} — ${issue.title}`,
+    "",
+    "You are Gene running a recurring **program**. The ticket below defines it. Do exactly what its `## Workflow` says and judge success by its `## Acceptance criteria`.",
+    "",
+    "# Program ticket",
+    "",
+    issue.description || "(no description)",
+    "",
+    workspace,
+    attachments,
+    "",
+    "# What to do",
+    "",
+    intentInstructions.program,
+    "",
+    "# Writing back",
+    "",
+    tracker.writeBackSnippet(issue),
+    "",
+    "# Creating follow-up tickets",
+    "",
+    `If the workflow calls for follow-up work (e.g. "create a ticket to fix flaky tests"), create child ticket(s) so Gene picks them up later. ${tracker.subcardSnippet(issue)} Give each the \`${env.LABEL}\` label (never the program label) so it enters the normal coding queue.`,
+    "",
+    "# Outcomes",
+    "",
+    "- **Completed:** post a concise result comment on the program ticket summarising what you did and how it meets the acceptance criteria. Do not change the ticket's state — Gene restores it.",
+    `- **Need a decision:** if the workflow needs a serious change or a human choice, post a comment stating exactly what you need, then move the ticket to \`${env.BLOCKED_STATE}\`. Gene will resume you when a human replies and runs \`${env.COMMAND_BASE} approve\`.`,
+    "- **Plan first (optional):** if the program's `## Workflow` asks you to plan before acting, post the plan as a comment and move to " +
+      `\`${env.BLOCKED_STATE}\` for approval before executing.`,
+    "",
+    "# Hard rules",
+    "",
+    "- **Never open a change request** (no PR/MR), and never push code.",
+    "- Never move the ticket to a Done/closed state — Gene manages the program's resting state.",
+    "- Stay within the program's stated workflow and tools."
+  ].join("\n");
+};
+
 export const buildPrompt = (inputs: PromptInputs): string => {
+  if (inputs.intent === "program") return buildProgramPrompt(inputs);
+
   const {
     issue,
     comments,
@@ -298,6 +365,20 @@ export const buildPrompt = (inputs: PromptInputs): string => {
     subdir,
     reviewContext
   } = inputs;
+
+  // Coding intents require a resolved repo/forge; the program intent (handled above)
+  // does not. Narrow the now-optional fields for the rest of this body.
+  if (
+    forge === undefined ||
+    baseBranch === undefined ||
+    commitsBehind === undefined ||
+    workBranch === undefined ||
+    repoLabel === undefined
+  ) {
+    throw new Error(
+      `buildPrompt: intent "${intent}" requires forge, baseBranch, commitsBehind, workBranch and repoLabel`
+    );
+  }
 
   // The branch actually checked out: the issue's own auto-link branch for fresh
   // work, or a continued change request's source branch (which may be human-named).

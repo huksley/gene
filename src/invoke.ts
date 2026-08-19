@@ -95,11 +95,31 @@ const BASE_ALLOWED_TOOLS = [
   "WebFetch"
 ];
 
+/** Assemble the agent's allowed-tools list. Forge tools are included only when the
+ *  run has a forge (a repo-less program run has none). Order: base, tracker, forge,
+ *  global (env.ALLOWED_TOOLS), extra (program tools). */
+export const composeAllowedTools = (parts: {
+  base: string[];
+  tracker: string[];
+  forge?: string[];
+  global?: string[];
+  extra?: string[];
+}): string[] => [
+  ...parts.base,
+  ...parts.tracker,
+  ...(parts.forge ?? []),
+  ...(parts.global ?? []),
+  ...(parts.extra ?? [])
+];
+
 export type InvokeInputs = {
   issue: Issue;
   prompt: string;
   worktreePath: string;
-  forge: Forge;
+  /** Absent for a repo-less program run (no clone, no change request). */
+  forge?: Forge;
+  /** Extra `--allowedTools` entries beyond base/tracker/forge/global (e.g. program tools). */
+  extraAllowedTools?: string[];
 };
 
 export type InvokeResult = {
@@ -519,8 +539,13 @@ export const invokeAgent = async (
 ): Promise<InvokeResult> => {
   const { issue, prompt, worktreePath, forge } = inputs;
   const id = issue.identifier;
-  const allowedTools = [...BASE_ALLOWED_TOOLS, ...tracker.allowedTools(), ...forge.allowedTools()];
-  allowedTools.push(...env.ALLOWED_TOOLS);
+  const allowedTools = composeAllowedTools({
+    base: BASE_ALLOWED_TOOLS,
+    tracker: tracker.allowedTools(),
+    forge: forge ? forge.allowedTools() : undefined,
+    global: env.ALLOWED_TOOLS,
+    extra: inputs.extraAllowedTools
+  });
 
   const agentLabel = env.SANDBOX ? `sandboxed ${env.CLAUDE_BIN}` : env.CLAUDE_BIN;
 

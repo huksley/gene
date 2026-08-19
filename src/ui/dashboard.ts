@@ -28,7 +28,7 @@ import {
 import type { AgentState, AgentStatus, MonitorSnapshot } from "../monitor.ts";
 import { formatRecord, type LogRecord } from "../logger.ts";
 import { fit, humanDuration, stripAnsi, truncate } from "./format.ts";
-import { palette, spinner, statusColor, statusGlyph } from "./theme.ts";
+import { palette, spinner, statusColor, statusGlyph, PROGRAM_GLYPH } from "./theme.ts";
 
 /** Fixed table column widths (characters). The EVENT column flexes to fill the rest. */
 const COL = { tracker: 1, id: 10, state: 11, glyph: 1, stage: 16, pid: 7, age: 8, tools: 5 } as const;
@@ -81,9 +81,19 @@ export interface RenderOptions {
   sort: SortMode;
   /** When true, tickets in the tracker's Done state are hidden from the table. Shown by default. */
   hideDone?: boolean;
+  /** When true, only recurring program rows are shown (the ⟳ programs filter). Off by default. */
+  onlyPrograms?: boolean;
   /** Optional one-line notice shown in the footer instead of the key hints (e.g. cancel confirm). */
   notice?: string;
 }
+
+/**
+ * Narrow the table to program rows when the ⟳ filter is on; otherwise pass every
+ * row through. Pure so the controller can toggle it and the test can assert it
+ * without a renderer.
+ */
+export const filterAgents = (agents: AgentState[], opts: { onlyPrograms: boolean }): AgentState[] =>
+  opts.onlyPrograms ? agents.filter(a => a.isProgram) : agents;
 
 /** A status's sort bucket: running first, then queued, then everything terminal. */
 const statusRank = (status: AgentStatus): number =>
@@ -142,8 +152,13 @@ const rowLine = (
   const idCell = fit(a.id, COL.id);
   const idChunk = selected ? bold(fg("#FFFFFF")(idCell)) : fg(palette.text)(idCell);
 
+  // Programs replace the tracker-initial cell with the ⟳ glyph (accent-coloured so it
+  // reads as a recurring run, not a one-off ticket); everything else keeps the initial.
+  const leadCell = fit(a.isProgram ? PROGRAM_GLYPH : trackerInitial, COL.tracker);
+  const leadChunk = a.isProgram ? fg(palette.accent)(leadCell) : dim(leadCell);
+
   const state = fit(a.lifecycleState ?? "—", COL.state);
-  return t`${dim(fit(trackerInitial, COL.tracker))} ${idChunk} ${fg(palette.info)(state)} ${fg(statusColor(a.status))(fit(glyph, COL.glyph))} ${fg(palette.muted)(fit(a.stage, COL.stage))} ${fg(palette.dim)(fit(pid, COL.pid))} ${fg(palette.muted)(fit(age, COL.age))} ${fg(palette.dim)(fit(tools, COL.tools))} ${fg(eventColor)(truncate(a.lastEvent, eventWidth))}`;
+  return t`${leadChunk} ${idChunk} ${fg(palette.info)(state)} ${fg(statusColor(a.status))(fit(glyph, COL.glyph))} ${fg(palette.muted)(fit(a.stage, COL.stage))} ${fg(palette.dim)(fit(pid, COL.pid))} ${fg(palette.muted)(fit(age, COL.age))} ${fg(palette.dim)(fit(tools, COL.tools))} ${fg(eventColor)(truncate(a.lastEvent, eventWidth))}`;
 };
 
 /** One reusable table row: a full-width Box (for the highlight) wrapping one Text. */
@@ -254,15 +269,16 @@ export class Dashboard {
 
   /** Update the whole dashboard from a snapshot + per-frame options. Cheap; no tree churn. */
   render(snapshot: MonitorSnapshot, options: RenderOptions): void {
-    const { selectedIndex, frame, now, sort, hideDone, notice } = options;
+    const { selectedIndex, frame, now, sort, hideDone, onlyPrograms, notice } = options;
     const d = snapshot.daemon;
     const width = this.renderer.width;
 
     // "Done" means the ticket's tracker state equals the configured Done state (the
     // STATE column), not the agent's run status — a finished run can still sit in
     // In Review. With no Done state configured there's nothing to hide.
-    const visible =
+    const afterDone =
       hideDone && d.doneState ? snapshot.agents.filter(a => a.lifecycleState !== d.doneState) : snapshot.agents;
+    const visible = filterAgents(afterDone, { onlyPrograms: !!onlyPrograms });
     const sorted = sortAgents(visible, sort, now);
     this.orderedIds = sorted.map(a => a.id);
     this.placeholder.visible = sorted.length === 0;
@@ -289,8 +305,8 @@ export class Dashboard {
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
       : d.doneState
-        ? t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("d")} done:${fg(palette.text)(hideDone ? "hidden" : "shown")}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("R")} remove  ${fg(palette.muted)("q")} quit`
-        : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("R")} remove  ${fg(palette.muted)("q")} quit`;
+        ? t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("d")} done:${fg(palette.text)(hideDone ? "hidden" : "shown")}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("R")} remove  ${fg(palette.muted)("g")} fire  ${fg(palette.muted)("P")} prog:${fg(palette.text)(onlyPrograms ? "only" : "all")}  ${fg(palette.muted)("q")} quit`
+        : t`${fg(palette.muted)("↑↓")} select  ${fg(palette.muted)("enter")} open  ${fg(palette.muted)("s")} sort:${fg(palette.text)(sortLabel(sort))}  ${fg(palette.muted)("p")} pause:${fg(palette.text)(d.paused ? "on" : "off")}  ${fg(palette.muted)("r")} refresh  ${fg(palette.muted)("R")} remove  ${fg(palette.muted)("g")} fire  ${fg(palette.muted)("P")} prog:${fg(palette.text)(onlyPrograms ? "only" : "all")}  ${fg(palette.muted)("q")} quit`;
   }
 
   /** Append one log record to the bottom pane (sticky-scrolled to the tail). */

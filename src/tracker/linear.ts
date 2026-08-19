@@ -184,6 +184,12 @@ export class LinearTracker implements Tracker {
     return data.issues.nodes.map(toIssue);
   }
 
+  /** Duplicate of listIssues() with the label taken as a parameter (PROGRAM_LABEL). */
+  async listPrograms(label: string): Promise<Issue[]> {
+    const data = await api<{ issues: { nodes: RawIssue[] } }>(LIST_QUERY, { label });
+    return data.issues.nodes.map(toIssue);
+  }
+
   async getComments(issue: Issue): Promise<Comment[]> {
     const data = await api<{ issue: { comments: { nodes: RawComment[] } } | null }>(COMMENTS_QUERY, {
       id: issue.id

@@ -78,6 +78,20 @@ const SCHEMA = `
   -- the dashboard's running total survives daemon restarts. NULL on non-run rows.
   ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS tokens_in  BIGINT;
   ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS tokens_out BIGINT;
+
+  -- Programs mode: per-program lifecycle status (resting state, last fire, last
+  -- result, source). This is OBSERVABILITY only — mutual exclusion for a running
+  -- program is the per-issue file lock (lock.ts), not this row.
+  CREATE TABLE IF NOT EXISTS program_state (
+    tracker       TEXT NOT NULL,
+    identifier    TEXT NOT NULL,
+    resting_state TEXT,
+    last_fired_at TIMESTAMPTZ,
+    last_result   TEXT,
+    last_source   TEXT,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tracker, identifier)
+  );
 `;
 
 let dbPromise: Promise<Db> | null = null;

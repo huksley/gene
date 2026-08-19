@@ -20,10 +20,12 @@
  * by default; set GENE_DRY_RUN=true to preview decisions without any writes.
  */
 
+import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import logger from "./logger.ts";
 import { monitor } from "./monitor.ts";
-import { env, WATCHED_STATES } from "./config.ts";
-import { decideAction, type Action } from "./decide.ts";
+import { env, WATCHED_STATES, GENE_DIR } from "./config.ts";
+import { decideAction, findMissingSections, type Action } from "./decide.ts";
 import { tracker, findIssue } from "./tracker/index.ts";
 import type { Comment, Issue } from "./tracker/index.ts";
 import { resolveTarget, targetLabel, localPathFor, type RepoTarget } from "./repos.ts";
@@ -33,9 +35,20 @@ import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeReques
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
 import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, findOpenChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
 import { redraft } from "./draft.ts";
+import {
+  excludePrograms,
+  decideProgramAction,
+  fireProgram,
+  hasFireRequest,
+  takeFireRequest,
+  childTicketIds,
+  newChildIdentifiers,
+  type ProgramSource
+} from "./programs.ts";
+import { readProgramState, writeProgramState, safeRestingState } from "./program-state.ts";
 import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts";
 import { dispatch as dispatchPluginEvent, setupPlugins } from "./plugins/index.ts";
-import { closeDb, findInterruptedRuns, logEvent, readTokenTotal } from "./db.ts";
+import { closeDb, findInterruptedRuns, logEvent, readTokenTotal, readIssueLog } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
@@ -103,7 +116,9 @@ const startMessages: Record<PromptIntent, string> = {
   "review-fix":
     "🧬 Spotted new review feedback / CI status on the change request — addressing it now and I'll push an update.",
   "continue":
-    "🧬 There's already a change request attached here — picking it up to finish the work, fix CI, and address review comments."
+    "🧬 There's already a change request attached here — picking it up to finish the work, fix CI, and address review comments.",
+  "program":
+    "⟳ Running this program now — I'll comment on the ticket with the result when it's done."
 };
 
 const buildClarificationComment = (missing: string[]): string => {
@@ -563,6 +578,298 @@ const dispatchAgent = async (
   return true;
 };
 
+// ─── Programs ───────────────────────────────────────────────────────────────
+// Recurring, ephemeral runs off a `Program`-labelled ticket. Unlike coding
+// issues they never open a change request and are never moved to Done: a run
+// flips the ticket to ACTIVE_STATE, then restores its resting state on finish
+// (or parks it in BLOCKED_STATE awaiting a `!gene approve`). The file lock
+// (withLock) is the concurrency guard; program_state is status/observability.
+
+/** Re-fetch the live program ticket by identifier (for post-run state checks). */
+const findProgram = async (identifier: string): Promise<Issue | undefined> => {
+  const programs = await tracker.listPrograms(env.PROGRAM_LABEL);
+  return programs.find(p => p.identifier.toLowerCase() === identifier.toLowerCase());
+};
+
+/**
+ * A place for the agent to work: the repo worktree when the program links one,
+ * else a scratch dir under `.gene/programs/<ID>` (repo-less programs are fine —
+ * they read the tracker / run tools, they don't push code).
+ */
+const prepareProgramWorkspace = async (
+  program: Issue,
+  target: RepoTarget | undefined,
+  forge: Forge | undefined
+): Promise<{ worktreePath: string; hasRepo: boolean }> => {
+  if (target && forge) {
+    const { worktreePath } = await ensureWorktree(target, program, forge);
+    return { worktreePath, hasRepo: true };
+  }
+  const scratch = path.join(GENE_DIR, "programs", program.identifier);
+  await mkdir(scratch, { recursive: true });
+  return { worktreePath: scratch, hasRepo: false };
+};
+
+/**
+ * Wind down a finished program run: restore its resting state (never Done),
+ * unless it was cancelled (leave ACTIVE for the re-fire) or the agent parked it
+ * in Blocked (leave it awaiting a reply). Records the outcome and logs any new
+ * Gene-labelled child tickets it spun off.
+ */
+const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<void> => {
+  // Cancelled (a restart or a UI cancel): leave the ticket ACTIVE so the re-fire /
+  // next scan picks it up; don't restore or clobber state.
+  if (monitor.isCancelled(program.identifier)) {
+    await record(program, "program-run-done", "cancelled", { last_result: "cancelled" });
+    return;
+  }
+  // The agent may have parked the program in Blocked awaiting a decision — honour it.
+  let current: Issue | undefined;
+  try {
+    current = await findProgram(program.identifier);
+  } catch {
+    current = undefined;
+  }
+  if (current && current.stateName === env.BLOCKED_STATE) {
+    logger.info(`${logger.tag.flow} [${program.identifier}] parked in ${env.BLOCKED_STATE} — awaiting reply`);
+    await record(program, "program-run-done", `parked in ${env.BLOCKED_STATE}`, { last_result: "blocked" });
+    return;
+  }
+
+  const state = await readProgramState(tracker.name, program.identifier);
+  const resting = safeRestingState(state?.restingState, env.DONE_STATE, env.TRIGGER_STATE);
+  try {
+    await tracker.moveToState(program, resting);
+  } catch (error) {
+    logger.warn(
+      `${logger.tag.flow} [${program.identifier}] could not restore to "${resting}":`,
+      error instanceof Error ? error.message : error
+    );
+  }
+
+  const ok = result.exitCode === 0 && result.sawSuccessResult && !result.transientFailure;
+  const lastResult = ok ? "ok" : "incomplete";
+  await writeProgramState(tracker.name, program.identifier, {
+    lastResult,
+    lastFiredAt: new Date().toISOString()
+  });
+
+  // Child-ticket detection (best-effort observability): log Gene-labelled children of
+  // this program that weren't logged before.
+  try {
+    const gene = await tracker.listIssues();
+    const children = childTicketIds(gene, program.identifier);
+    const priorLog = await readIssueLog(tracker.name, program.identifier);
+    const loggedChildren = priorLog
+      .filter(r => r.event === "child-ticket-created" && r.data && typeof r.data === "object" && "identifier" in r.data)
+      .map(r => String((r.data as { identifier: unknown }).identifier));
+    for (const id of newChildIdentifiers(children, loggedChildren)) {
+      await record(program, "child-ticket-created", id, { identifier: id });
+    }
+  } catch (error) {
+    logger.warn(
+      `${logger.tag.flow} [${program.identifier}] child-ticket detection failed:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+
+  await record(program, "program-run-done", `→ ${resting} (${lastResult})`, { last_result: lastResult });
+};
+
+/**
+ * Run a program: gate on required sections (fire-time only), resolve an optional
+ * repo, register the row, then spawn the agent under the file lock. `recordResting`
+ * is true for a fresh fire (records the state to restore) and false for a
+ * resume/interrupted continuation. Mirrors {@link dispatchAgent} for concurrency,
+ * inFlight bookkeeping, and plugin/monitor lifecycle — but never opens a CR.
+ */
+const dispatchProgram = async (
+  program: Issue,
+  comments: Comment[],
+  opts: { source: ProgramSource; recordResting: boolean }
+): Promise<void> => {
+  if (inFlight.has(program.id)) {
+    logger.info(`${logger.tag.flow} [${program.identifier}] program already running — skipping`);
+    return;
+  }
+
+  // Section gate (fire time only — a resume/interrupted continuation skips it).
+  if (opts.recordResting && env.PROGRAM_REQUIRE_SECTIONS.length > 0) {
+    const missing = findMissingSections(program.description, env.PROGRAM_REQUIRE_SECTIONS);
+    if (missing.length > 0) {
+      logger.warn(`${logger.tag.flow} [${program.identifier}] missing sections: ${missing.join(", ")} — not firing`);
+      try {
+        await tracker.postComment(program, buildClarificationComment(missing));
+      } catch {
+        /* best effort */
+      }
+      return;
+    }
+  }
+
+  const target = resolveTarget(program, comments) ?? undefined;
+  const forge = target ? selectForge(target.forge) : undefined;
+  const repoLabel = target ? targetLabel(target) : "(no repo)";
+
+  monitor.agentDispatched(program.identifier, "program", repoLabel, undefined, program.title);
+  void dispatchPluginEvent({ kind: "agent-started", issue: program, intent: "program" });
+
+  if (isAtConcurrencyCap()) {
+    logger.info(`${logger.tag.flow} [${program.identifier}] at concurrency cap — deferring`);
+    // Re-enqueue the fire so the next scan runs it; the row stays "queued" (do NOT
+    // call agentSettled here — it would flip a merely-deferred program to "error").
+    if (opts.recordResting) fireProgram(program.identifier, opts.source);
+    return;
+  }
+
+  if (opts.recordResting) {
+    await writeProgramState(tracker.name, program.identifier, {
+      restingState: program.stateName,
+      lastFiredAt: new Date().toISOString(),
+      lastSource: opts.source
+    });
+    await record(program, "program-fired", `source: ${opts.source} (resting: ${program.stateName})`, {
+      source: opts.source
+    });
+  }
+  await record(program, "dispatch", `program → ${repoLabel} [${forge ? forge.name : "none"}] ⎇ (program run)`, {
+    title: program.title
+  });
+
+  if (env.DRY_RUN) {
+    await postStartComment(program, "program");
+    await tracker.moveToState(program, env.ACTIVE_STATE);
+    logger.info(`${logger.tag.flow} [${program.identifier}] (dry-run) would run program in ${repoLabel}`);
+    monitor.agentSettled(program.identifier);
+    return;
+  }
+
+  const spawnPromise = withLock(program.identifier, async () => {
+    await postStartComment(program, "program");
+    await tracker.moveToState(program, env.ACTIVE_STATE);
+    const { worktreePath, hasRepo } = await prepareProgramWorkspace(program, target, forge);
+
+    let attachmentRelativePaths: string[] = [];
+    try {
+      const staged = await stageIssueAttachments(program, comments, worktreePath);
+      attachmentRelativePaths = staged.map(s => s.relativePath);
+    } catch (error) {
+      logger.warn(
+        `${logger.tag.flow} [${program.identifier}] attachment staging failed:`,
+        error instanceof Error ? error.message : error
+      );
+    }
+
+    const prompt = buildPrompt({
+      issue: program,
+      comments,
+      worktreePath,
+      intent: "program",
+      attachmentRelativePaths,
+      hasRepo,
+      forge,
+      repoLabel,
+      subdir: target?.subdir
+    });
+
+    const result = await invokeAgent(
+      { issue: program, prompt, worktreePath, forge, extraAllowedTools: env.PROGRAM_ALLOWED_TOOLS },
+      (pid: number) => {
+        inFlight.set(program.id, { ...inFlight.get(program.id), pid });
+      }
+    );
+    await finishProgramRun(program, result);
+    return result;
+  })
+    .then(result => {
+      if (result === "skipped") {
+        logger.info(`${logger.tag.flow} [${program.identifier}] another run holds the lock — skipping`);
+      }
+    })
+    .catch(error => {
+      logger.error(
+        `${logger.tag.flow} [${program.identifier}] program spawn failed:`,
+        error instanceof Error ? error.message : error
+      );
+    })
+    .finally(() => {
+      inFlight.delete(program.id);
+      monitor.agentSettled(program.identifier);
+      void dispatchPluginEvent({
+        kind: "agent-finished",
+        issue: program,
+        status: monitor.getAgent(program.identifier)?.status ?? "done"
+      });
+    });
+
+  inFlight.set(program.id, {
+    ...inFlight.get(program.id),
+    promise: spawnPromise,
+    startedAt: Date.now(),
+    identifier: program.identifier
+  });
+};
+
+/**
+ * One pass over the program tickets: register each row, decide, and act. Fetches
+ * comments only when a decision needs them (a fire is pending, or the ticket sits
+ * in Blocked/Active) so a resting-program poll stays cheap.
+ */
+const scanPrograms = async (programs: Issue[]): Promise<void> => {
+  for (const program of programs) {
+    if (!tracker.isAssignedToOwner(program)) continue;
+    monitor.setProgramRow(program.identifier, program.title, program.stateName, program.description);
+
+    const runInFlight = inFlight.has(program.id);
+    const source = hasFireRequest(program.identifier) ? takeFireRequest(program.identifier) : undefined;
+    const comments =
+      source !== undefined || program.stateName === env.BLOCKED_STATE || program.stateName === env.ACTIVE_STATE
+        ? await tracker.getComments(program)
+        : [];
+
+    const action = decideProgramAction(program, comments, {
+      firePending: source !== undefined,
+      source,
+      runInFlight
+    });
+    if (action.kind !== "nothing") {
+      logger.info(`${logger.tag.flow} [${program.identifier}] program → ${action.kind}`);
+    }
+
+    switch (action.kind) {
+      case "nothing":
+        break;
+      case "fire":
+        await dispatchProgram(program, comments, { source: action.source, recordResting: true });
+        break;
+      case "restart":
+        // Cancel the live run; re-enqueue so the next scan fires once the lock frees.
+        monitor.requestCancel(program.identifier);
+        fireProgram(program.identifier, action.source);
+        break;
+      case "resume":
+      case "resume-interrupted":
+        await dispatchProgram(program, comments, { source: "manual", recordResting: false });
+        break;
+      case "stop": {
+        // User replied `!gene stop` on a Blocked program: abandon it, return to rest.
+        const st = await readProgramState(tracker.name, program.identifier);
+        const resting = safeRestingState(st?.restingState, env.DONE_STATE, env.TRIGGER_STATE);
+        try {
+          await tracker.moveToState(program, resting);
+        } catch (error) {
+          logger.warn(
+            `${logger.tag.flow} [${program.identifier}] could not stop → "${resting}":`,
+            error instanceof Error ? error.message : error
+          );
+        }
+        await record(program, "program-run-done", `stopped → ${resting}`, { last_result: "stopped" });
+        break;
+      }
+    }
+  }
+};
+
 /** Comment body for a run that stalled (transient API drop or silent crash). */
 const buildStalledComment = (result: InvokeResult): string => {
   const why = result.transientFailure
@@ -733,10 +1040,16 @@ const tryContinueAttachedDraft = async (
  * cycle — the caller decides whether that's fatal (`--once`) or just "keep waiting"
  * (the loop). An unfiltered scan always returns true.
  */
-const scanOnce = async (issueFilter?: string): Promise<boolean> => {
+const scanOnce = async (
+  issueFilter?: string,
+  excludeIdentifiers: Set<string> = new Set()
+): Promise<boolean> => {
   const scannedAt = new Date().toISOString();
   monitor.scanStarted();
   let all = await tracker.listIssues();
+  // Program tickets (labelled PROGRAM_LABEL) are never coding work — keep them out of
+  // the scan even when they also carry the Gene label. Default empty set = no-op.
+  all = excludePrograms(all, excludeIdentifiers);
 
   if (issueFilter) {
     all = all.filter(i => i.identifier.toLowerCase() === issueFilter.toLowerCase());
@@ -915,6 +1228,23 @@ const seedTokenTotals = async (): Promise<void> => {
   }
 };
 
+/**
+ * One full scan cycle: list program tickets, run the program lifecycle, then the
+ * coding scan with those programs excluded (so a `Program`-labelled ticket that
+ * also carries `Gene` isn't picked up as a coding issue). Returns scanOnce's
+ * found flag so callers keep the existing filtered-run behaviour.
+ */
+const scanCycle = async (issueFilter?: string): Promise<boolean> => {
+  let programs: Issue[] = [];
+  try {
+    programs = await tracker.listPrograms(env.PROGRAM_LABEL);
+  } catch (error) {
+    logger.warn(`${logger.tag.flow} could not list programs:`, error instanceof Error ? error.message : error);
+  }
+  await scanPrograms(programs);
+  return scanOnce(issueFilter, new Set(programs.map(p => p.identifier)));
+};
+
 const runForever = async (issueFilter?: string): Promise<void> => {
   logger.info(
     `${logger.tag.flow} starting (label=${env.LABEL}, interval=${env.POLL_INTERVAL_MS}ms, ` +
@@ -943,7 +1273,7 @@ const runForever = async (issueFilter?: string): Promise<void> => {
     // independent of this loop, so they keep running and reporting.
     if (!paused) {
       try {
-        const found = await scanOnce(issueFilter);
+        const found = await scanCycle(issueFilter);
         if (!found) {
           // Filtered run, issue not in the labelled set yet (typo, label not applied,
           // or a transient empty list). Keep polling rather than giving up.
@@ -1150,7 +1480,7 @@ const main = async (): Promise<void> => {
 
   if (once) {
     publishDaemonConfig();
-    const found = await scanOnce(issueFilter);
+    const found = await scanCycle(issueFilter);
     if (!found) {
       // Fail fast in once-mode: the operator named a ticket that isn't there.
       logger.error(`${logger.tag.flow} unable to find issue with identifier "${issueFilter}"`);
@@ -1207,6 +1537,14 @@ const main = async (): Promise<void> => {
         // from (REPO_ROOT), when that dir shares the ticket repo's origin and has a clean
         // tree. Purely local (fetch + checkout) — no tracker/forge writes, never throws.
         fork: identifier => forkIssue(identifier),
+        // `g` on a program row fires it now (or restarts a running one). A manual fire
+        // is explicit intent, so clear any pause and wake the poll loop immediately —
+        // the next scanCycle picks the queued fire up.
+        fireProgram: (identifier: string) => {
+          fireProgram(identifier);
+          setPaused(false);
+          requestScan();
+        },
         // Shift+`R` on the dashboard removes a ticket from Gene: drop the Gene label so
         // the next scan won't pick it up again (the UI cancels any live agent first).
         // Local worktree/branch are left intact — use reset for that. Drop the label

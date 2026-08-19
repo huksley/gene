@@ -229,6 +229,14 @@ export class TrelloTracker implements Tracker {
     return cards.filter(c => c.labels.some(l => l.name.toLowerCase() === want)).map(toIssue);
   }
 
+  /** Mirror of listIssues() with the label taken as a parameter (PROGRAM_LABEL). */
+  async listPrograms(label: string): Promise<Issue[]> {
+    await ensureMeta();
+    const want = label.toLowerCase();
+    const cards = await trello().listCardsOnBoard(boardId());
+    return cards.filter(c => c.labels.some(l => l.name.toLowerCase() === want)).map(toIssue);
+  }
+
   async getComments(issue: Issue): Promise<Comment[]> {
     // The wrapper returns comments oldest-first already.
     const raw = await trello().getComments(issue.id);

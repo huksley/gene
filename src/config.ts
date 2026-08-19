@@ -95,6 +95,11 @@ if (trackerRaw !== "linear" && trackerRaw !== "trello") {
 }
 const TP = TRACKER === "trello" ? "TRELLO_" : "LINEAR_";
 
+// Program sections default (used when GENE_PROGRAM_REQUIRE_SECTIONS is unset). list()
+// returns [] when unset, so the fallback is computed here rather than in the helper.
+const DEFAULT_PROGRAM_SECTIONS = ["## Trigger", "## Workflow", "## Acceptance criteria"];
+const programSections = list("GENE_PROGRAM_REQUIRE_SECTIONS");
+
 export const env = {
   TRACKER,
 
@@ -147,6 +152,17 @@ export const env = {
   // alphanumerics ("!gene" → "gene"). See branch.ts.
   BRANCH_TEMPLATE: str("GENE_BRANCH_TEMPLATE", "{prefix}/{identifier}-{slug}"),
   REQUIRE_SECTIONS: list("GENE_REQUIRE_SECTIONS"),
+  // Programs mode. A program is a ticket carrying PROGRAM_LABEL (tracker-namespaced,
+  // like LABEL) with ## Trigger / ## Workflow / ## Acceptance criteria sections. It
+  // runs on demand, writes back to the ticket, and never opens a change request.
+  PROGRAM_LABEL: str(`${TP}PROGRAM_LABEL`, "Program"),
+  // Sections a program ticket must contain (non-empty) before it will fire. Empty list
+  // ⇒ no gate. Global (not tracker-namespaced) since sections are Markdown, not tracker
+  // semantics.
+  PROGRAM_REQUIRE_SECTIONS: programSections.length > 0 ? programSections : DEFAULT_PROGRAM_SECTIONS,
+  // Extra tools granted to a program agent on top of BASE + tracker (+ forge, when the
+  // program links a repo). e.g. "Bash(pup *),Bash(datadog *)". Comma-separated.
+  PROGRAM_ALLOWED_TOOLS: list("GENE_PROGRAM_ALLOWED_TOOLS"),
   GITLAB_HOST: str("GITLAB_HOST", ""),
   // Review-comment patterns that must NOT trigger a re-dispatch (see ignore.ts).
   // Unlike the tracker settings above these are NOT prefix-namespaced: the forge is
