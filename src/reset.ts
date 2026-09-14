@@ -23,6 +23,7 @@ import { parseRepoUrl } from "./repos.ts";
 import { deleteBranch, removeWorktree } from "./git.ts";
 import { run } from "./exec.ts";
 import { logEvent, closeDb } from "./db.ts";
+import { setRestingState } from "./program-state.ts";
 import { tracker, findIssue } from "./tracker/index.ts";
 import { selectForge } from "./forge/index.ts";
 import { inSea } from "./sea-assets.ts";
@@ -175,6 +176,21 @@ export const resetIssue = async (identifier: string, options: ResetOptions = {})
     logger.warn(
       `${logger.tag.reset} could not find ${identifier} on ${tracker.name} — skipping state move (local cleanup done)`
     );
+  }
+
+  // A reset puts the ticket in the trigger state, so for a program that is now its
+  // resting state as well. Without this a reset clears the symptom (the ticket moves out
+  // of the active state) but leaves a bad resting state on record, and the program goes
+  // straight back to it the next time it runs. No-op for coding issues.
+  if (issue && !env.DRY_RUN) {
+    try {
+      await setRestingState(tracker.name, identifier, env.TRIGGER_STATE);
+    } catch (error) {
+      logger.warn(
+        `${logger.tag.reset} could not update program resting state:`,
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   logger.info(

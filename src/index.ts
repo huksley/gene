@@ -48,7 +48,7 @@ import {
 import { readProgramState, writeProgramState, safeRestingState } from "./program-state.ts";
 import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts";
 import { dispatch as dispatchPluginEvent, setupPlugins } from "./plugins/index.ts";
-import { closeDb, findInterruptedRuns, logEvent, readTokenTotal, readIssueLog } from "./db.ts";
+import { closeDb, findInterruptedRuns, hasUnfinishedRun, logEvent, readTokenTotal, readIssueLog } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
@@ -637,7 +637,7 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
   }
 
   const state = await readProgramState(tracker.name, program.identifier);
-  const resting = safeRestingState(state?.restingState, env.DONE_STATE, env.TRIGGER_STATE);
+  const resting = safeRestingState(state?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE);
   try {
     await tracker.moveToState(program, resting);
   } catch (error) {
@@ -723,12 +723,21 @@ const dispatchProgram = async (
   }
 
   if (opts.recordResting) {
+    // Never record the active state as the state to come back to. Firing a program that
+    // already reads ACTIVE is legitimate (an operator hits `g` after a cancel, or while
+    // a stale run is being cleaned up), but its ticket state says nothing about where it
+    // rests — so leave the stored value alone (writeProgramState COALESCE-merges, so
+    // undefined keeps the last good one; with none on record safeRestingState falls back
+    // to the trigger state). Recording it would make every finish restore the program to
+    // "running" and re-fire it on the next poll.
+    const restingState = program.stateName === env.ACTIVE_STATE ? undefined : program.stateName;
     await writeProgramState(tracker.name, program.identifier, {
-      restingState: program.stateName,
+      restingState,
       lastFiredAt: new Date().toISOString(),
       lastSource: opts.source
     });
-    await record(program, "program-fired", `source: ${opts.source} (resting: ${program.stateName})`, {
+    const restingNote = restingState ?? `unchanged — fired from ${env.ACTIVE_STATE}`;
+    await record(program, "program-fired", `source: ${opts.source} (resting: ${restingNote})`, {
       source: opts.source
     });
   }
@@ -827,10 +836,26 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
         ? await tracker.getComments(program)
         : [];
 
+    // Only an ACTIVE program with nothing running locally can resume, and only against a
+    // logged unfinished run — so the store is read just for that case. A failure here must
+    // read as "no evidence" (never resume), not as a reason to re-fire.
+    let interruptedRun = false;
+    if (source === undefined && !runInFlight && program.stateName === env.ACTIVE_STATE) {
+      try {
+        interruptedRun = await hasUnfinishedRun(tracker.name, program.identifier);
+      } catch (error) {
+        logger.warn(
+          `${logger.tag.flow} [${program.identifier}] could not check for an unfinished run:`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    }
+
     const action = decideProgramAction(program, comments, {
       firePending: source !== undefined,
       source,
-      runInFlight
+      runInFlight,
+      interruptedRun
     });
     if (action.kind !== "nothing") {
       logger.info(`${logger.tag.flow} [${program.identifier}] program → ${action.kind}`);
@@ -854,7 +879,7 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
       case "stop": {
         // User replied `!gene stop` on a Blocked program: abandon it, return to rest.
         const st = await readProgramState(tracker.name, program.identifier);
-        const resting = safeRestingState(st?.restingState, env.DONE_STATE, env.TRIGGER_STATE);
+        const resting = safeRestingState(st?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE);
         try {
           await tracker.moveToState(program, resting);
         } catch (error) {
@@ -1229,6 +1254,13 @@ const seedTokenTotals = async (): Promise<void> => {
 };
 
 /**
+ * Program identifiers from the last successful {@link Tracker.listPrograms}, kept so a
+ * transient listing failure can't silently hand the coding scan an empty exclusion set.
+ * null until the first successful listing.
+ */
+let lastProgramIds: Set<string> | null = null;
+
+/**
  * One full scan cycle: list program tickets, run the program lifecycle, then the
  * coding scan with those programs excluded (so a `Program`-labelled ticket that
  * also carries `Gene` isn't picked up as a coding issue). Returns scanOnce's
@@ -1236,13 +1268,30 @@ const seedTokenTotals = async (): Promise<void> => {
  */
 const scanCycle = async (issueFilter?: string): Promise<boolean> => {
   let programs: Issue[] = [];
+  let listed = true;
   try {
     programs = await tracker.listPrograms(env.PROGRAM_LABEL);
   } catch (error) {
+    listed = false;
     logger.warn(`${logger.tag.flow} could not list programs:`, error instanceof Error ? error.message : error);
   }
   await scanPrograms(programs);
-  return scanOnce(issueFilter, new Set(programs.map(p => p.identifier)));
+
+  // The coding scan must know which tickets are programs, or it dispatches them as
+  // ordinary work — a Program ticket also carries the Gene label, so a single failed
+  // listing above is enough for the coding pipeline to grab one, branch it, and leave it
+  // in the active state (observed on CLOUD-2014, 2026-09-10). Fall back to the last
+  // known-good set rather than to no exclusions at all; with nothing yet cached, sit this
+  // cycle out and let the next poll re-list.
+  if (listed) {
+    lastProgramIds = new Set(programs.map(p => p.identifier));
+  } else if (lastProgramIds === null) {
+    logger.warn(`${logger.tag.flow} no known program set yet — skipping the coding scan this cycle`);
+    return false;
+  } else {
+    logger.info(`${logger.tag.flow} using the last known program set (${lastProgramIds.size}) for exclusion`);
+  }
+  return scanOnce(issueFilter, lastProgramIds);
 };
 
 const runForever = async (issueFilter?: string): Promise<void> => {

@@ -60,17 +60,33 @@ const newUserCommentsAfter = (comments: Comment[], afterIso: string | undefined)
 export const decideProgramAction = (
   program: Issue,
   comments: Comment[],
-  opts: { firePending: boolean; source?: ProgramSource; runInFlight: boolean }
+  opts: {
+    firePending: boolean;
+    source?: ProgramSource;
+    runInFlight: boolean;
+    /**
+     * The activity log positively records a run that never finished (its last event is
+     * `agent-start`/`agent-interrupted`) — the only evidence that resuming is warranted.
+     * Defaults to false so the automatic path is opt-in: a program never re-fires on
+     * inference alone.
+     */
+    interruptedRun?: boolean;
+  }
 ): ProgramAction => {
   const source = opts.source ?? "manual";
   if (opts.firePending) {
     return opts.runInFlight ? { kind: "restart", source } : { kind: "fire", source };
   }
   if (program.stateName === env.ACTIVE_STATE) {
-    // ACTIVE with a live run: leave it. ACTIVE with nothing running locally: the
-    // daemon restarted mid-run — resume it (worktree/scratch dir persists).
+    // ACTIVE with a live run: leave it. ACTIVE with nothing running locally is NOT by
+    // itself a daemon-died-mid-run signal — it is equally what a program looks like
+    // after a finished run restored it to a bad resting state, or after anything else
+    // parked it there. Resume only against a logged unfinished run; that record is
+    // closed by the run's own outcome row, so one interruption yields one resume
+    // (CLOUD-2014 re-fired 394 times when this was inferred from the state alone).
     if (opts.runInFlight) return { kind: "nothing", reason: "run in progress" };
-    return { kind: "resume-interrupted" };
+    if (opts.interruptedRun === true) return { kind: "resume-interrupted" };
+    return { kind: "nothing", reason: "active, no unfinished run on record" };
   }
   if (program.stateName === env.BLOCKED_STATE) {
     const lastAgent = latestAgentComment(comments);

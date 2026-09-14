@@ -66,13 +66,35 @@ test("decide: fire pending while running → restart", () => {
   assert.deepEqual(a, { kind: "restart", source: "manual" });
 });
 
-test("decide: ACTIVE but nothing running locally → resume-interrupted", () => {
-  const a = decideProgramAction(prog(env.ACTIVE_STATE), [], { firePending: false, runInFlight: false });
+test("decide: ACTIVE, nothing running, an unfinished run on record → resume-interrupted", () => {
+  const a = decideProgramAction(prog(env.ACTIVE_STATE), [], {
+    firePending: false,
+    runInFlight: false,
+    interruptedRun: true
+  });
   assert.equal(a.kind, "resume-interrupted");
 });
 
+// Regression (CLOUD-2014, 419 dispatches from 6 fires): ACTIVE with nothing running is
+// NOT on its own evidence of an interrupted run — it is also what a program looks like
+// the instant a finished run "restored" it to a resting state that was itself ACTIVE, or
+// after something else (a coding dispatch, an operator) parked it there. Resuming on that
+// inference alone re-fires the program every poll, forever.
+test("decide: ACTIVE, nothing running, no unfinished run on record → nothing", () => {
+  const a = decideProgramAction(prog(env.ACTIVE_STATE), [], {
+    firePending: false,
+    runInFlight: false,
+    interruptedRun: false
+  });
+  assert.equal(a.kind, "nothing");
+});
+
 test("decide: ACTIVE and running → nothing", () => {
-  const a = decideProgramAction(prog(env.ACTIVE_STATE), [], { firePending: false, runInFlight: true });
+  const a = decideProgramAction(prog(env.ACTIVE_STATE), [], {
+    firePending: false,
+    runInFlight: true,
+    interruptedRun: false
+  });
   assert.equal(a.kind, "nothing");
 });
 

@@ -568,6 +568,28 @@ export const findInterruptedRuns = async (): Promise<{ tracker: string; identifi
 };
 
 /**
+ * Whether this ticket's activity log ends on a run that never produced an outcome — its
+ * last event is `agent-start` (the daemon died mid-run) or `agent-interrupted` (startup
+ * reconcile already stamped that run closed). Same test as {@link findInterruptedRuns},
+ * scoped to one ticket.
+ *
+ * The programs lifecycle uses it as the *evidence* for a resume, in place of inferring
+ * one from the tracker state. That distinction is what bounds the resume: a run's own
+ * terminal row (`program-run-done`) lands after `agent-start`, so the record stops
+ * reading as unfinished the moment the resumed run completes — one interruption, one
+ * resume, rather than a re-fire on every poll.
+ */
+export const hasUnfinishedRun = async (tracker: string, identifier: string): Promise<boolean> => {
+  const db = await getDb();
+  const res = await db.query<{ event: string }>(
+    `SELECT event FROM issue_log WHERE tracker = $1 AND identifier = $2 ORDER BY id DESC LIMIT 1`,
+    [tracker, identifier]
+  );
+  const event = res.rows[0]?.event;
+  return event === "agent-start" || event === "agent-interrupted";
+};
+
+/**
  * Begin shutdown of the store: cancel any in-flight connect-retry loop, then close the
  * pool if it was ever opened — so a one-shot (`--once` / `log` / `reset`) or a Ctrl+C
  * during startup exits promptly instead of lingering on open sockets or a 30s retry.

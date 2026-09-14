@@ -66,13 +66,42 @@ export const writeProgramState = async (
   );
 };
 
-/** The state to restore a finished run to — never Done (nor undefined). */
+/**
+ * Point an existing program's resting state at `state` — used by a reset, which has just
+ * moved the ticket to the trigger state and so has made that its resting state. A plain
+ * UPDATE, not the upsert above: a reset runs against coding issues too, and those must
+ * not gain a program_state row. Returns quietly when the ticket has none.
+ */
+export const setRestingState = async (
+  tracker: string,
+  identifier: string,
+  state: string
+): Promise<void> => {
+  const db = await getDb();
+  await db.query(
+    "UPDATE program_state SET resting_state = $3, updated_at = now() WHERE tracker = $1 AND identifier = $2",
+    [tracker, identifier, state]
+  );
+};
+
+/**
+ * The state to restore a finished run to — never Done, never the *active* state, nor
+ * undefined.
+ *
+ * The active-state guard is load-bearing, not belt-and-braces: a program whose recorded
+ * resting state is the active state gets "restored" by {@link finishProgramRun} to the
+ * one state that makes the next scan treat it as a run to resume, and it then re-fires
+ * every poll forever (CLOUD-2014 ran 394 times that way). `activeState` is optional so
+ * callers that genuinely have no notion of one keep the old two-guard behaviour.
+ */
 export const safeRestingState = (
   resting: string | undefined,
   doneState: string | undefined,
-  triggerState: string
+  triggerState: string,
+  activeState?: string
 ): string => {
   if (!resting) return triggerState;
   if (doneState && resting === doneState) return triggerState;
+  if (activeState && resting === activeState) return triggerState;
   return resting;
 };
