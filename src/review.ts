@@ -7,9 +7,10 @@
  *   - **failing CI** — a GitLab pipeline / GitHub Actions run that failed; and
  *   - **new human review comments** on the MR/PR.
  *
- * Discovery prefers an MR/PR *attached/linked* to the issue (by iid, so it works
- * even when the change request lives on a branch other than the issue's), and
- * falls back to an MR/PR on the issue's own branch.
+ * Discovery uses only an MR/PR *linked* to the issue in the tracker (by iid, so
+ * it works even when the change request lives on a branch other than the
+ * issue's), or the open one on the issue's own branch. URLs mentioned in the
+ * description or comments are never treated as the issue's change request.
  *
  * A small per-issue cursor (in Postgres, see db.ts) records what we've already
  * acted on — the failed head SHA and the newest handled comment — so we dispatch
@@ -32,7 +33,7 @@ import { commentIsIgnored } from "./ignore.ts";
 import { tracker } from "./tracker/index.ts";
 import type { Forge, ChangeRequestReview, ReviewComment } from "./forge/index.ts";
 import { findChangeRequestRefs, refMatchesTarget, type RepoTarget } from "./repos.ts";
-import type { Comment, Issue } from "./tracker/index.ts";
+import type { Issue } from "./tracker/index.ts";
 import logger from "./logger.ts";
 
 /** What the agent needs to know to address/continue the change request (fed into the prompt). */
@@ -90,20 +91,63 @@ export const writeCursor = async (issueId: string, cursor: ReviewCursor): Promis
   );
 };
 
+/** Inputs to change-request selection, with forge reads injected so it can be tested. */
+export type ChangeRequestSources = {
+  branchName: string;
+  /** URLs of the issue's tracker attachments/links (the forge integration's MR/PR link). */
+  attachmentUrls: string[];
+  target: RepoTarget;
+  byIid: (iid: string) => Promise<ChangeRequestReview | null>;
+  byBranch: (branch: string) => Promise<ChangeRequestReview | null>;
+};
+
 /**
- * Resolve the change request for an issue and return the first one matching
- * `accept`. Prefers an MR/PR attached/linked to the issue (tracker attachment,
- * then description, then comments — matched to the resolved target repo and looked
- * up by iid, so a human's branch name is fine); falls back to an MR/PR on the
- * issue's own branch. Null if none matches.
+ * The change requests an issue owns: the ones *linked* to it in the tracker, then
+ * the open one on the issue's own branch. MR/PR URLs in the description or comments
+ * are deliberately ignored — descriptions routinely cite *related* MRs as background
+ * ("!1786 removed this, !1804 reverted it"), and treating those as the issue's own
+ * got an unrelated open MR picked up and a merged one read as "done".
  */
-const resolveChangeRequest = async (
+const ownedChangeRequests = async (src: ChangeRequestSources): Promise<ChangeRequestReview[]> => {
+  const owned: ChangeRequestReview[] = [];
+  const add = (review: ChangeRequestReview | null) => {
+    if (review && !owned.some(r => r.iid === review.iid)) {
+      owned.push(review);
+    }
+  };
+  for (const url of src.attachmentUrls) {
+    for (const ref of findChangeRequestRefs(url)) {
+      if (refMatchesTarget(ref, src.target) && !owned.some(r => r.iid === ref.iid)) {
+        add(await src.byIid(ref.iid));
+      }
+    }
+  }
+  add(await src.byBranch(src.branchName));
+  return owned;
+};
+
+/** The issue's open change request (linked first, then on its branch), or null. */
+export const pickOpenChangeRequest = async (src: ChangeRequestSources): Promise<ChangeRequestReview | null> =>
+  (await ownedChangeRequests(src)).find(r => r.state === "open") ?? null;
+
+/**
+ * The issue's merged change request — this ends the lifecycle (moves it to Done), so
+ * none of its change requests may still be open (a multi-MR issue isn't done while
+ * one is in flight).
+ */
+export const pickMergedChangeRequest = async (src: ChangeRequestSources): Promise<ChangeRequestReview | null> => {
+  const owned = await ownedChangeRequests(src);
+  if (owned.some(r => r.state === "open")) {
+    return null;
+  }
+  return owned.find(r => r.state === "merged") ?? null;
+};
+
+const sourcesFor = async (
   issue: Issue,
-  comments: Comment[],
   target: RepoTarget,
-  forge: Forge,
-  accept: (review: ChangeRequestReview) => boolean
-): Promise<ChangeRequestReview | null> => {
+  forge: Forge
+): Promise<ChangeRequestSources> => {
   let attachmentUrls: string[] = [];
   try {
     attachmentUrls = (await tracker.getAttachments(issue)).map(a => a.url);
@@ -113,43 +157,28 @@ const resolveChangeRequest = async (
       error instanceof Error ? error.message : error
     );
   }
-
-  const texts = [...attachmentUrls, issue.description, ...comments.map(c => c.body)];
-  const seen = new Set<string>();
-  for (const text of texts) {
-    for (const ref of findChangeRequestRefs(text)) {
-      if (!refMatchesTarget(ref, target) || seen.has(ref.iid)) {
-        continue;
-      }
-      seen.add(ref.iid);
-      const review = await forge.getReviewByIid(target, ref.iid);
-      if (review && accept(review)) {
-        return review;
-      }
-    }
-  }
-
-  const byBranch = await forge.getReviewStatus(target, issue.branchName);
-  return byBranch && accept(byBranch) ? byBranch : null;
+  return {
+    branchName: issue.branchName,
+    attachmentUrls,
+    target,
+    byIid: iid => forge.getReviewByIid(target, iid),
+    byBranch: branch => forge.getReviewStatus(target, branch)
+  };
 };
 
 /** The issue's currently-open change request, or null. */
-export const findOpenChangeRequest = (
+export const findOpenChangeRequest = async (
   issue: Issue,
-  comments: Comment[],
   target: RepoTarget,
   forge: Forge
-): Promise<ChangeRequestReview | null> =>
-  resolveChangeRequest(issue, comments, target, forge, review => review.state === "open");
+): Promise<ChangeRequestReview | null> => pickOpenChangeRequest(await sourcesFor(issue, target, forge));
 
-/** The issue's change request if it has already merged, or null. */
-export const findMergedChangeRequest = (
+/** The issue's change request if it has already merged (see pickMergedChangeRequest), or null. */
+export const findMergedChangeRequest = async (
   issue: Issue,
-  comments: Comment[],
   target: RepoTarget,
   forge: Forge
-): Promise<ChangeRequestReview | null> =>
-  resolveChangeRequest(issue, comments, target, forge, review => review.state === "merged");
+): Promise<ChangeRequestReview | null> => pickMergedChangeRequest(await sourcesFor(issue, target, forge));
 
 const toContext = (forge: Forge, review: ChangeRequestReview, newComments: ReviewComment[]): ReviewContext => ({
   crTerm: forge.changeRequestTerm,
@@ -235,11 +264,10 @@ const decideReviewOutcome = async (
  */
 export const evaluateReview = async (
   issue: Issue,
-  comments: Comment[],
   target: RepoTarget,
   forge: Forge
 ): Promise<ReviewOutcome> => {
-  const review = await findOpenChangeRequest(issue, comments, target, forge);
+  const review = await findOpenChangeRequest(issue, target, forge);
   if (!review) {
     return { act: false, reason: "no open change request for the issue (merged, closed, or not opened yet)" };
   }
@@ -253,11 +281,10 @@ export const evaluateReview = async (
  */
 export const evaluateDraftPickup = async (
   issue: Issue,
-  comments: Comment[],
   target: RepoTarget,
   forge: Forge
 ): Promise<ReviewOutcome | null> => {
-  const review = await findOpenChangeRequest(issue, comments, target, forge);
+  const review = await findOpenChangeRequest(issue, target, forge);
   if (!review) {
     return null;
   }

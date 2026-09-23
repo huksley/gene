@@ -231,7 +231,7 @@ const emitReviewEvents = async (
 ): Promise<void> => {
   let open;
   try {
-    open = await findOpenChangeRequest(issue, comments, target, forge);
+    open = await findOpenChangeRequest(issue, target, forge);
   } catch {
     return; // discovery is best-effort; never let event emission disturb the watchdog
   }
@@ -385,7 +385,7 @@ const enforceDraftMode = async (
     return;
   }
   try {
-    const detail = await redraft(await findOpenChangeRequest(issue, comments, target, forge), target, forge);
+    const detail = await redraft(await findOpenChangeRequest(issue, target, forge), target, forge);
     if (detail) {
       await record(issue, "draft-enforced", detail);
     }
@@ -957,7 +957,7 @@ const processReview = async (
   if (env.DONE_STATE) {
     let merged;
     try {
-      merged = await findMergedChangeRequest(issue, comments, target, forge);
+      merged = await findMergedChangeRequest(issue, target, forge);
     } catch (error) {
       logger.warn(
         `${logger.tag.flow} [${issue.identifier}] merged-CR check failed:`,
@@ -993,7 +993,7 @@ const processReview = async (
 
   let outcome;
   try {
-    outcome = await evaluateReview(issue, comments, target, forge);
+    outcome = await evaluateReview(issue, target, forge);
   } catch (error) {
     logger.warn(
       `${logger.tag.flow} [${issue.identifier}] review check failed:`,
@@ -1032,7 +1032,7 @@ const tryContinueAttachedDraft = async (
 ): Promise<boolean> => {
   let outcome;
   try {
-    outcome = await evaluateDraftPickup(issue, comments, target, forge);
+    outcome = await evaluateDraftPickup(issue, target, forge);
   } catch (error) {
     logger.warn(
       `${logger.tag.flow} [${issue.identifier}] draft-pickup check failed:`,
