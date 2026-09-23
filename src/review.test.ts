@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickMergedChangeRequest, pickOpenChangeRequest, type ChangeRequestSources } from "./review.ts";
+import { isChangeRequestLinked, pickMergedChangeRequest, pickOpenChangeRequest, type ChangeRequestSources } from "./review.ts";
 import type { ChangeRequestReview } from "./forge/index.ts";
 import type { RepoTarget } from "./repos.ts";
 
@@ -80,4 +80,11 @@ test("the open MR on the issue's own branch is found without a link", async () =
 test("linked MR links for a different repo are ignored", async () => {
   const src = sources([mr("7", "open", "x")], ["https://gitlab.example.com/acme/other/-/merge_requests/7"]);
   assert.equal(await pickOpenChangeRequest(src), null);
+});
+
+test("isChangeRequestLinked matches by iid in the target repo, whatever the URL's tail", () => {
+  assert.equal(isChangeRequestLinked([`${mrUrl("2032")}/diffs`], target, "2032"), true);
+  assert.equal(isChangeRequestLinked([mrUrl("1786")], target, "2032"), false);
+  assert.equal(isChangeRequestLinked(["https://gitlab.example.com/acme/other/-/merge_requests/2032"], target, "2032"), false);
+  assert.equal(isChangeRequestLinked(["https://example.com/design.png"], target, "2032"), false);
 });

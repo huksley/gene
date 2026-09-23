@@ -335,6 +335,29 @@ export class TrelloTracker implements Tracker {
     logger.info(`[trello] moved ${issue.identifier} → "${stateName}"`);
   }
 
+  /** Attach a change-request URL to the card (direct REST — the wrapper doesn't cover attachments). */
+  async linkChangeRequest(issue: Issue, url: string, title: string): Promise<void> {
+    if (env.DRY_RUN) {
+      logger.info(`[trello] (dry-run) would attach ${url} to ${issue.identifier}`);
+      return;
+    }
+    if (!env.TRELLO_API_KEY || !env.TRELLO_TOKEN) {
+      throw new Error("TRELLO_API_KEY and TRELLO_TOKEN are required to attach a link");
+    }
+    const endpoint = new URL(`${TRELLO_API_BASE}/cards/${issue.id}/attachments`);
+    endpoint.search = new URLSearchParams({
+      key: env.TRELLO_API_KEY,
+      token: env.TRELLO_TOKEN,
+      url,
+      name: title
+    }).toString();
+    const res = await fetchRetryTimeout(endpoint.toString(), { method: "POST", headers: { Accept: "application/json" }, retries: 0 });
+    if (!res.ok) {
+      throw new Error(`Trello POST /cards/${issue.id}/attachments -> ${res.status}`);
+    }
+    logger.info(`[trello] attached ${url} to ${issue.identifier}`);
+  }
+
   /**
    * Drop the Gene label from a card (so the daemon stops picking it up). Best-effort:
    * a REST failure is warned and folded into a `false` return (never thrown), matching

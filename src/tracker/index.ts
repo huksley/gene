@@ -85,6 +85,12 @@ export interface Tracker {
   /** Move an issue to a lifecycle state by name. Honours GENE_DRY_RUN (log-only). */
   moveToState(issue: Issue, stateName: string): Promise<void>;
   /**
+   * Link a change request to the issue as a tracker attachment, so MR/PR discovery
+   * (review.ts, which only trusts linked change requests) sees it. The caller checks
+   * getAttachments first; this just creates the link. Honours GENE_DRY_RUN (log-only).
+   */
+  linkChangeRequest(issue: Issue, url: string, title: string): Promise<void>;
+  /**
    * Drop the Gene ownership label (env.LABEL) from an issue so the daemon stops
    * managing it — the inverse of the label filter listIssues() applies. Resolves to
    * `true` when the issue no longer carries the label (removed now, or wasn't there)

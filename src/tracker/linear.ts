@@ -135,6 +135,10 @@ const ATTACHMENTS_QUERY =
 const LABELS_QUERY =
   "query IssueLabels($id: String!) { issue(id: $id) { labels(first: 50) { nodes { id name } } } }";
 
+const LINK_URL_MUTATION =
+  "mutation LinkUrl($issueId: String!, $url: String!, $title: String!) " +
+  "{ attachmentLinkURL(issueId: $issueId, url: $url, title: $title) { success } }";
+
 const REMOVE_LABEL_MUTATION =
   "mutation RemoveLabel($id: String!, $labelId: String!) { issueRemoveLabel(id: $id, labelId: $labelId) { success } }";
 
@@ -280,6 +284,16 @@ export class LinearTracker implements Tracker {
       ...workspaceArgs()
     ]);
     logger.info(`[linear] moved ${issue.identifier} → "${stateName}"`);
+  }
+
+  /** Link a change-request URL to the issue as an attachment. No-op (logged) under dry-run. */
+  async linkChangeRequest(issue: Issue, url: string, title: string): Promise<void> {
+    if (env.DRY_RUN) {
+      logger.info(`[linear] (dry-run) would link ${url} to ${issue.identifier}`);
+      return;
+    }
+    await api(LINK_URL_MUTATION, { issueId: issue.id, url, title });
+    logger.info(`[linear] linked ${url} to ${issue.identifier}`);
   }
 
   /**

@@ -33,7 +33,7 @@ import { selectForge, type Forge } from "./forge/index.ts";
 import { commitsBehind, detectDefaultBranch } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
-import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, findOpenChangeRequest, writeCursor, type ReviewContext } from "./review.ts";
+import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, findOpenChangeRequest, isChangeRequestLinked, writeCursor, type ReviewContext } from "./review.ts";
 import { redraft } from "./draft.ts";
 import {
   excludePrograms,
@@ -370,6 +370,35 @@ const processIssue = async (issue: Issue): Promise<boolean> => {
 };
 
 /**
+ * Link the open change request on `branch` to the issue in the tracker, unless it
+ * already is. MR/PR discovery only trusts linked change requests (plus the open one
+ * on the issue branch), and the forge can only find *open* ones by branch — so
+ * without a link, a merged MR would never move the issue to Done. Linear's GitLab/
+ * GitHub integration usually links it already; Trello never does. Best-effort.
+ */
+const linkChangeRequest = async (issue: Issue, target: RepoTarget, forge: Forge, branch: string): Promise<void> => {
+  try {
+    const review = await forge.getReviewStatus(target, branch);
+    if (!review) {
+      return;
+    }
+    const attachmentUrls = (await tracker.getAttachments(issue)).map(a => a.url);
+    if (isChangeRequestLinked(attachmentUrls, target, review.iid)) {
+      return;
+    }
+    const ref = `${forge.name === "gitlab" ? "!" : "#"}${review.iid}`;
+    const term = forge.changeRequestTerm;
+    await tracker.linkChangeRequest(issue, review.url, `${term[0]!.toUpperCase()}${term.slice(1)} ${ref}`);
+    await record(issue, "cr-linked", `linked ${review.url} to ${issue.identifier}`);
+  } catch (error) {
+    logger.warn(
+      `${logger.tag.flow} [${issue.identifier}] could not link the change request on "${branch}":`,
+      error instanceof Error ? error.message : error
+    );
+  }
+};
+
+/**
  * Draft mode is a human gate, and the prompt asking the agent for a draft is only a
  * request (see draft.ts) — so when a run finishes, overrule an agent that left its
  * change request ready for review. Off by default; when GENE_DRAFT_CHANGE_REQUEST is
@@ -543,6 +572,7 @@ const dispatchAgent = async (
         await postStalledBlock(issue, result);
       }
       await enforceDraftMode(issue, comments, target, forge);
+      await linkChangeRequest(issue, target, forge, workBranch);
     })
     .catch(error => {
       logger.error(
@@ -951,6 +981,9 @@ const processReview = async (
   // Surface pr-created / ci-completed to plugins (deduped) before the dispatch
   // decision below — isolated so event emission never affects the watchdog outcome.
   await emitReviewEvents(issue, comments, target, forge);
+
+  // Heal issues whose change request predates linking (or whose link failed at run end).
+  await linkChangeRequest(issue, target, forge, issue.branchName);
 
   // When DONE_STATE is configured, a merged change request ends the lifecycle:
   // move the issue to Done and stop — no point polling CI on a merged CR.

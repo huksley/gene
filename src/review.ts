@@ -101,6 +101,10 @@ export type ChangeRequestSources = {
   byBranch: (branch: string) => Promise<ChangeRequestReview | null>;
 };
 
+/** True when one of the issue's attachment URLs already links change request `iid` in `target`. */
+export const isChangeRequestLinked = (attachmentUrls: string[], target: RepoTarget, iid: string): boolean =>
+  attachmentUrls.some(url => findChangeRequestRefs(url).some(ref => refMatchesTarget(ref, target) && ref.iid === iid));
+
 /**
  * The change requests an issue owns: the ones *linked* to it in the tracker, then
  * the open one on the issue's own branch. MR/PR URLs in the description or comments
