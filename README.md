@@ -71,6 +71,50 @@ issue to **In Progress**, clones the repo into a worktree, and downloads any att
 The **spawned Claude Code agent** does everything else — code changes, the merge/pull request, 
 and the tracker write-back (comments + the terminal state move).
 
+## Quick start
+
+Install all requured CLIs: [linear](https://github.com/schpet/linear-cli), [notion](https://developers.notion.com/cli/get-started/overview), 
+[GitLab](https://gitlab.com/gitlab-org/cli#installation), [GitHub](https://cli.github.com/) and more if you need
+
+Add Gene config file to your repo, optionally exclude it in .gitignore or locally (`echo ".gene*" >> .git/info/exclude`).
+
+Add following .gene.config
+
+```
+LINEAR_WORKSPACE=<your-workspace-name>
+GENE_LABEL=Gene
+LINEAR_TRIGGER_STATE=Todo
+LINEAR_ACTIVE_STATE=In Progress
+LINEAR_BLOCKED_STATE=Blocked
+LINEAR_REVIEW_STATE=In Review
+LINEAR_DONE_STATE=Done
+GENE_AGENT_MARKER="#gene-ai"
+GENE_REQUIRE_SECTIONS=## Problem,## Acceptance criteria
+# github or gitlab
+GENE_FORGE=github
+# Your code repo
+GENE_REPO_URL=https://github.com/example/example
+# If you have repos per team in Linear, TICKET-1 will checkout this repo
+# Can be overriden in the ticket as well
+# GENE_REPO_MAP='{ "TICKET": "https://github.com/example/example" }'
+GENE_POLL_INTERVAL_MS=30000
+GENE_DEBOUNCE_MS=20000
+GENE_MAX_CONCURRENT=4
+GENE_DRY_RUN=false
+GENE_CLAUDE_BIN=claude
+GENE_AGENT_MAX_PROCESSING_TIME=3600
+LINEAR_IGNORE_COMMENTS=!review,/review
+GITLAB_IGNORE_COMMENTS=!review,Walkthrough
+GITHUB_IGNORE_COMMENTS=/review,/linear
+DRAFT_CHANGE_REQUEST=true
+# Additional tools to whitelist
+GENE_ALLOWED_TOOLS="Bash(ntn *),Bash(python3 *),Bash(glab *),Bash(git push *)"
+```
+
+Download gene and run from your folder. Press R in the main menu will quickly reload and fetch the tickets marked with Gene label.
+
+Quick tip on getting issues ready for Gene: **State**: Todo, **Assigned**: to you, **Label**: Gene
+
 ## Lifecycle (issue states)
 
 The lifecycle is driven by the issue **status** in Linear, or the **list** the card is on in Trello.
