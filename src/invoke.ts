@@ -28,7 +28,7 @@ import { localPathFor, type RepoTarget } from "./repos.ts";
 import { tracker } from "./tracker/index.ts";
 import type { Issue } from "./tracker/index.ts";
 import type { Forge } from "./forge/index.ts";
-import { isRetriable, matchesTransient } from "./agent-retry.ts";
+import { isRetriable, matchesAuthFailure, matchesTransient } from "./agent-retry.ts";
 import { TokenAccumulator } from "./tokens.ts";
 import chalk from "chalk";
 
@@ -132,6 +132,10 @@ export type InvokeResult = {
   transientFailure: boolean;
   /** First transient error text seen (truncated), for the surfaced comment. */
   transientReason: string | null;
+  /** True when the `claude` CLI could not authenticate (expired login, bad key). */
+  authFailure: boolean;
+  /** The CLI's auth error text (truncated), for the surfaced comment. */
+  authReason: string | null;
 };
 
 /** Absolute worktree path for an issue: `<repos>/.worktrees/<repoPath>/<IDENTIFIER>`. */
@@ -395,6 +399,8 @@ const runClaudeOnce = (
   timedOut: boolean;
   transientFailure: boolean;
   transientReason: string | null;
+  authFailure: boolean;
+  authReason: string | null;
   tokens: TokenUsage;
   events: AgentEvent[];
 }> =>
@@ -405,7 +411,18 @@ const runClaudeOnce = (
     let timedOut = false;
     let transientFailure = false;
     let transientReason: string | null = null;
+    let authFailure = false;
+    let authReason: string | null = null;
     const events: AgentEvent[] = [];
+    // An expired login surfaces as assistant text and/or the result text; flag it so
+    // the run is neither retried nor recorded as a clean finish.
+    const checkAuth = (text: string): void => {
+      if (!authFailure && matchesAuthFailure(text)) {
+        authFailure = true;
+        authReason = text.slice(0, 300);
+        logger.warn(`${logger.tag.invoke} [${issue.identifier}] claude could not authenticate: ${truncate(text)}`);
+      }
+    };
     const tokenAcc = new TokenAccumulator();
     const { command, args } = getSpawnCommand(worktreePath, prompt, allowedTools);
     // In sandbox mode the child (sandbox.sh) spawns msb + the VM beneath it, so
@@ -480,11 +497,17 @@ const runClaudeOnce = (
           resultSubtype = event.subtype;
           resultText = event.result;
           durationMs = event.duration_ms;
+          if (typeof event.result === "string") {
+            checkAuth(event.result);
+          }
         }
         // A dropped API socket surfaces as assistant text but still exits 0 — flag
         // it so the run is retried/surfaced rather than recorded as a clean finish.
         if (event.type === "assistant" && Array.isArray(event.message?.content)) {
           for (const block of event.message.content) {
+            if (block.type === "text" && typeof block.text === "string") {
+              checkAuth(block.text);
+            }
             if (block.type === "text" && typeof block.text === "string" && matchesTransient(block.text)) {
               transientFailure = true;
               transientReason ??= block.text.slice(0, 300);
@@ -527,6 +550,8 @@ const runClaudeOnce = (
         timedOut,
         transientFailure,
         transientReason,
+        authFailure,
+        authReason,
         tokens: tokenAcc.total(),
         events
       });
@@ -554,7 +579,7 @@ export const invokeAgent = async (
       `${logger.tag.invoke} [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
       `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
     );
-    return { kind: "dry-run", worktreePath, exitCode: 0, sawSuccessResult: true, transientFailure: false, transientReason: null };
+    return { kind: "dry-run", worktreePath, exitCode: 0, sawSuccessResult: true, transientFailure: false, transientReason: null, authFailure: false, authReason: null };
   }
 
   // If GENE_CLAUDE_API_BILLING is true, passes the ANTHROPIC_API_KEY to the agent's environment
@@ -576,6 +601,8 @@ export const invokeAgent = async (
   let timedOut = false;
   let transientFailure = false;
   let transientReason: string | null = null;
+  let authFailure = false;
+  let authReason: string | null = null;
   let attemptsMade = 0;
   let events: AgentEvent[] = [];
   // This run's final token usage — the last attempt's accumulated total. Attached to
@@ -594,7 +621,7 @@ export const invokeAgent = async (
     logger.info(`${logger.tag.invoke} [${id}] spawning agent in ${worktreePath}${suffix}`);
     logger.info(`${logger.tag.invoke} [${id}]   prompt: ${prompt.length} chars`);
 
-    ({ exitCode, resultSubtype, resultText, durationMs, timedOut, transientFailure, transientReason, tokens: runTokens, events } =
+    ({ exitCode, resultSubtype, resultText, durationMs, timedOut, transientFailure, transientReason, authFailure, authReason, tokens: runTokens, events } =
       await runClaudeOnce(issue, prompt, worktreePath, allowedTools, childEnv, updatePid));
 
     // Operator cancelled this run from the TUI: the child was already signalled, so
@@ -612,9 +639,15 @@ export const invokeAgent = async (
       );
     }
 
+    // Not logged in: every re-spawn would fail identically, so stop at the first
+    // attempt and let the caller block the issue for a human re-login.
+    if (authFailure) {
+      break;
+    }
+
     // A timed-out run is always worth restarting — it was cut off mid-work, not
     // finished — so OR it in with the transient-failure heuristic for normal exits.
-    if ((!timedOut && !isRetriable(exitCode, resultSubtype, transientFailure)) || attempt === totalAttempts) {
+    if ((!timedOut && !isRetriable(exitCode, resultSubtype, transientFailure, authFailure)) || attempt === totalAttempts) {
       break;
     }
     const delay = env.AGENT_RETRY_DELAY_MS * 2 ** (attempt - 1);
@@ -640,6 +673,14 @@ export const invokeAgent = async (
     // retried. Record it as its own outcome so the log doesn't read like a crash.
     await recordAgent("agent-cancelled", `cancelled by operator after ${seconds}s${summary}`, events, runTokens);
     monitor.agentFinished(id, "cancelled", durationMs);
+  } else if (authFailure) {
+    await recordAgent(
+      "agent-error",
+      `claude could not authenticate — log in again (\`claude /login\`), then retry: ${authReason ?? ""}`,
+      events,
+      runTokens
+    );
+    monitor.agentFinished(id, "error", durationMs);
   } else if (stalled) {
     await recordAgent(
       "agent-stalled",
@@ -664,12 +705,12 @@ export const invokeAgent = async (
     monitor.agentFinished(id, timedOut ? "timeout" : "error", durationMs);
   }
 
-  if (exitCode !== 0) {
+  if (exitCode !== 0 && !authFailure) {
     const tried = attemptsMade > 1 ? ` after ${attemptsMade} attempts` : "";
     logger.error(
       `${logger.tag.invoke} [${id}] agent exited ${exitCode}${tried} — issue left in "${env.ACTIVE_STATE}"; ` +
       `inspect, then re-trigger or \`npm run reset -- ${id}\``
     );
   }
-  return { kind: "spawned", worktreePath, exitCode, sawSuccessResult, transientFailure, transientReason };
+  return { kind: "spawned", worktreePath, exitCode, sawSuccessResult, transientFailure, transientReason, authFailure, authReason };
 };

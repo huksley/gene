@@ -52,6 +52,7 @@ import { closeDb, findInterruptedRuns, hasUnfinishedRun, logEvent, readTokenTota
 import { stageIssueAttachments } from "./attachments.ts";
 import { listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
+import { requestRetry, takeRetryRequest } from "./retry-request.ts";
 import { forkIssue } from "./fork.ts";
 import { importLegacy } from "./import-legacy.ts";
 import { inSea, extractAsset, readVersion } from "./sea-assets.ts";
@@ -113,6 +114,8 @@ const startMessages: Record<PromptIntent, string> = {
     "🧬 Thanks for the reply — picking back up from where I left off. I'll comment again when there's an update.",
   "feedback":
     "🧬 Got your feedback — incorporating it now. I'll comment again with the next iteration.",
+  "retry":
+    "🧬 Retrying — my previous run didn't finish. Picking up from the work already in the worktree; I'll comment again when there's an update.",
   "review-fix":
     "🧬 Spotted new review feedback / CI status on the change request — addressing it now and I'll push an update.",
   "continue":
@@ -321,18 +324,34 @@ const reportInFlight = (): void => {
 const processIssue = async (issue: Issue): Promise<boolean> => {
   const comments = await tracker.getComments(issue);
   const action = decideAction(issue, comments);
-  logger.info(`${logger.tag.flow} [${issue.identifier}] "${issue.title}" → ${summarizeAction(action)}`);
+  // An operator retry (`r` in the TUI) re-runs the agent in its existing worktree
+  // without waiting for a new comment. A Todo issue is already about to be processed,
+  // and a terminal / unwatched state has nothing to resume, so honour it only in the
+  // active, blocked and review states.
+  const retryRequested = takeRetryRequest(issue.identifier);
+  const retry =
+    retryRequested &&
+    [WATCHED_STATES.active, WATCHED_STATES.blocked, WATCHED_STATES.review].includes(issue.stateName);
+  if (retryRequested && !retry) {
+    logger.warn(
+      `${logger.tag.flow} [${issue.identifier}] retry requested but it's in "${issue.stateName}" — ignoring`
+    );
+  }
+  logger.info(
+    `${logger.tag.flow} [${issue.identifier}] "${issue.title}" → ${retry ? "retry (operator)" : summarizeAction(action)}`
+  );
 
-  if (action.kind === "nothing") {
+  if (!retry && action.kind === "nothing") {
     return false;
   }
 
-  if (isWithinDebounceWindow(lastActivityIso(issue, comments))) {
+  // A retry is explicit operator intent, so it skips the debounce wait.
+  if (!retry && isWithinDebounceWindow(lastActivityIso(issue, comments))) {
     logger.info(`${logger.tag.flow} [${issue.identifier}] debouncing recent activity — will retry next poll`);
     return true;
   }
 
-  if (action.kind === "ask-clarification") {
+  if (!retry && action.kind === "ask-clarification") {
     await postClarificationAndBlock(issue, action.missingSections);
     return true;
   }
@@ -349,6 +368,10 @@ const processIssue = async (issue: Issue): Promise<boolean> => {
     return false;
   }
   const forge = selectForge(target.forge);
+
+  if (retry) {
+    return dispatchAgent(issue, comments, target, forge, "retry");
+  }
 
   // In Review: poll the forge for failing CI / new review comments rather than dispatch blind.
   if (action.kind === "check-review") {
@@ -568,7 +591,9 @@ const dispatchAgent = async (
       // Silent crash / transient exhaustion: exited code 0 but never produced a
       // success result, or dropped the API socket mid-stream. Surface it.
       const stalled = result.exitCode === 0 && (result.transientFailure || !result.sawSuccessResult);
-      if (stalled && !monitor.isCancelled(issue.identifier)) {
+      if (result.authFailure && !monitor.isCancelled(issue.identifier)) {
+        await postAuthBlock(issue, result);
+      } else if (stalled && !monitor.isCancelled(issue.identifier)) {
         await postStalledBlock(issue, result);
       }
       await enforceDraftMode(issue, comments, target, forge);
@@ -960,6 +985,40 @@ const postStalledBlock = async (issue: Issue, result: InvokeResult): Promise<voi
   } catch (error) {
     logger.error(
       `${logger.tag.flow} [${issue.identifier}] failed to post stalled block:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+};
+
+/**
+ * The `claude` CLI couldn't authenticate (expired OAuth login, bad key), so the run
+ * never started real work. Retrying can't help until a human logs in again, so post
+ * why and move the issue to BLOCKED — rather than leaving it stranded in ACTIVE_STATE,
+ * where decideAction waits on a comment nobody knows to write. A reply (or `r` in
+ * the TUI) resumes it in the same worktree. Best-effort.
+ */
+const postAuthBlock = async (issue: Issue, result: InvokeResult): Promise<void> => {
+  try {
+    await tracker.postComment(
+      issue,
+      [
+        "🧬 I couldn't start — the Claude CLI on the Gene host isn't logged in (its session expired).",
+        "",
+        "Nothing was lost: the worktree is preserved. Once someone runs `claude /login` on the Gene host, " +
+          "**reply here** (or press `r` on this ticket in the Gene dashboard) and I'll pick up where I left off.",
+        result.authReason ? `\nError: \`${result.authReason.slice(0, 200)}\`` : ""
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+    await tracker.moveToState(issue, env.BLOCKED_STATE);
+    await record(issue, "stalled", "claude could not authenticate — moved to Blocked");
+    logger.warn(
+      `${logger.tag.flow} [${issue.identifier}] claude is not logged in — run \`claude /login\`; moved to "${env.BLOCKED_STATE}"`
+    );
+  } catch (error) {
+    logger.error(
+      `${logger.tag.flow} [${issue.identifier}] failed to post auth block:`,
       error instanceof Error ? error.message : error
     );
   }
@@ -1615,6 +1674,18 @@ const main = async (): Promise<void> => {
         // `R` inside a ticket resets it (worktree/branch/lock + back to Todo). The
         // pool stays open (the daemon owns it) — resetIssue doesn't close the DB.
         reset: identifier => resetIssue(identifier),
+        // `r` inside a ticket retries it: re-run the agent in its existing worktree on
+        // the next scan (no new comment needed). A program ticket re-fires instead.
+        // Explicit intent, so unpause and wake the poll loop like `g` does.
+        retry: (identifier: string) => {
+          if (lastProgramIds?.has(identifier)) {
+            fireProgram(identifier);
+          } else {
+            requestRetry(identifier);
+          }
+          setPaused(false);
+          requestScan();
+        },
         // `F` inside a ticket checks its work branch out into the dir Gene was launched
         // from (REPO_ROOT), when that dir shares the ticket repo's origin and has a clean
         // tree. Purely local (fetch + checkout) — no tracker/forge writes, never throws.

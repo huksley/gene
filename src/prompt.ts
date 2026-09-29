@@ -20,6 +20,7 @@ export type PromptIntent =
   | "processing"
   | "resume"
   | "feedback"
+  | "retry"
   | "review-fix"
   | "continue"
   | "program";
@@ -99,6 +100,11 @@ const intentInstructions: Record<PromptIntent, string> = {
     "The user has commented while you were working (or after you finished). They may be redirecting " +
     "you, requesting a change, or approving prior work. Read the latest comment, identify what they " +
     "want, and respond accordingly.",
+  "retry":
+    "Your previous run on this issue did not finish (it crashed, lost its API/login session, or the " +
+    "operator asked for a retry). The worktree still holds whatever you had already done. Check " +
+    "`git status`, `git log` and the transcript to see where you left off, then continue the task from " +
+    "there — do not start over, and do not repeat comments you already posted.",
   "review-fix":
     "Your change request is open and under review, and there's new review feedback and/or failing CI " +
     "(see the section below). Make the fixes on your EXISTING branch and push so CI re-runs; reply to the " +

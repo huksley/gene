@@ -54,8 +54,14 @@ export interface StartUiOptions {
   setPaused: (paused: boolean) => void;
   /** Graceful daemon shutdown (closes the DB, reports owned locks); does not exit the process. */
   shutdown: (signal: string) => Promise<void>;
-  /** Reset one ticket (worktree/branch/lock + back to Todo). Bound to `R` inside a ticket. */
+  /** Reset one ticket (worktree/branch/lock + back to Todo). Bound to Shift+`R` inside a ticket. */
   reset: (identifier: string) => Promise<void>;
+  /**
+   * Retry one ticket: re-run its agent in the existing worktree on the next scan, no
+   * new tracker comment needed (a program ticket re-fires). Bound to `r` inside a
+   * ticket; wakes the poll loop so it starts now.
+   */
+  retry: (identifier: string) => void;
   /**
    * Remove one ticket from Gene: drop the Gene label so the next scan won't pick it up
    * again. Bound to Shift+`R` on the dashboard. Leaves the local worktree/branch alone
@@ -268,6 +274,10 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   let resetArmedId: string | null = null;
   let resetArmedAt = 0;
   let resetBusyId: string | null = null;
+  // `r` inside a ticket retries it — armed on the first press, confirmed by a second
+  // within 2s (mirrors the reset/cancel arms).
+  let retryArmedId: string | null = null;
+  let retryArmedAt = 0;
   // `F` inside a ticket forks its branch into the dir Gene was launched from — armed on
   // the first press, confirmed by a second within 2s (mirrors the reset/cancel arms).
   let forkArmedId: string | null = null;
@@ -304,6 +314,9 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
     if (resetArmedId && now - resetArmedAt > 2000) {
       resetArmedId = null;
+    }
+    if (retryArmedId && now - retryArmedAt > 2000) {
+      retryArmedId = null;
     }
     if (forkArmedId && now - forkArmedAt > 2000) {
       forkArmedId = null;
@@ -358,8 +371,10 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
         : resetBusyId === detailId
           ? `Resetting ${detailId}…`
           : resetArmedId === detailId
-            ? `Press r again within 2s to reset ${detailId} — removes worktree/branch, moves it back to Todo`
-            : cancelArmedId === detailId
+            ? `Press R again within 2s to reset ${detailId} — removes worktree/branch, moves it back to Todo`
+            : retryArmedId === detailId
+              ? `Press r again within 2s to retry ${detailId} — re-runs the agent in its existing worktree`
+              : cancelArmedId === detailId
               ? `Press c again within 2s to cancel ${detailId}`
               : forkBusyId === detailId
                 ? `Forking ${detailId}…`
@@ -493,9 +508,41 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
   };
 
+  /**
+   * If the open ticket's agent is live, explain for 2s (in the footer, like armCancel)
+   * why `action` isn't available and return true. Retry and reset only act on a ticket
+   * that isn't working — cancel it first with `c`.
+   */
+  const refuseWhileLive = (id: string, action: string): boolean => {
+    const agent = monitor.getAgent(id);
+    if (agent && (agent.status === "running" || agent.status === "queued")) {
+      cancelNotice = `Can't ${action} ${id} while its agent is ${statusLabel(agent.status)} — press c to cancel it first`;
+      cancelNoticeAt = Date.now();
+      return true;
+    }
+    return false;
+  };
+
+  /** Retry the open ticket; double-press r within 2s confirms (mirrors armReset). */
+  const armRetry = (): void => {
+    const id = detailId;
+    if (view !== "detail" || !id || resetBusyId || refuseWhileLive(id, "retry")) {
+      return;
+    }
+    const now = Date.now();
+    if (retryArmedId === id && now - retryArmedAt <= 2000) {
+      retryArmedId = null;
+      options.retry(id);
+      showToast(`↻ retrying ${id} — the agent starts on this scan`, palette.info);
+    } else {
+      retryArmedId = id;
+      retryArmedAt = now;
+    }
+  };
+
   /** Reset the open ticket; double-press R within 2s confirms (mirrors armCancel). */
   const armReset = (): void => {
-    if (view !== "detail" || !detailId || resetBusyId) {
+    if (view !== "detail" || !detailId || resetBusyId || refuseWhileLive(detailId, "reset")) {
       return;
     }
     const now = Date.now();
@@ -768,8 +815,12 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
           paint();
           return;
         case "r":
-          // `R` (and lowercase r) resets the ticket.
-          armReset();
+          // Shift+R resets the ticket; plain r retries it (both only when idle).
+          if (key.shift) {
+            armReset();
+          } else {
+            armRetry();
+          }
           paint();
           return;
         case "c":

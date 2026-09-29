@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { matchesTransient, isRetriable } from "./agent-retry.ts";
+import { matchesTransient, matchesAuthFailure, isRetriable } from "./agent-retry.ts";
 
 test("matchesTransient flags known dropped-socket / API-transport signatures", () => {
   assert.equal(matchesTransient("API Error: socket connection was closed unexpectedly"), true);
@@ -34,4 +34,22 @@ test("isRetriable: exit-0 silent crash (no success result) retries", () => {
 
 test("isRetriable: exit-0 with a transient signature retries", () => {
   assert.equal(isRetriable(0, "success", true), true);
+});
+
+test("matchesAuthFailure flags the CLI's login-expired / bad-key output", () => {
+  assert.equal(matchesAuthFailure("Failed to authenticate: OAuth session expired and could not be refreshed"), true);
+  assert.equal(matchesAuthFailure("Invalid API key · Please run /login"), true);
+  assert.equal(matchesAuthFailure("OAuth token has expired. Please obtain a new token or refresh your existing token."), true);
+  assert.equal(matchesAuthFailure("API Error: 401 {\"type\":\"error\"}"), true);
+});
+
+test("matchesAuthFailure ignores prose about auth code", () => {
+  assert.equal(matchesAuthFailure("The login handler returns 'Failed to authenticate' on a bad password."), false);
+  assert.equal(matchesAuthFailure("I added a 401 check to the API client."), false);
+});
+
+test("isRetriable: an auth failure is never retried", () => {
+  assert.equal(isRetriable(1, "error", false, true), false);
+  assert.equal(isRetriable(0, undefined, false, true), false);
+  assert.equal(isRetriable(0, "success", true, true), false);
 });
