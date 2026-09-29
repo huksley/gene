@@ -73,8 +73,8 @@ and the tracker write-back (comments + the terminal state move).
 
 ## Quick start
 
-Install all required CLIs: [linear](https://github.com/schpet/linear-cli), [notion](https://developers.notion.com/cli/get-started/overview), 
-[GitLab](https://gitlab.com/gitlab-org/cli#installation), [GitHub](https://cli.github.com/) and more if you need
+Install all required CLIs: [Claude Code](https://code.claude.com/docs/en/terminal-guide), [linear](https://github.com/schpet/linear-cli), [notion](https://developers.notion.com/cli/get-started/overview), 
+[GitLab](https://gitlab.com/gitlab-org/cli#installation), [GitHub](https://cli.github.com/) and more if you need.
 
 Add Gene config file to your repo, optionally exclude it in .gitignore or locally (`echo ".gene*" >> .git/info/exclude`).
 
