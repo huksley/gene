@@ -62,7 +62,7 @@ Gene will know what to do. If set, and missing, Gene will reply asking for them 
 the issue to **Blocked** until you fill them in. The recommended sections are:
 
 - **`## Problem`** — the bug or desired change, with enough context to reproduce or locate it.
-- **`## Acceptance criteria`** — what "done" looks like, concretely, including *"unit tests/e2e tests etc added/updated for this issue"*.
+- **`## Acceptance criteria`** — what "done" looks like, concretely, for example *"unit tests/e2e tests etc added/updated for this issue"*.
 
 ## How it works
 
@@ -73,7 +73,7 @@ and the tracker write-back (comments + the terminal state move).
 
 ## Quick start
 
-Install all requured CLIs: [linear](https://github.com/schpet/linear-cli), [notion](https://developers.notion.com/cli/get-started/overview), 
+Install all required CLIs: [linear](https://github.com/schpet/linear-cli), [notion](https://developers.notion.com/cli/get-started/overview), 
 [GitLab](https://gitlab.com/gitlab-org/cli#installation), [GitHub](https://cli.github.com/) and more if you need
 
 Add Gene config file to your repo, optionally exclude it in .gitignore or locally (`echo ".gene*" >> .git/info/exclude`).
@@ -113,7 +113,7 @@ GENE_ALLOWED_TOOLS="Bash(ntn *),Bash(python3 *),Bash(glab *),Bash(git push *)"
 
 Download gene and run from your folder. Press R in the main menu will quickly reload and fetch the tickets marked with Gene label.
 
-Quick tip on getting issues ready for Gene: **State**: Todo, **Assigned**: to you, **Label**: Gene
+Quick tip on getting issues ready for Gene: **State**: Todo, **Assigned**: to you, **Label**: Gene, with 2 sections: ## Problem and ## Acceptance criteria properly described.
 
 ## Lifecycle (issue states)
 
