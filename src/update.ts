@@ -251,13 +251,17 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
     }
     fs.chmodSync(tmp, 0o755);
     if (process.platform === "darwin") {
-      // Ad-hoc codesign (matches the build) and clear any quarantine flag so Gatekeeper
-      // allows the freshly written binary. Both are best-effort: the released asset is
-      // already signed, and a fetch download is not quarantined.
+      // Keep the release's signature when it verifies (a Developer ID one must not be
+      // overwritten); otherwise ad-hoc sign so it runs. Then clear any quarantine flag.
+      // Both are best-effort: a fetch download is not quarantined.
       try {
-        execFileSync("codesign", ["--sign", "-", "--force", tmp], { stdio: "ignore" });
+        execFileSync("codesign", ["--verify", "--strict", tmp], { stdio: "ignore" });
       } catch {
-        /* already signed, or codesign unavailable */
+        try {
+          execFileSync("codesign", ["--sign", "-", "--force", tmp], { stdio: "ignore" });
+        } catch {
+          /* codesign unavailable */
+        }
       }
       try {
         execFileSync("xattr", ["-d", "com.apple.quarantine", tmp], { stdio: "ignore" });

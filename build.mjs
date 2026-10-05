@@ -6,7 +6,10 @@
  *      (./ui/app.ts, ./import-legacy.ts) and of @electric-sql/pglite are inlined.
  *   2. `node --build-sea sea.json` wraps that bundle — plus the embedded assets
  *      (PGlite WASM, the OpenTUI dylib, package.json) — into ./gene.
- *   3. On macOS the result is re-signed ad-hoc so it will run.
+ *   3. On macOS the result is signed: ad-hoc by default, or with a Developer ID
+ *      (hardened runtime + entitlements.plist) when GENE_CODESIGN_IDENTITY is set,
+ *      then notarized by Apple when GENE_NOTARY_PROFILE names a `notarytool
+ *      store-credentials` keychain profile.
  *
  * Notes on the externals/alias below:
  *   - The non-darwin-arm64 OpenTUI platform packages are referenced by string
@@ -102,7 +105,48 @@ execFileSync(process.execPath, ["--build-sea", p("sea.json")], {
   cwd: root,
 });
 
-if (process.platform === "darwin") {
+// Signing. Without GENE_CODESIGN_IDENTITY the binary is signed ad-hoc (enough to run
+// locally; install.sh / `gene --update` keep any valid signature as-is). With it,
+// it's signed with that Developer ID under the hardened runtime — V8's JIT and the
+// extracted (unsigned) OpenTUI dylib need the entitlements in entitlements.plist —
+// and, with GENE_NOTARY_PROFILE, submitted to Apple's notary service. A Developer ID
+// or notarization failure aborts the build: a release must never silently ship unsigned.
+const signIdentity = process.env.GENE_CODESIGN_IDENTITY?.trim();
+const notaryProfile = process.env.GENE_NOTARY_PROFILE?.trim();
+if (notaryProfile && !signIdentity) {
+  console.error("✗ GENE_NOTARY_PROFILE requires GENE_CODESIGN_IDENTITY (only a Developer ID signature can be notarized)");
+  process.exit(1);
+}
+
+if (process.platform === "darwin" && signIdentity) {
+  console.log(`• codesigning ./gene as "${signIdentity}"`);
+  execFileSync(
+    "codesign",
+    ["--force", "--options", "runtime", "--timestamp", "--entitlements", p("entitlements.plist"), "--sign", signIdentity, p("gene")],
+    { stdio: "inherit" }
+  );
+  execFileSync("codesign", ["--verify", "--strict", "--verbose=2", p("gene")], { stdio: "inherit" });
+
+  if (notaryProfile) {
+    // notarytool takes a zip/dmg/pkg, not a bare Mach-O; the ticket can't be stapled
+    // to a bare binary either, so Gatekeeper looks it up online on first launch.
+    const zip = p("dist", "gene-notarize.zip");
+    fs.rmSync(zip, { force: true });
+    execFileSync("ditto", ["-c", "-k", "--keepParent", p("gene"), zip]);
+    console.log(`• notarizing with keychain profile "${notaryProfile}" (waits for Apple)`);
+    const out = execFileSync(
+      "xcrun",
+      ["notarytool", "submit", zip, "--keychain-profile", notaryProfile, "--wait", "--output-format", "json"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }
+    );
+    const { id, status } = JSON.parse(out);
+    if (status !== "Accepted") {
+      console.error(`✗ notarization ${status} — see: xcrun notarytool log ${id} --keychain-profile ${notaryProfile}`);
+      process.exit(1);
+    }
+    console.log(`• notarized (submission ${id})`);
+  }
+} else if (process.platform === "darwin") {
   try {
     execFileSync("codesign", ["--sign", "-", "--force", p("gene")], {
       stdio: "inherit",

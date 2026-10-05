@@ -157,8 +157,11 @@ esac
 
 # ---- make it runnable ----------------------------------------------------
 chmod 0755 "$DL"
-# Ad-hoc sign + clear quarantine so Gatekeeper allows it. Both best-effort.
-command -v codesign >/dev/null 2>&1 && codesign --sign - --force "$DL" >/dev/null 2>&1 || true
+# Keep a valid (Developer ID) signature; ad-hoc sign only an unsigned/broken one.
+# Clear quarantine so Gatekeeper allows it. Both best-effort.
+if command -v codesign >/dev/null 2>&1 && ! codesign --verify --strict "$DL" >/dev/null 2>&1; then
+  codesign --sign - --force "$DL" >/dev/null 2>&1 || true
+fi
 command -v xattr    >/dev/null 2>&1 && xattr -d com.apple.quarantine "$DL" >/dev/null 2>&1 || true
 
 # ---- move into place (atomic within the same filesystem) -----------------

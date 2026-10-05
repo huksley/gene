@@ -31,7 +31,11 @@ if (spawnSync("gh", ["auth", "status"], { stdio: "ignore" }).status !== 0) {
   process.exit(1);
 }
 
-// 1. Rebuild so the published binary matches the current source.
+// 1. Rebuild so the published binary matches the current source. build.mjs signs with
+// GENE_CODESIGN_IDENTITY and notarizes with GENE_NOTARY_PROFILE when they're set.
+if (!process.env.GENE_CODESIGN_IDENTITY?.trim()) {
+  console.warn("! GENE_CODESIGN_IDENTITY is not set — this release will be ad-hoc signed only (not notarized)");
+}
 console.log("• building release artifacts");
 execFileSync(process.execPath, [p("build.mjs")], { stdio: "inherit", cwd: root });
 
