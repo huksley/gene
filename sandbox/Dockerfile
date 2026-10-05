@@ -22,8 +22,8 @@ LABEL org.opencontainers.image.title="geneai-sandbox-base" \
 
 # Pin-able tool versions (override with `--build-arg`).
 ARG NODE_MAJOR=24
-ARG GLAB_VERSION=1.102.0
-ARG CLAUDE_VERSION=2.1.168
+ARG GLAB_VERSION=1.120.0
+ARG CLAUDE_VERSION=2.1.289
 ARG NTN_VERSION=latest
 
 # ── Telemetry / nag suppression ───────────────────────────────────────────────
@@ -239,7 +239,7 @@ RUN set -eux; \
     gh --version; \
     glab --version; \
     linear --version; \
-    trello-cli --version; \
+    trello-cli --help >/dev/null; \
     claude --version; \
     ntn --version; \
     docker --version

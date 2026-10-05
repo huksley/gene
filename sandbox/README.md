@@ -37,7 +37,7 @@ Apple Silicon (arm64); the Dockerfile is multi-arch.
 - **`base`** does a `--no-cache --pull` build (every tool is redownloaded so the
   image is reproducible from the pinned versions), then loads it into `msb` and
   boots a throwaway VM to print the versions that actually landed. Extra args pass
-  straight to `docker build` (e.g. `./sandbox.sh base --build-arg GLAB_VERSION=1.103.0`).
+  straight to `docker build` (e.g. `./sandbox.sh base --build-arg GLAB_VERSION=1.121.0`).
 - **`run`** boots an **ephemeral** VM (auto-removed on exit) as the unprivileged
   `gene` user with 2G RAM. `-n`/`-k`/`-d` keep it around.
 
@@ -132,14 +132,14 @@ Run `./sandbox.sh versions` for the live truth. As built (Ubuntu 24.04 base):
 | `npm`    | bundled with Node                   | 11.x                             |
 | `git`    | apt                                 | 2.43.x                           |
 | `gh`     | GitHub apt repo                     | latest                           |
-| `glab`   | release binary (`GLAB_VERSION`)     | **pinned** 1.102.0               |
+| `glab`   | release binary (`GLAB_VERSION`)     | **pinned** 1.120.0               |
 | `linear` | npm `@schpet/linear-cli`            | latest                           |
-| `claude` | native installer (`CLAUDE_VERSION`) | **pinned** 2.1.168               |
+| `claude` | native installer (`CLAUDE_VERSION`) | **pinned** 2.1.289               |
 | `ntn`    | native installer (`NTN_VERSION`)    | latest                           |
 
 Pinned tools (`glab`, `claude`) are reproducible; the rest track their upstream at
 build time. Override the pins with `--build-arg`, e.g.
-`./sandbox.sh base --build-arg CLAUDE_VERSION=2.1.200`.
+`./sandbox.sh base --build-arg CLAUDE_VERSION=2.1.300`.
 
 Baked runtime env (keeps long-lived agent connections resilient, pins `claude` to
 its built-in version, and uses file-based auth since the microVM has no keyring):

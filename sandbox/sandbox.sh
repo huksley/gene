@@ -521,7 +521,7 @@ Network: a bare `run` is isolated — only public egress is allowed and DNS
 
 Examples:
   ./sandbox.sh base
-  ./sandbox.sh base --build-arg GLAB_VERSION=1.103.0
+  ./sandbox.sh base --build-arg GLAB_VERSION=1.121.0
   ./sandbox.sh run                                  # interactive shell (as gene, 2G)
   ./sandbox.sh run claude --version
   ./sandbox.sh run --inherit -- claude -p 'summarize the open Linear issues'
