@@ -330,7 +330,7 @@ export class Dashboard {
     if (this.logLines.length > MAX_LOG_LINES) {
       const old = this.logLines.shift();
       if (old) {
-        this.logBox.remove(old.id);
+        this.logBox.remove(old);
         old.destroy();
       }
     }

@@ -2,33 +2,26 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { releaseNotesSummary } from "./update.ts";
 
-test("releaseNotesSummary keeps the first two paragraphs and drops the rest", () => {
+test("releaseNotesSummary drops the changelog link and commit trailers", () => {
   const body = [
-    "## What's Changed",
-    "* feat: allow WebFetch by @huksley in #12",
+    "### feat: retry a ticket from the TUI",
+    "- `r` inside a ticket retries it",
     "",
-    "**Full Changelog**: https://github.com/huksley/gene/compare/v1.2.2...v1.2.5",
+    "Co-Authored-By: Claude <noreply@anthropic.com>",
     "",
-    "## New Contributors",
-    "* @someone made their first contribution"
+    "**Full Changelog**: https://github.com/huksley/gene/compare/v1.3.3...v1.3.4"
   ].join("\n");
-
-  assert.equal(
-    releaseNotesSummary(body),
-    "## What's Changed\n* feat: allow WebFetch by @huksley in #12\n\n" +
-      "**Full Changelog**: https://github.com/huksley/gene/compare/v1.2.2...v1.2.5"
-  );
+  assert.equal(releaseNotesSummary(body), "### feat: retry a ticket from the TUI\n- `r` inside a ticket retries it");
 });
 
 test("releaseNotesSummary normalizes CRLF and collapses blank-line runs", () => {
-  const body = "First para\r\n\r\n\r\nSecond para\r\n\r\nThird para";
-  assert.equal(releaseNotesSummary(body), "First para\n\nSecond para");
+  const body = "First\r\n\r\n\r\nSecond\r\n\r\nThird";
+  assert.equal(releaseNotesSummary(body), "First\n\nSecond\n\nThird");
 });
 
-test("releaseNotesSummary respects a custom paragraph count", () => {
-  const body = "one\n\ntwo\n\nthree";
-  assert.equal(releaseNotesSummary(body, 1), "one");
-  assert.equal(releaseNotesSummary(body, 3), "one\n\ntwo\n\nthree");
+test("releaseNotesSummary caps the line count and marks the cut", () => {
+  assert.equal(releaseNotesSummary("one\ntwo\nthree", 2), "one\ntwo\n…");
+  assert.equal(releaseNotesSummary("one\ntwo", 2), "one\ntwo");
 });
 
 test("releaseNotesSummary returns empty string when there is nothing to show", () => {
@@ -36,4 +29,5 @@ test("releaseNotesSummary returns empty string when there is nothing to show", (
   assert.equal(releaseNotesSummary(null), "");
   assert.equal(releaseNotesSummary(""), "");
   assert.equal(releaseNotesSummary("   \n\n  \t \n"), "");
+  assert.equal(releaseNotesSummary("**Full Changelog**: https://example.com/compare/a...b"), "");
 });

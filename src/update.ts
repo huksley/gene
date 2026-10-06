@@ -97,21 +97,53 @@ const compareVersions = (a: string, b: string): number => {
 };
 
 /**
- * Condense GitHub release notes to their first `maxParagraphs` paragraphs for an
- * at-a-glance "what's new" preview during an upgrade. Paragraphs are blocks separated
- * by one or more blank lines; each is trimmed and empty blocks dropped. Returns "" when
- * there is nothing to show.
+ * Condense GitHub release notes for the "what's new" preview during an upgrade:
+ * drop the boilerplate (the auto "**Full Changelog**: …" link, commit trailers like
+ * Co-Authored-By), collapse blank-line runs, and keep at most `maxLines` lines —
+ * ending with "…" when cut. Returns "" when nothing meaningful is left.
  */
-export const releaseNotesSummary = (body: string | null | undefined, maxParagraphs = 2): string => {
+export const releaseNotesSummary = (body: string | null | undefined, maxLines = 40): string => {
   if (!body) {
     return "";
   }
-  const paragraphs = body
+  const lines = body
     .replace(/\r\n/g, "\n")
-    .split(/\n[ \t]*\n+/)
-    .map(p => p.trim())
-    .filter(Boolean);
-  return paragraphs.slice(0, maxParagraphs).join("\n\n");
+    .split("\n")
+    .map(line => line.trimEnd())
+    .filter(line => !/^\s*\*\*Full Changelog\*\*/.test(line) && !/^\s*Co-Authored-By:/i.test(line))
+    .filter((line, i, all) => line !== "" || (i > 0 && all[i - 1] !== ""));
+  while (lines.length > 0 && lines[0] === "") lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length > maxLines) {
+    return [...lines.slice(0, maxLines), "…"].join("\n");
+  }
+  return lines.join("\n");
+};
+
+/**
+ * The releases newer than `current` up to and including `latest`, newest first —
+ * so an upgrade that skips versions shows what changed in each of them. Best-effort:
+ * on any API failure it returns just the latest release.
+ */
+const releasesSince = async (current: string, latest: Release): Promise<Release[]> => {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=30`, { headers: ghHeaders() });
+    if (!res.ok) {
+      return [latest];
+    }
+    const all = (await res.json()) as (Release & { draft?: boolean; prerelease?: boolean })[];
+    const latestVersion = latest.tag_name.replace(/^v/i, "");
+    const between = all
+      .filter(r => !r.draft && !r.prerelease)
+      .filter(r => {
+        const v = (r.tag_name ?? "").replace(/^v/i, "");
+        return compareVersions(v, current) > 0 && compareVersions(v, latestVersion) <= 0;
+      })
+      .sort((x, y) => compareVersions(y.tag_name.replace(/^v/i, ""), x.tag_name.replace(/^v/i, "")));
+    return between.length > 0 ? between : [latest];
+  } catch {
+    return [latest];
+  }
 };
 
 const safeUnlink = (file: string): void => {
@@ -186,12 +218,14 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
     logger.warn(`${tag} release ${latest} is older than the running ${current} — reinstalling anyway (--force).`);
   }
 
-  // When genuinely upgrading, preview what's new: the first two paragraphs of the
-  // GitHub release notes (already in the API response above) before the download.
+  // When genuinely upgrading, preview what's new in every release we're skipping
+  // over (newest first), before the download.
   if (cmp > 0) {
-    const notes = releaseNotesSummary(release.body);
-    if (notes) {
-      logger.info(`${tag} what's new in ${latest}:\n${notes}`);
+    for (const r of await releasesSince(current, release)) {
+      const notes = releaseNotesSummary(r.body);
+      if (notes) {
+        logger.info(`${tag} what's new in ${r.tag_name.replace(/^v/i, "")}:\n${notes}`);
+      }
     }
   }
 

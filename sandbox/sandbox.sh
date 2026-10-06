@@ -60,6 +60,10 @@ EOF
 # ever printed — never values.
 PROXY_EXACT="ANTHROPIC_API_KEY HUGGINGFACE_TOKEN GITHUB_TOKEN NPM_TOKEN GITLAB_TOKEN GITLAB_HOST LINEAR_API_KEY LINEAR_WORKSPACE OPENAI_TOKEN NOTION_API_TOKEN TRELLO_API_KEY TRELLO_TOKEN"
 PROXY_GLOBS="CLAUDE_ OPENAI_ CODEX_ NOTION_ TRELLO_"
+# Per-process state a parent Claude Code session exports to its children — never
+# config. Leaking it makes the sandbox's claude think it's a child of a session it
+# can't reach (no transcripts, a dead messaging socket).
+PROXY_SKIP="CLAUDE_PID CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_SSE_PORT"
 INHERIT_RO="${GENE_SANDBOX_INHERIT_RO:-}"
 
 PROXY_ARGS=(); PROXY_SEEN=""
@@ -76,6 +80,7 @@ collect_proxy_env() {
   done
   while IFS='=' read -r k v; do
     [ -n "$k" ] || continue
+    case " $PROXY_SKIP " in *" $k "*) continue;; esac
     for g in $PROXY_GLOBS; do
       case "$k" in "$g"*) proxy_add "$k" "$v"; break;; esac
     done
@@ -308,9 +313,10 @@ do_run() {
   local name="" keep="" detach="" inherit="" workdir="${GENE_SANDBOX_WORKDIR:-/workspace}"
   local cpus="${GENE_SANDBOX_CPUS:-}" mem="$MEM_DEFAULT" user="$GUEST_USER"
   local internal="" internal_set="" mount_dir="" workdir_set="${GENE_SANDBOX_WORKDIR:+1}" docker_d=""
+  local inherit_set="" mount_set=""
   local -a vols=()
   [ -n "${GENE_SANDBOX_VOLUME:-}" ] && vols+=("$GENE_SANDBOX_VOLUME")
-  [ -n "${GENE_SANDBOX_INHERIT:-}" ] && inherit=1
+  [ -n "${GENE_SANDBOX_INHERIT:-}" ] && { inherit=1; inherit_set=1; }
   [ -n "${GENE_SANDBOX_INTERNAL:-}" ] && { internal=1; internal_set=1; }
   [ -n "${GENE_SANDBOX_DOCKER:-}" ] && docker_d=1
 
@@ -319,14 +325,16 @@ do_run() {
       -n|--name)    name="$2"; keep=1; shift 2;;
       -k|--keep)    keep=1; shift;;
       -d|--detach)  detach=1; keep=1; shift;;
-      -i|--inherit) inherit=1; shift;;
+      -i|--inherit) inherit=1; inherit_set=1; shift;;
+      --no-inherit) inherit=""; inherit_set=1; shift;;
       --internal|--net-host)    internal=1; internal_set=1; shift;;
       --isolated|--no-internal) internal=""; internal_set=1; shift;;
       --docker)                 docker_d=1; shift;;
       --no-docker)              docker_d=""; shift;;
-      -v|--volume)  vols+=("$2"); shift 2;;
-      --dir)        mount_dir="$2"; shift 2;;
-      --pwd)        mount_dir="$PWD"; shift;;
+      -v|--volume)  vols+=("$2"); mount_set=1; shift 2;;
+      --dir)        mount_dir="$2"; mount_set=1; shift 2;;
+      --pwd)        mount_dir="$PWD"; mount_set=1; shift;;
+      --no-pwd)     mount_dir=""; mount_set=1; shift;;
       -w|--workdir) workdir="$2"; workdir_set=1; shift 2;;
       -c|--cpus)    cpus="$2"; shift 2;;
       -m|--memory)  mem="$2"; shift 2;;
@@ -338,6 +346,22 @@ do_run() {
     esac
   done
   local -a cmd=("$@")
+
+  # `run claude …` is almost always "claude on this project, as me": default to
+  # --inherit (else it boots unauthenticated into onboarding) and --pwd (else it
+  # lands in an empty /workspace). Any explicit --[no-]inherit / mount / -w wins —
+  # the daemon passes all three, so its runs are unaffected. $HOME and / are never
+  # auto-mounted (too broad); pass --dir to mean it.
+  if [ "${#cmd[@]}" -gt 0 ] && [ "$(basename -- "${cmd[0]}")" = "claude" ]; then
+    if [ -z "$inherit_set" ]; then inherit=1; info "claude: defaulting to --inherit (host login; --no-inherit to skip)"; fi
+    if [ -z "$mount_set" ] && [ -z "$workdir_set" ]; then
+      if [ "$PWD" != "$HOME" ] && [ "$PWD" != "/" ]; then
+        mount_dir="$PWD"; info "claude: defaulting to --pwd (--no-pwd to skip)"
+      else
+        warn "claude: not auto-mounting $PWD — pass --dir DIR to give claude a project"
+      fi
+    fi
+  fi
 
   # --dir DIR: mount a host directory into the sandbox at /workspace/<basename>
   # (NOT at /workspace itself) and — unless -w was given — make it the workdir. So
@@ -467,6 +491,7 @@ Sandboxes run as the unprivileged user 'gene' (uid 1000) with 2G memory by defau
 
 run flags:
   -i, --inherit       bring host tool auth/context into the sandbox (see below)
+      --no-inherit    don't, even for `run claude` (where --inherit is the default)
       --internal      reach private/internal hosts (RFC1918, Tailscale subnet
                       routes) — e.g. gitlab.example.com; implied by --inherit
       --isolated      force public-egress-only, even with --inherit (--no-internal)
@@ -484,6 +509,8 @@ run flags:
       --dir DIR       mount host DIR at /workspace/<basename> and make it the workdir
                       (so claude --inherit pre-trusts it); not at /workspace itself
       --pwd           shortcut for --dir "$PWD" (mount the current directory)
+      --no-pwd        don't, even for `run claude` (where --pwd is the default
+                      unless -v/--dir/-w is given or the cwd is $HOME or /)
   -w, --workdir DIR   working directory inside the sandbox (default: /workspace)
   -c, --cpus N        number of vCPUs
   -m, --memory SIZE   memory, e.g. 2G            (default: 2G)
@@ -523,7 +550,7 @@ Examples:
   ./sandbox.sh base
   ./sandbox.sh base --build-arg GLAB_VERSION=1.121.0
   ./sandbox.sh run                                  # interactive shell (as gene, 2G)
-  ./sandbox.sh run claude --version
+  ./sandbox.sh run claude                           # = run --inherit --pwd -- claude
   ./sandbox.sh run --inherit -- claude -p 'summarize the open Linear issues'
   ./sandbox.sh run --internal -- glab -R group/repo mr list            # internal GitLab
   ./sandbox.sh run --inherit --isolated -- claude --version            # creds, no internal net

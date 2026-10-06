@@ -349,7 +349,7 @@ export class Detail {
     if (this.liveLines.length > MAX_LINES) {
       const old = this.liveLines.shift();
       if (old) {
-        this.live.remove(old.id);
+        this.live.remove(old);
         old.destroy();
       }
     }
@@ -367,7 +367,7 @@ export class Detail {
 
   private clearLive(): void {
     for (const line of this.liveLines) {
-      this.live.remove(line.id);
+      this.live.remove(line);
       line.destroy();
     }
     this.liveLines = [];
@@ -375,7 +375,7 @@ export class Detail {
 
   private clearActions(): void {
     for (const line of this.actionLines) {
-      this.actionsBox.remove(line.id);
+      this.actionsBox.remove(line);
       line.destroy();
     }
     this.actionLines = [];

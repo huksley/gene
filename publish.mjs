@@ -25,6 +25,41 @@ const ASSET = "gene-macos-arm64"; // keep in sync with build.mjs and ASSET_CANDI
 const { version } = JSON.parse(fs.readFileSync(p("package.json"), "utf8"));
 const tag = `v${version}`;
 
+const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+
+/**
+ * Release notes from the commits since the previous release tag: each commit's
+ * subject as a heading and its body below (minus Co-Authored-By trailers). We push
+ * straight to main, so `gh --generate-notes` (which lists merged PRs) would come out
+ * empty — and `gene --update` shows these notes as its "what's new" preview.
+ */
+const releaseNotes = () => {
+  spawnSync("git", ["fetch", "--tags", "--quiet"], { cwd: root, stdio: "ignore" });
+  const previous = git("tag", "--list", "v*", "--sort=-v:refname", "--merged", "HEAD").split("\n").find(t => t && t !== tag);
+  const range = previous ? `${previous}..HEAD` : "HEAD";
+  const log = git("log", "--no-merges", "--format=%x1e%s%x1f%b", range);
+  const sections = log
+    .split("\x1e")
+    .filter(Boolean)
+    .map(entry => {
+      const [subject, body = ""] = entry.split("\x1f");
+      const text = body
+        .split("\n")
+        .filter(line => !/^\s*Co-Authored-By:/i.test(line))
+        .join("\n")
+        .trim();
+      return `### ${subject.trim()}${text ? `\n${text}` : ""}`;
+    });
+  const compare = previous ? `\n\n**Full Changelog**: https://github.com/${REPO}/compare/${previous}...${tag}` : "";
+  return `${sections.join("\n\n") || "_No changes recorded._"}${compare}\n`;
+};
+
+if (process.argv.includes("--notes")) {
+  process.stdout.write(releaseNotes());
+  process.exit(0);
+}
+
+
 // `gh` must be installed and authenticated before we touch the release.
 if (spawnSync("gh", ["auth", "status"], { stdio: "ignore" }).status !== 0) {
   console.error("✗ the GitHub CLI `gh` is required and must be authenticated — run `gh auth login`.");
@@ -53,7 +88,10 @@ if (spawnSync("gh", ["release", "view", tag, "--repo", REPO], { stdio: "ignore" 
   console.log(`• release ${tag} exists — updating its assets`);
 } else {
   console.log(`• creating release ${tag}`);
-  execFileSync("gh", ["release", "create", tag, "--repo", REPO, "--title", tag, "--generate-notes"], {
+  const notesFile = p("dist", "release-notes.md");
+  fs.mkdirSync(path.dirname(notesFile), { recursive: true });
+  fs.writeFileSync(notesFile, releaseNotes());
+  execFileSync("gh", ["release", "create", tag, "--repo", REPO, "--title", tag, "--target", git("rev-parse", "HEAD"), "--notes-file", notesFile], {
     stdio: "inherit"
   });
 }

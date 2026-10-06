@@ -55,7 +55,7 @@ import { resetIssue } from "./reset.ts";
 import { requestRetry, takeRetryRequest } from "./retry-request.ts";
 import { forkIssue } from "./fork.ts";
 import { importLegacy } from "./import-legacy.ts";
-import { inSea, extractAsset, readVersion } from "./sea-assets.ts";
+import { inSea, extractAssetTo, readVersion } from "./sea-assets.ts";
 import { selfUpdate } from "./update.ts";
 import { runSandbox } from "./sandbox.ts";
 import { runExport } from "./export.ts";
@@ -1640,12 +1640,12 @@ const main = async (): Promise<void> => {
 
   if (useUi) {
     // Inside the single executable the OpenTUI native library is embedded as an
-    // asset; extract it and hand its path to the bundled platform shim BEFORE the UI
-    // module (and thus @opentui/core) loads. In dev the real platform package
-    // resolves the dylib itself, so this is skipped.
+    // asset; extract it into the `<root>/<package>/<file>` layout OpenTUI expects
+    // and point OTUI_ASSET_ROOT there BEFORE the UI module (and thus @opentui/core)
+    // loads. In dev the real platform package resolves the dylib itself.
     if (inSea()) {
-      (globalThis as { __GENE_OPENTUI_DYLIB__?: string }).__GENE_OPENTUI_DYLIB__ =
-        extractAsset("libopentui.dylib", "libopentui.dylib");
+      const dylib = extractAssetTo("gene-sea/opentui/@opentui/core-darwin-arm64", "libopentui.dylib", "libopentui.dylib");
+      process.env.OTUI_ASSET_ROOT = path.resolve(dylib, "../../..");
     }
     // Dynamic import so @opentui/core (and its native FFI renderer) is loaded ONLY
     // in UI mode — headless mode never touches FFI. startUi mounts the renderer,

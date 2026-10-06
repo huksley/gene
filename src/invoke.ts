@@ -21,6 +21,7 @@ import logger from "./logger.ts";
 import { monitor, type AgentEvent, type TokenUsage } from "./monitor.ts";
 import { env, REPOS_ROOT, WORKTREES_ROOT } from "./config.ts";
 import { sandboxScriptPath } from "./sandbox.ts";
+import { pipeLines } from "./exec.ts";
 import { addWorktree, fetch } from "./git.ts";
 import { logEvent } from "./db.ts";
 import { setActiveTimeout, type ActiveTimeout } from "./timer.ts";
@@ -431,7 +432,10 @@ const runClaudeOnce = (
     // process and stay in our group (so a terminal Ctrl-C still reaches them).
     const proc = spawn(command, args, {
       cwd: worktreePath,
-      stdio: ["ignore", "pipe", "inherit"],
+      // stderr is piped into the logger, never inherited: under the TUI a raw write
+      // (sandbox.sh chatter, an image pull's progress meter) scrolls the alt-screen
+      // and leaves the dashboard clobbered.
+      stdio: ["ignore", "pipe", "pipe"],
       env: childEnv,
       detached: env.SANDBOX
     });
@@ -485,6 +489,8 @@ const runClaudeOnce = (
         clearTimeout(hardKillTimer);
       }
     };
+
+    pipeLines(proc.stderr, line => logger.info(`${logger.tag.invoke} [${issue.identifier}] ${truncate(line, 300)}`));
 
     const lines = readline.createInterface({ input: proc.stdout!, crlfDelay: Infinity });
     lines.on("line", line => {

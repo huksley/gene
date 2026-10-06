@@ -92,6 +92,41 @@ export const runOrThrow = async (
   return result;
 };
 
+// Any escape sequence other than SGR color (`ESC [ … m`): cursor moves, erase-line,
+// OSC titles, … — a progress meter's redraw machinery, which would scribble over
+// the TUI if replayed in the log pane.
+// eslint-disable-next-line no-control-regex
+const NON_SGR_ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-ln-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+
+/**
+ * Deliver a child's output stream to `onLine` one logical line at a time. Within a
+ * line, keep only the text after the last `\r` (a progress meter's latest frame),
+ * strip non-color escape sequences, and drop blank lines. Use this instead of
+ * `stdio: "inherit"` for anything that may run under the TUI.
+ */
+export const pipeLines = (stream: NodeJS.ReadableStream | null, onLine: (line: string) => void): void => {
+  if (!stream) {
+    return;
+  }
+  let buf = "";
+  const flush = (raw: string): void => {
+    const cr = raw.lastIndexOf("\r");
+    const line = (cr >= 0 ? raw.slice(cr + 1) : raw).replace(NON_SGR_ESCAPES, "").trimEnd();
+    if (line) {
+      onLine(line);
+    }
+  };
+  stream.on("data", chunk => {
+    buf += chunk.toString();
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      flush(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+    }
+  });
+  stream.on("end", () => flush(buf));
+};
+
 /**
  * Run a command, delivering its output to `onLine` one line at a time instead of
  * inheriting the terminal. Unlike a raw `stdio: "inherit"`, this NEVER writes to
@@ -131,32 +166,8 @@ export const runStreaming = (
         : null;
     watchdog?.unref();
 
-    // Buffer each pipe and flush on newline. Within a logical line, keep only the
-    // text after the last `\r` (a progress meter's latest frame); drop blank lines.
-    const pump = (stream: NodeJS.ReadableStream | null): void => {
-      if (!stream) {
-        return;
-      }
-      let buf = "";
-      const flush = (raw: string): void => {
-        const cr = raw.lastIndexOf("\r");
-        const line = (cr >= 0 ? raw.slice(cr + 1) : raw).trimEnd();
-        if (line) {
-          onLine(line);
-        }
-      };
-      stream.on("data", chunk => {
-        buf += chunk.toString();
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          flush(buf.slice(0, nl));
-          buf = buf.slice(nl + 1);
-        }
-      });
-      stream.on("end", () => flush(buf));
-    };
-    pump(proc.stdout);
-    pump(proc.stderr);
+    pipeLines(proc.stdout, onLine);
+    pipeLines(proc.stderr, onLine);
 
     proc.on("error", err => {
       watchdog && clearTimeout(watchdog);

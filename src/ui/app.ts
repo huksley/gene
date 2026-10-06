@@ -427,6 +427,23 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
   };
   const previousSink = setLogSink(logSink);
 
+  // Same for stray stderr writes (a Node warning, a library's direct write): the
+  // renderer owns the alt-screen, and a raw line there scrolls it out of sync.
+  const realStderrWrite = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array, encoding?: unknown, callback?: unknown): boolean => {
+    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+    for (const line of text.split("\n")) {
+      if (line.trim()) {
+        logger.warn(line.trimEnd());
+      }
+    }
+    const done = typeof encoding === "function" ? encoding : callback;
+    if (typeof done === "function") {
+      done();
+    }
+    return true;
+  }) as typeof process.stderr.write;
+
   // Seed the table from Postgres history (best-effort; pg may not be up yet).
   const reseed = async (): Promise<void> => {
     try {
@@ -732,6 +749,7 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
     }
     monitor.off("change", onChange);
     setLogSink(previousSink);
+    process.stderr.write = realStderrWrite;
     try {
       renderer.destroy();
     } catch {

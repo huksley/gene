@@ -11,13 +11,11 @@
  *      then notarized by Apple when GENE_NOTARY_PROFILE names a `notarytool
  *      store-credentials` keychain profile.
  *
- * Notes on the externals/alias below:
- *   - The non-darwin-arm64 OpenTUI platform packages are referenced by string
- *     dynamic import inside @opentui/core but are not installed; mark them external
- *     so esbuild leaves them as runtime imports (the darwin-arm64 branch is the only
- *     one that ever executes here).
- *   - @opentui/core-darwin-arm64 is aliased to our shim so the dylib path resolves
- *     to the extracted asset rather than to a location next to the binary.
+ * Notes on the externals below:
+ *   - The OpenTUI platform packages are referenced by dynamic import inside
+ *     @opentui/core; mark them external so esbuild leaves them as runtime imports.
+ *     None of them runs in the binary: index.ts extracts the embedded dylib and
+ *     points OTUI_ASSET_ROOT at it, which OpenTUI checks before importing.
  *   - pg's optional native/edge deps are external (never loaded in this config).
  */
 
@@ -32,7 +30,6 @@ import crypto from "node:crypto";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const p = (...s) => path.join(root, ...s);
-const shim = p("src", "shims", "opentui-native.ts");
 
 /**
  * @opentui/core lazily loads tree-sitter grammars with `import(x, { with: { type:
@@ -66,7 +63,6 @@ await esbuild.build({
   target: "node26",
   outfile: p("dist", "gene.js"),
   plugins: [stubFileAttrImports],
-  alias: { "@opentui/core-darwin-arm64": shim },
   // `pg` is CommonJS and calls require() for Node builtins. In ESM output there is no
   // `require`, so esbuild's __require shim throws — but it first checks for a real
   // `require` in scope and delegates to it. Provide one via createRequire. Under the
@@ -87,6 +83,7 @@ await esbuild.build({
     "pg-cloudflare",
     "cloudflare:sockets",
     // OpenTUI platform packages for other targets (not installed, never run here)
+    "@opentui/core-darwin-arm64",
     "@opentui/core-darwin-x64",
     "@opentui/core-linux-x64",
     "@opentui/core-linux-x64-musl",
