@@ -27,10 +27,19 @@ test("cooldown measured from last fire of any source", () => {
   assert.deepEqual(decideTrigger({ now, nextCheckAt: now, resting: true, lastFiredAt: old, cooldownMs: 30 * min }), { kind: "run" });
 });
 
-test("interval clamps to [poll, 24h]", () => {
-  const base = { usedIo: false, errorStreak: 0, pollMs: min, ioFloorMs: 5 * min };
-  assert.equal(effectiveIntervalMs({ ...base, intervalSec: 10 }), min);
+test("an IO check's interval clamps to [io floor, 24h]", () => {
+  const base = { usedIo: true, errorStreak: 0, pollMs: min, ioFloorMs: 5 * min };
+  assert.equal(effectiveIntervalMs({ ...base, intervalSec: 10 }), 5 * min);
+  assert.equal(effectiveIntervalMs({ ...base, intervalSec: 900 }), 15 * min);
   assert.equal(effectiveIntervalMs({ ...base, intervalSec: 7 * 86400 }), 86_400_000);
+});
+
+// Regression (smoke run 2026-10-07): the compiler gave a daily 08:00 cron INTERVAL 1d, so
+// the check ran once a day and the 08:00 tick would fire up to 24h late. A check that made
+// no fetch/exec calls is free to run, so it runs every poll whatever the compiled interval.
+test("a check without IO runs every poll regardless of the compiled interval", () => {
+  const base = { usedIo: false, errorStreak: 0, pollMs: min, ioFloorMs: 5 * min };
+  assert.equal(effectiveIntervalMs({ ...base, intervalSec: 86400 }), min);
   assert.equal(effectiveIntervalMs({ ...base, intervalSec: undefined }), min);
 });
 
@@ -41,7 +50,7 @@ test("io floor applies only after an IO run", () => {
 });
 
 test("error backoff doubles, capped at 1h, never shortens a long interval", () => {
-  const base = { usedIo: false, pollMs: min, ioFloorMs: 5 * min };
+  const base = { usedIo: true, pollMs: min, ioFloorMs: 5 * min };
   assert.equal(effectiveIntervalMs({ ...base, intervalSec: 300, errorStreak: 1 }), 10 * min);
   assert.equal(effectiveIntervalMs({ ...base, intervalSec: 300, errorStreak: 10 }), 60 * min);
   assert.equal(effectiveIntervalMs({ ...base, intervalSec: 86400, errorStreak: 3 }), 86_400_000);

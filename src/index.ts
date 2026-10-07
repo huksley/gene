@@ -1688,6 +1688,8 @@ const main = async (): Promise<void> => {
     // have one yet) before awaiting.
     const pending = [...inFlight.values()].map(ctx => ctx.promise);
     await Promise.allSettled(pending.filter(Boolean));
+    // Let trigger compiles queued by this scan land in the store before it closes.
+    await triggerScanner.idle();
     // Close the Postgres pool, else its open sockets keep the process alive.
     await closeDb();
     return;

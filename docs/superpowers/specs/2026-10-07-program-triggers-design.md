@@ -157,9 +157,11 @@ lines) leaves the sandbox.
 
 ## 3. Scheduling and firing
 
-**Check cadence.** The compiled `INTERVAL` is clamped to `[poll interval, 24 h]`. If the
-previous run used `fetch`/`exec` (`usedIo`), the effective interval is at least
-`GENE_TRIGGER_IO_MIN_INTERVAL_MIN` (default 5). Pure cron checks have no floor.
+**Check cadence.** A check whose previous run made no `fetch`/`exec` calls (pure
+cron/state — free to run) runs **every poll**, whatever `INTERVAL` the compiler chose (a
+daily cron given `INTERVAL: 1d` would otherwise fire up to 24 h late). For a check that
+called out (`usedIo`), the compiled `INTERVAL` applies, clamped to
+`[max(poll, GENE_TRIGGER_IO_MIN_INTERVAL_MIN), 24 h]`.
 `next_check_at = now + effective interval` after every due evaluation (run or skipped).
 
 **Gates**, evaluated in order when a trigger is due (`status = ok`, `now ≥ next_check_at`):

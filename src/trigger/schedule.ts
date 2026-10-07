@@ -33,8 +33,10 @@ export const effectiveIntervalMs = (i: {
   pollMs: number;
   ioFloorMs: number;
 }): number => {
-  let base = Math.min(Math.max((i.intervalSec ?? 0) * 1000, i.pollMs), DAY_MS);
-  if (i.usedIo) base = Math.max(base, i.ioFloorMs);
+  // A check that made no fetch/exec calls (pure cron/state) costs nothing, so it runs every
+  // poll — the compiled interval only paces checks that call out. Otherwise a daily cron the
+  // compiler gave INTERVAL 1d would be checked once a day and fire up to 24h late.
+  let base = i.usedIo ? Math.min(Math.max((i.intervalSec ?? 0) * 1000, i.pollMs, i.ioFloorMs), DAY_MS) : i.pollMs;
   if (i.errorStreak > 0) base = Math.max(base, Math.min(base * 2 ** i.errorStreak, HOUR_MS));
   return base;
 };
