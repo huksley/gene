@@ -232,7 +232,7 @@ id defaults the system to `GENE_TRACKER`). With the **opt-in Postgres backend** 
 store is multi-connection, so a one-shot command (`log` / `reset`) reads it fine
 while the daemon runs — both point at the same server. The **default embedded store**
 is single-process: stop the daemon before running `log` / `reset`, or point both at a
-shared Postgres (`DATABASE_URL` / `PG*`). See [State store](#state-store).
+shared Postgres (`GENE_DATABASE_URL`). See [State store](#state-store).
 
 ## Programs
 
@@ -331,7 +331,7 @@ that local repo becomes the default.
   see `.env.example`).
   Runtime locks live in `.gene/` (gitignored); the persistent **state store** needs
   no setup — embedded PGlite under `~/.config/gene/` by default, or an external
-  Postgres when `DATABASE_URL` / `PG*` is set (see [State store](#state-store)).
+  Postgres when `GENE_DATABASE_URL` is set (see [State store](#state-store)).
 
 ## State store
 
@@ -344,13 +344,17 @@ log** (`db.ts`) — in a small PostgreSQL store, with two backends picked automa
   **self-contained** — `npm start` just works. It is **single-process**: one Gene
   owns the data dir behind a self-healing PID lock, so a one-shot `log` / `reset`
   can't run *while* the daemon is up — stop it first, or use Postgres.
-- **Postgres server (opt-in)** — set `DATABASE_URL` (or any `PG*`: `PGHOST`,
-  `PGDATABASE`, …) and Gene talks to that instead. Multi-connection, so `log` /
-  `reset` work alongside a running daemon. `npm run pg` brings up a throwaway local
-  cluster under `data/pg/` (gitignored) on port **5434** if you want one locally.
+- **Postgres server (opt-in)** — set `GENE_DATABASE_URL` and Gene talks to that
+  instead. Multi-connection, so `log` / `reset` work alongside a running daemon.
+  `npm run pg` brings up a throwaway local cluster under `data/pg/` (gitignored) on
+  port **5434** if you want one locally
+  (`GENE_DATABASE_URL=postgres://$USER@127.0.0.1:5434/postgres`). The generic
+  `DATABASE_URL` / `PG*` vars are ignored on purpose: Gene runs inside the project it
+  works on, whose dev shell often sets them for the app's own database.
 
 The schema is identical either way; switching backends starts a fresh store (state
-is not migrated between them).
+is not migrated between them). If the tables vanish under a running daemon (the
+database was reset), Gene recreates them on the next query.
 
 ## Requirements
 
@@ -523,7 +527,7 @@ first to watch its decisions with zero writes.
 **Can I run it headless on a server?**
 Yes — `gene --headless` runs the daemon without the TUI dashboard, logging to stdout
 (`gene --once` does a single scan and exits). Point it at an external Postgres
-(`DATABASE_URL`) if you want to inspect state while it runs.
+(`GENE_DATABASE_URL`) if you want to inspect state while it runs.
 
 **Which trackers and forges are supported?**
 Trackers: **Linear** and **Trello**. Forges: **GitHub** and **GitLab**, chosen per issue

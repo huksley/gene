@@ -32,7 +32,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { finished } from "node:stream/promises";
 import logger from "./logger.ts";
-import { getDb, pgConfigured, pgliteDir, type Db } from "./db.ts";
+import { describePgUrl, getDb, pgConfigured, pgliteDir, type Db } from "./db.ts";
 import { readVersion } from "./sea-assets.ts";
 
 /** Rows fetched per page. Bounds peak memory regardless of table size. */
@@ -145,12 +145,8 @@ const streamTable = async (db: Db, stream: fs.WriteStream, table: string): Promi
 export const runExport = async (file: string = DEFAULT_FILE): Promise<void> => {
   const dest = path.resolve(file);
   const engine = pgConfigured() ? "postgres" : "pglite";
-  // Never echo DATABASE_URL — it may embed a password; report only non-secret coordinates.
-  const location = pgConfigured()
-    ? process.env.DATABASE_URL
-      ? "via DATABASE_URL"
-      : `${process.env.PGHOST ?? "127.0.0.1"}:${process.env.PGPORT ?? 5434}/${process.env.PGDATABASE ?? "postgres"}`
-    : pgliteDir();
+  // Never echo GENE_DATABASE_URL — it may embed a password; report only non-secret coordinates.
+  const location = pgConfigured() ? describePgUrl(process.env.GENE_DATABASE_URL ?? "") : pgliteDir();
 
   logger.info(`${logger.tag.export} exporting ${engine} store → ${dest}`);
   const db = await getDb();

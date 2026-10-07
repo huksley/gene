@@ -207,17 +207,11 @@ GENE_AGENT_MAX_PROCESSING_TIME=1800
 # GENE_DB_DIR=/custom/path     # override the embedded data dir
 #
 # To use a Postgres SERVER instead — required for concurrent access (daemon + a
-# one-shot at the same time) — set EITHER a full URL or any PG* var below. Setting
-# any of them flips Gene to server mode. `npm run pg` init-and-runs a throwaway local
-# one on 127.0.0.1:5434 (data under data/pg, config in pg.conf) with trust auth for
-# the local OS user.
-# DATABASE_URL=postgres://$USER:postgres@127.0.0.1:5434/postgres
-# ...or the discrete pieces (consulted only when DATABASE_URL is unset):
-# PGHOST=127.0.0.1
-# PGPORT=5434
-# PGDATABASE=postgres
-# PGUSER=$USER
-# PGPASSWORD=postgres
+# one-shot at the same time) — set GENE_DATABASE_URL. `npm run pg` init-and-runs a
+# throwaway local one on 127.0.0.1:5434 (data under data/pg, config in pg.conf) with
+# trust auth for the local OS user. The generic DATABASE_URL / PG* vars are ignored on
+# purpose: the project Gene works in usually sets them for its own database.
+# GENE_DATABASE_URL=postgres://$USER@127.0.0.1:5434/postgres
 
 # --- Optional ----------------------------------------------------------------
 # Stripped from the agent's environment so `claude` uses your OAuth (Max) session

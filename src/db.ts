@@ -13,11 +13,13 @@
  *     Postgres, so every query below (jsonb, DISTINCT ON, BIGSERIAL, ON CONFLICT)
  *     runs unchanged. It is *single-process*, though: only one process can hold the
  *     data dir, so a one-shot `log`/`reset` can't run while the daemon is up.
- *   - **Postgres server (opt-in).** If DATABASE_URL or any standard libpq var
- *     (PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE/PGHOSTADDR/PGSERVICE) is set, we
- *     connect to that server over TCP via `pg`. This is what allows the daemon and a
- *     concurrent one-shot to hold the store at the same time. `npm run pg` brings up
- *     a throwaway local server on 5434 for exactly this.
+ *   - **Postgres server (opt-in).** If GENE_DATABASE_URL is set, we connect to that
+ *     server over TCP via `pg`. This is what allows the daemon and a concurrent
+ *     one-shot to hold the store at the same time. `npm run pg` brings up a throwaway
+ *     local server on 5434 for exactly this. The generic DATABASE_URL / PG* vars are
+ *     deliberately NOT honoured: Gene runs inside the project it works on, whose dev
+ *     shell (direnv, devenv, .env) routinely exports them for the *app's* database —
+ *     Gene would then write into it and lose its tables whenever the app resets it.
  *
  * The handle is opened lazily and memoised for the process. Both engines are exposed
  * through one minimal `Db` interface (`query` + `end`) so the rest of the daemon is
@@ -132,16 +134,17 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 
-/**
- * Standard libpq *client* connection vars. If any is set, the operator has pointed
- * Gene at a Postgres server, so we use `pg`; with none set we fall back to embedded
- * PGlite. PGDATA and other server-side knobs are deliberately excluded — they
- * configure a server, not a connection.
- */
-const PG_ENV_VARS = ["DATABASE_URL", "PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGSERVICE"];
+/** Gene's own Postgres connection string — the only thing that selects server mode. */
+const pgUrl = (): string => (process.env.GENE_DATABASE_URL ?? "").trim();
 
 /** True when Gene is configured to talk to a Postgres server (rather than embedded PGlite). */
-export const pgConfigured = (): boolean => PG_ENV_VARS.some(key => (process.env[key] ?? "").trim() !== "");
+export const pgConfigured = (): boolean => pgUrl() !== "";
+
+/**
+ * Generic connection vars Gene used to honour and now ignores (see the header). Only
+ * consulted to say so at open, so an operator relying on the old behaviour notices.
+ */
+const FOREIGN_PG_ENV_VARS = ["DATABASE_URL", "PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGUSER", "PGSERVICE"];
 
 /** Embedded PGlite's data dir: $GENE_DB_DIR, else $XDG_CONFIG_HOME/gene/pgdata, else ~/.config/gene/pgdata. */
 export const pgliteDir = (): string => {
@@ -170,20 +173,23 @@ const isStartupError = (error: unknown): boolean => {
   );
 };
 
+/**
+ * Where a connection string points, minus credentials — safe to log. Falls back to a
+ * generic label if the URL doesn't parse.
+ */
+export const describePgUrl = (url: string): string => {
+  try {
+    const u = new URL(url);
+    return `${u.hostname}:${u.port || 5432}${u.pathname}`;
+  } catch {
+    return "via GENE_DATABASE_URL";
+  }
+};
+
 /** Connect to a Postgres server, wait for it to accept queries, then apply the schema. */
 const openPg = async (signal?: AbortSignal): Promise<Db> => {
-  const url = process.env.DATABASE_URL;
-  // Discrete config defaults to the local dev server in pg.conf (127.0.0.1:5434).
-  // `initdb` makes the bootstrap superuser = the OS user and trust-auths localhost,
-  // so no password is needed out of the box; PGPASSWORD/PGUSER override when it is.
-  const discrete = {
-    host: process.env.PGHOST ?? "127.0.0.1",
-    port: Number(process.env.PGPORT ?? 5434),
-    database: process.env.PGDATABASE ?? "postgres",
-    user: process.env.PGUSER ?? os.userInfo().username,
-    ...(process.env.PGPASSWORD ? { password: process.env.PGPASSWORD } : {})
-  };
-  const pool = new Pool(url ? { connectionString: url } : discrete);
+  const url = pgUrl();
+  const pool = new Pool({ connectionString: url });
   // A server-dropped idle client surfaces as a pool 'error'; log and swallow it so a
   // transient disconnect can't crash the daemon (the next query reconnects).
   pool.on("error", error =>
@@ -214,8 +220,7 @@ const openPg = async (signal?: AbortSignal): Promise<Db> => {
   }
 
   await pool.query(SCHEMA);
-  const where = url ? "via DATABASE_URL" : `${discrete.host}:${discrete.port}/${discrete.database}`;
-  logger.info(`${logger.tag.db} connected to Postgres (${where})`);
+  logger.info(`${logger.tag.db} connected to Postgres (${describePgUrl(url)})`);
   return {
     // pg's extended protocol (with values) is single-statement; the multi-statement
     // SCHEMA above goes through the simple protocol (no values), so route accordingly.
@@ -274,7 +279,7 @@ const acquireStoreLock = (dir: string): string => {
       if (owner && typeof owner.pid === "number" && owner.pid !== process.pid && pidAlive(owner.pid)) {
         throw new Error(
           `embedded state store at ${dir} is already in use by PID ${owner.pid} (the Gene daemon?). ` +
-          "Stop that process to run this command, or set DATABASE_URL / PG* to use a shared Postgres " +
+          "Stop that process to run this command, or set GENE_DATABASE_URL to use a shared Postgres " +
           "server for concurrent access (`npm run pg` brings up a local one)."
         );
       }
@@ -358,7 +363,7 @@ const openPglite = async (): Promise<Db> => {
       await instance.exec(SCHEMA);
       return instance;
     });
-    logger.info(`${logger.tag.db} embedded PGlite at ${dir} (single-process — set DATABASE_URL/PG* for a shared server)`);
+    logger.info(`${logger.tag.db} embedded PGlite at ${dir} (single-process — set GENE_DATABASE_URL for a shared server)`);
     return {
       query: async <T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> => {
         const res = await lite.query(sql, params);
@@ -381,8 +386,46 @@ const openPglite = async (): Promise<Db> => {
   }
 };
 
-/** Open the configured engine (PGlite by default, Postgres when env points at one). */
+/** Open the configured engine (PGlite by default, Postgres when GENE_DATABASE_URL is set). */
 const open = (signal?: AbortSignal): Promise<Db> => (pgConfigured() ? openPg(signal) : openPglite());
+
+/** Postgres SQLSTATE undefined_table — "relation … does not exist". */
+const UNDEFINED_TABLE = "42P01";
+
+/**
+ * Wrap a store so a query that hits a missing table re-applies {@link SCHEMA} once and
+ * retries, instead of failing on every poll until the daemon restarts. The schema is
+ * otherwise only applied at open, so a server-side wipe (someone resetting the database
+ * under a running daemon) would wedge the In-Review watchdog and the activity log for
+ * the rest of the process lifetime. Concurrent misses share one repair: racing
+ * `CREATE TABLE IF NOT EXISTS` on Postgres can itself fail on the catalog's unique index.
+ */
+export const withSchemaRepair = (db: Db, schema: string = SCHEMA): Db => {
+  let repairing: Promise<void> | null = null;
+  const repair = (): Promise<void> => {
+    repairing ??= db.exec(schema).finally(() => {
+      repairing = null;
+    });
+    return repairing;
+  };
+  return {
+    ...db,
+    query: async <T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> => {
+      try {
+        return await db.query<T>(sql, params);
+      } catch (error) {
+        if ((error as { code?: string } | null)?.code !== UNDEFINED_TABLE) {
+          throw error;
+        }
+        logger.warn(
+          `${logger.tag.db} ${(error as Error).message} — the store's tables are gone (database reset?); recreating them`
+        );
+        await repair();
+        return db.query<T>(sql, params);
+      }
+    }
+  };
+};
 
 /**
  * Repair the BIGSERIAL sequence behind issue_log.id when it has fallen behind the rows
@@ -432,11 +475,19 @@ export const getDb = async (): Promise<Db> => {
       throw new Error("state store is shutting down");
     }
     logger.info(`${logger.tag.db} opening state store (${pgConfigured() ? "Postgres" : "embedded PGlite"})`);
+    const ignored = FOREIGN_PG_ENV_VARS.filter(key => (process.env[key] ?? "").trim() !== "");
+    if (ignored.length > 0) {
+      logger.info(
+        `${logger.tag.db} ignoring ${ignored.join(", ")} from the environment (usually the project's own ` +
+        "database) — set GENE_DATABASE_URL to point Gene at a Postgres server"
+      );
+    }
     openAbort = new AbortController();
     dbPromise = open(openAbort.signal)
       // Self-heal a sequence left behind by a prior legacy import, so an already-imported
       // store recovers on the next launch without having to re-run --import-legacy.
-      .then(async db => {
+      .then(async opened => {
+        const db = withSchemaRepair(opened);
         await resyncIssueLogSeq(db);
         return db;
       })

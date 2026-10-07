@@ -2,7 +2,7 @@
  * Undocumented `gene --import-legacy <dump.sql>` support.
  *
  * Reads a SQL dump and replays it against the configured store. The intended use is
- * seeding a shared Postgres database (DATABASE_URL / PG* set) with state exported
+ * seeding a shared Postgres database (GENE_DATABASE_URL set) with state exported
  * from an older deployment; it also works against the embedded PGlite store. The
  * dump is executed as a single multi-statement script via the store's `exec`.
  */
