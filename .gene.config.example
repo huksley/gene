@@ -125,6 +125,16 @@ GENE_REQUIRE_SECTIONS=
 # GENE_PROGRAM_REQUIRE_SECTIONS=## Trigger,## Workflow,## Acceptance criteria
 # GENE_PROGRAM_ALLOWED_TOOLS=
 
+# --- Program triggers (opt-in) -------------------------------------------------
+# Fire programs automatically from their `## Trigger` prose (compiled once to a
+# sandboxed check). See README "Programs".
+# GENE_PROGRAM_TRIGGERS=true
+# GENE_PROGRAM_TRIGGER_COOLDOWN_MIN=30
+# Command prefixes a check may run (no shell). Empty = cron/URL triggers only.
+# GENE_TRIGGER_EXEC_ALLOW=glab api,argocd app list,argocd app get
+# GENE_TRIGGER_IO_MIN_INTERVAL_MIN=5
+# GENE_TRIGGER_COMPILE_MODEL=haiku
+
 # --- Comment ignore patterns (tracker + forge, all optional) -----------------
 # Comments matching any pattern here do NOT wake Gene: a matching comment on the
 # issue isn't treated as new human feedback (LINEAR_/TRELLO_), and a matching

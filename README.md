@@ -268,9 +268,31 @@ question and moves the ticket to **Blocked**. Reply on the ticket (e.g. `!gene a
 or just answer the question) and the next scan **resumes** the run from where it paused —
 the same Blocked → resume flow as a coding ticket.
 
-**Triggers are a later phase.** Today programs fire **manually** (the `g` key). The
-`## Trigger` section is recorded but automatic firing — from CI failures or
-monitoring/alerting signals — is planned for a future release.
+**Triggers (opt-in)** Set `GENE_PROGRAM_TRIGGERS=true` and Gene fires programs on its
+own from their `## Trigger` prose. When the prose is new or changes, a short agent run
+compiles it once into a small JavaScript check — "every hour" becomes a cron check,
+"when one of my MRs needs a rebase" becomes a `glab api` query — cached until the prose
+changes. The daemon runs due checks on its poll; when one matches, the program fires and
+the check's reason (e.g. `!87, !91 need rebase`) is handed to the run. Write `manual` in
+`## Trigger` to keep a program manual-only.
+
+- **Sandboxed.** Checks run in QuickJS with no filesystem, env, or network except
+  `gene.fetch` (http/https, no credentials added) and `gene.exec`, which only runs
+  commands matching `GENE_TRIGGER_EXEC_ALLOW` (e.g. `glab api,argocd app list`; empty by
+  default). `glab api` is forced read-only. Keep commands that print secrets (e.g.
+  `bao kv get`) off the list.
+- **Safety limits.** A trigger never fires a program that is already running, and waits
+  `GENE_PROGRAM_TRIGGER_COOLDOWN_MIN` (default 30) after the last fire — a `g` press
+  counts. Checks that call out run at most every `GENE_TRIGGER_IO_MIN_INTERVAL_MIN`
+  (default 5) minutes. A condition that stays true re-fires once per cooldown until the
+  run fixes it; set `## Trigger` to `manual` to silence it.
+- **Visible.** Armed programs show **⚡** instead of ⟳; the detail view shows the compiled
+  summary, next check and last result, and **`t`** shows the code. When a trigger compiles, Gene runs it once for real and logs
+  whether it would fire right now. A trigger that can't be compiled, or whose check fails
+  3 times in a row, gets one comment on the ticket — and a check whose commands exit
+  non-zero or print errors (e.g. an expired CLI login) counts as failing, not as
+  "nothing to do".
+- Compiles use `GENE_TRIGGER_COMPILE_MODEL` (default `haiku`). `g` works exactly as before.
 
 ## Safety and control
 
