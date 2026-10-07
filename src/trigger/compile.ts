@@ -20,7 +20,9 @@ export type TrialHost = CheckHost & { problems: string[] };
 export type CompileResult =
   | { kind: "ok"; trigger: CompiledTrigger; trial: TrialVerdict }
   | { kind: "uncompilable"; reason: string }
-  | { kind: "invalid"; error: string };
+  | { kind: "invalid"; error: string }
+  /** The compile run itself failed (timeout, rate limit, not logged in) — transient, says nothing about the prose. */
+  | { kind: "unavailable"; error: string };
 
 type ParsedReply =
   | { kind: "ok"; trigger: CompiledTrigger }
@@ -123,7 +125,7 @@ export const compileTrigger = async (
     try {
       text = await runner(buildCompilePrompt(prose, { execAllow: opts.execAllow, ioFloorMin: opts.ioFloorMin, previousError }));
     } catch (error) {
-      return { kind: "invalid", error: `compile run failed: ${error instanceof Error ? error.message : String(error)}` };
+      return { kind: "unavailable", error: `compile run failed: ${error instanceof Error ? error.message : String(error)}` };
     }
     const parsed = parseCompileReply(text);
     if (parsed.kind === "uncompilable") return parsed;

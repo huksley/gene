@@ -147,3 +147,12 @@ test("log lines are captured and capped", async () => {
   assert.equal(out.logs.length, 20);
   assert.equal(out.logs[0], "l0");
 });
+
+// Final review I2: error messages and log lines leave the sandbox into the DB, the TUI and
+// tracker comments, so each is size-capped, not just counted.
+test("error message and log lines are length-capped", async () => {
+  const thrown = await runCheck(`async function check() { throw new Error("x".repeat(100000)); }`, host(), null);
+  assert.ok(!thrown.ok && thrown.error.length <= 1000);
+  const logged = await runCheck(`async function check(gene) { gene.log("y".repeat(100000)); return { fire: false }; }`, host(), null);
+  assert.equal(logged.logs[0]!.length, 500);
+});

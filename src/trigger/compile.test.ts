@@ -121,7 +121,9 @@ test("compileTrigger does not retry an UNCOMPILABLE answer", async () => {
   assert.deepEqual([result.kind, calls], ["uncompilable", 1]);
 });
 
-test("compileTrigger: runner failure is invalid, not a throw", async () => {
+// Final review I4: a runner failure (timeout, rate limit, not logged in) says nothing about
+// the prose, so it must not be cached as an invalid trigger.
+test("compileTrigger: runner failure is unavailable (transient), not invalid", async () => {
   const result = await compileTrigger("every hour", async () => { throw new Error("claude exited 1"); }, opts(() => stubHost()));
-  assert.equal(result.kind, "invalid");
+  assert.equal(result.kind, "unavailable");
 });

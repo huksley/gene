@@ -112,3 +112,49 @@ test("createHost collects exec problems; fetch status codes are never problems",
     server.close();
   }
 });
+
+// Final review C1: pflag accepts `--flag=value`, attached shorthand values and combined
+// shorthands, and any field turns `glab api` into a POST. Only a short read-only flag set
+// may follow `glab api`.
+test("glab api: every write/file form is rejected", () => {
+  const forms = [
+    ["--field=a=b"], ["-Fa=b"], ["-fa=b"], ["--raw-field=a=b"], ["--input=/etc/passwd"],
+    ["-iXPOST"], ["-iFa=b"], ["--form", "a=b"], ["-H", "X-HTTP-Method-Override: POST"], ["--method=PUT"], ["-X", "POST"]
+  ];
+  for (const form of forms) {
+    assert.match(execAllowed("glab", ["api", "graphql", ...form], ["glab api"]) ?? "", /read-only|not allowed/, form.join(" "));
+  }
+});
+
+test("glab api: read flags still pass", () => {
+  for (const form of [["--paginate"], ["-i"], ["--include"], ["--silent"]]) {
+    assert.equal(execAllowed("glab", ["api", "merge_requests?state=opened", ...form], ["glab api"]), undefined, form.join(" "));
+  }
+});
+
+test("glab api read-only rule also applies to an absolute glab path", () => {
+  assert.match(execAllowed("/opt/homebrew/bin/glab", ["api", "x", "-Fa=b"], ["/opt/homebrew/bin/glab api"]) ?? "", /read-only/);
+});
+
+// Final review I1: flags after the allowlisted prefix must not redirect an authenticated
+// CLI to another host or swap its credentials/config.
+test("host/credential/config redirection flags are rejected for any command", () => {
+  const cases: [string, string[], string][] = [
+    ["glab", ["api", "user", "--hostname", "evil.example"], "glab api"],
+    ["argocd", ["app", "list", "--server", "evil:443"], "argocd app list"],
+    ["argocd", ["app", "list", "--server=evil:443"], "argocd app list"],
+    ["argocd", ["app", "list", "--auth-token", "x"], "argocd app list"],
+    ["kubectl", ["get", "pods", "--kubeconfig=/tmp/k"], "kubectl get"],
+    ["argocd", ["app", "list", "--config", "/tmp/c"], "argocd app list"]
+  ];
+  for (const [cmd, args, allow] of cases) {
+    assert.match(execAllowed(cmd, args, [allow]) ?? "", /not allowed in triggers/, args.join(" "));
+  }
+  assert.equal(execAllowed("argocd", ["app", "list", "-o", "json"], ["argocd app list"]), undefined);
+});
+
+// Final review I2: stderr lines are untrusted and unbounded.
+test("execProblem truncates a huge stderr line", () => {
+  const p = execProblem("glab", ["api"], { code: 0, stdout: "", stderr: "Error: " + "x".repeat(10_000) });
+  assert.ok(p && p.length <= 300);
+});

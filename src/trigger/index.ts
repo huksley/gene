@@ -13,6 +13,10 @@ import { decideTrigger, effectiveIntervalMs } from "./schedule.ts";
 import type { TriggerRow, TriggerStore } from "./store.ts";
 
 const ERROR_COMMENT_STREAK = 3;
+/** Wait before retrying a compile whose run failed (claude timed out, rate-limited, logged out). */
+const COMPILE_RETRY_MS = 10 * 60_000;
+/** Due checks run in parallel up to this many, so one hung CLI can't hold up every program. */
+const CHECK_CONCURRENCY = 4;
 
 export type TriggerView = {
   status: "ok" | "uncompilable" | "invalid" | "compiling";
@@ -59,6 +63,8 @@ const viewOf = (row: TriggerRow): TriggerView => ({
 export const createTriggerScanner = (deps: TriggerDeps): TriggerScanner => {
   const latestHash = new Map<string, string>();
   const compiling = new Set<string>();
+  /** `${identifier}:${hash}` → epoch ms before which an unavailable compile isn't retried. */
+  const retryAfter = new Map<string, number>();
   let queue: Promise<void> = Promise.resolve();
 
   const interval = (row: TriggerRow, usedIo: boolean, errorStreak: number): number =>
@@ -66,12 +72,19 @@ export const createTriggerScanner = (deps: TriggerDeps): TriggerScanner => {
 
   const enqueueCompile = (program: Issue, prose: string, hash: string): void => {
     const key = `${program.identifier}:${hash}`;
-    if (compiling.has(key)) return;
+    if (compiling.has(key) || (retryAfter.get(key) ?? 0) > deps.now().getTime()) return;
     compiling.add(key);
     queue = queue.then(async () => {
       try {
         const result = await deps.compile(prose);
         if (latestHash.get(program.identifier) !== hash) return; // prose moved on — drop the stale result
+        if (result.kind === "unavailable") {
+          // Not the prose's fault: cache nothing, comment nothing, try again after a pause.
+          retryAfter.set(key, deps.now().getTime() + COMPILE_RETRY_MS);
+          logger.warn(`${logger.tag.trigger} [${program.identifier}] ${result.error} — retrying in ${COMPILE_RETRY_MS / 60_000}m`);
+          return;
+        }
+        retryAfter.delete(key);
         const base = { tracker: deps.trackerName, identifier: program.identifier, proseHash: hash };
         if (result.kind === "ok") {
           const { summary, code, intervalSec } = result.trigger;
@@ -198,13 +211,17 @@ export const createTriggerScanner = (deps: TriggerDeps): TriggerScanner => {
 
   return {
     scan: async programs => {
-      for (const program of programs) {
-        try {
-          await scanOne(program);
-        } catch (error) {
-          logger.warn(`${logger.tag.trigger} [${program.identifier}] trigger scan failed:`, error instanceof Error ? error.message : error);
+      const pending = [...programs];
+      const worker = async (): Promise<void> => {
+        for (let program = pending.shift(); program; program = pending.shift()) {
+          try {
+            await scanOne(program);
+          } catch (error) {
+            logger.warn(`${logger.tag.trigger} [${program.identifier}] trigger scan failed:`, error instanceof Error ? error.message : error);
+          }
         }
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(CHECK_CONCURRENCY, pending.length) }, worker));
     },
     idle: async () => {
       // Drain: a job may enqueue nothing further, but loop in case scans raced in more.

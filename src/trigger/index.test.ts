@@ -213,3 +213,50 @@ test("a store failure for one program does not stop the others", async () => {
   await h.scanner.scan([program("BAD", "every hour"), program("PRG-9", "every hour")]);
   assert.deepEqual(h.fires, [["PRG-9", "because"]]);
 });
+
+// Final review I4: an unavailable compile is retried later, never cached or commented.
+test("unavailable compile: no row, no comment, retried after a backoff", async () => {
+  let calls = 0;
+  let up = false;
+  const h = harness({
+    compile: async () => (calls++, up ? okCompile() : { kind: "unavailable", error: "claude timed out" })
+  });
+  const p = program("PRG-10", "every hour");
+  await h.scanner.scan([p]);
+  await h.scanner.idle();
+  assert.equal(h.store.rows.has("PRG-10"), false);
+  assert.equal(h.comments.length, 0);
+  await h.scanner.scan([p]); // inside the backoff
+  await h.scanner.idle();
+  assert.equal(calls, 1);
+  up = true;
+  h.tick(11 * 60_000);
+  await h.scanner.scan([p]);
+  await h.scanner.idle();
+  assert.equal(calls, 2);
+  assert.equal(h.store.rows.get("PRG-10")?.status, "ok");
+});
+
+// Final review I3: one hung check must not hold up every other program's check.
+test("due checks run concurrently", async () => {
+  let releaseA!: () => void;
+  const aBlocked = new Promise<void>(r => (releaseA = r));
+  let bRan = false;
+  const h = harness({
+    check: async code => {
+      if (code === "A") {
+        await Promise.race([aBlocked, new Promise(r => setTimeout(r, 500))]);
+        return { outcome: fired(bRan ? "b-ran-meanwhile" : "sequential"), problems: [] };
+      }
+      bRan = true;
+      releaseA();
+      return { outcome: quiet(), problems: [] };
+    },
+    compile: async prose => ({ ...okCompile(), trigger: { summary: prose, intervalSec: 60, code: prose === "a" ? "A" : "B" } })
+  });
+  const progs = [program("PRG-A", "a"), program("PRG-B", "b")];
+  await h.scanner.scan(progs);
+  await h.scanner.idle();
+  await h.scanner.scan(progs);
+  assert.deepEqual(h.fires, [["PRG-A", "b-ran-meanwhile"]]);
+});

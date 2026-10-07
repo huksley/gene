@@ -27,15 +27,30 @@ const PROBLEM_LINE = /\b(error|exception|fail(ed|ure)?|unauthori[sz]ed|forbidden
  * error-ish line on stderr (an expired CLI login often exits 0 but says so on stderr).
  * stdout is data and never scanned. Returns a one-line description, or undefined.
  */
+const MAX_PROBLEM = 300;
+
 export const execProblem = (cmd: string, args: string[], r: ExecResult): string | undefined => {
   const lines = r.stderr.split("\n").map(l => l.trim()).filter(Boolean);
-  if (r.code !== 0) return `${cmd} ${args[0] ?? ""}: exit ${r.code}: ${lines[0] ?? "(no stderr)"}`;
-  return lines.find(l => PROBLEM_LINE.test(l));
+  const problem =
+    r.code !== 0 ? `${cmd} ${args[0] ?? ""}: exit ${r.code}: ${lines[0] ?? "(no stderr)"}` : lines.find(l => PROBLEM_LINE.test(l));
+  return problem?.slice(0, MAX_PROBLEM);
 };
 
-const GLAB_WRITE_FLAGS = new Set(["-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"]);
+/**
+ * Long flags that point an authenticated CLI at another host or swap its credentials or
+ * config — rejected after any allowlisted prefix, whatever the tool. A denylist can't be
+ * complete, so the docs also say every flag after the prefix is untrusted.
+ */
+const REDIRECT_FLAGS = new Set(["--hostname", "--server", "--auth-token", "--token", "--config", "--kubeconfig", "--context", "--output-file"]);
 
-/** `undefined` when `cmd args` starts with a whole-token allowlist entry; otherwise why not. */
+/**
+ * The only flags allowed after `glab api`. pflag accepts `--flag=value`, attached shorthand
+ * values (`-Fa=b`) and combined shorthands (`-iXPOST`), and any field turns the request into
+ * a POST — so instead of a denylist, everything that isn't exactly one of these is refused.
+ */
+const GLAB_API_READ_FLAGS = new Set(["--paginate", "-i", "--include", "--silent"]);
+
+/** `undefined` when `cmd args` starts with a whole-token allowlist entry and its flags are safe; otherwise why not. */
 export const execAllowed = (cmd: string, args: string[], allow: string[]): string | undefined => {
   const tokens = [cmd, ...args];
   const ok = allow.some(entry => {
@@ -43,8 +58,10 @@ export const execAllowed = (cmd: string, args: string[], allow: string[]): strin
     return want.length > 0 && want.every((t, i) => tokens[i] === t);
   });
   if (!ok) return `exec not allowed: ${tokens.slice(0, 3).join(" ")} (GENE_TRIGGER_EXEC_ALLOW)`;
-  if (cmd === "glab" && args[0] === "api") {
-    const bad = args.find(a => GLAB_WRITE_FLAGS.has(a) || a.startsWith("-X") || a.startsWith("--method="));
+  const redirect = args.find(a => REDIRECT_FLAGS.has(a.split("=")[0]!));
+  if (redirect) return `${redirect.split("=")[0]} is not allowed in triggers`;
+  if (path.basename(cmd) === "glab" && args[0] === "api") {
+    const bad = args.slice(1).find(a => a.startsWith("-") && !GLAB_API_READ_FLAGS.has(a));
     if (bad) return `glab api is read-only in triggers (rejected ${bad})`;
   }
   return undefined;

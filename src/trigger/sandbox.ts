@@ -36,6 +36,8 @@ export type CheckLimits = {
   maxStateBytes: number;
   maxReason: number;
   maxLogLines: number;
+  maxLogLine: number;
+  maxError: number;
 };
 
 export const DEFAULT_LIMITS: CheckLimits = {
@@ -46,7 +48,9 @@ export const DEFAULT_LIMITS: CheckLimits = {
   maxCalls: 10,
   maxStateBytes: 16 * 1024,
   maxReason: 500,
-  maxLogLines: 20
+  maxLogLines: 20,
+  maxLogLine: 500,
+  maxError: 1000
 };
 
 export type CheckOutcome =
@@ -145,7 +149,8 @@ export const runCheck = async (
   // Deferreds handed to the sandbox for host calls. One still pending when the run ends
   // (wall-clock timeout) must be disposed before the context, or QuickJS aborts on free.
   const deferreds = new Set<QuickJSDeferredPromise>();
-  const fail = (error: string, thrown = false): CheckOutcome => ({ ok: false, error, thrown, logs, usedIo });
+  // Errors and log lines leave the sandbox into the DB, the TUI and tracker comments: cap their size.
+  const fail = (error: string, thrown = false): CheckOutcome => ({ ok: false, error: error.slice(0, limits.maxError), thrown, logs, usedIo });
 
   try {
     const fn = (name: string, impl: (...args: QuickJSHandle[]) => QuickJSHandle | undefined): void => {
@@ -159,7 +164,7 @@ export const runCheck = async (
     });
     fn("__host_now", () => ctx.newString(host.now().toISOString()));
     fn("__host_log", msg => {
-      if (logs.length < limits.maxLogLines) logs.push(ctx.getString(msg));
+      if (logs.length < limits.maxLogLines) logs.push(ctx.getString(msg).slice(0, limits.maxLogLine));
       return undefined;
     });
     fn("__host_async", (nameHandle, argsHandle) => {
