@@ -12,6 +12,7 @@
     "pglite.wasm": "node_modules/@electric-sql/pglite/dist/pglite.wasm",
     "initdb.wasm": "node_modules/@electric-sql/pglite/dist/initdb.wasm",
     "pglite.data": "node_modules/@electric-sql/pglite/dist/pglite.data",
+    "quickjs.wasm": "node_modules/@jitl/quickjs-wasmfile-release-sync/dist/emscripten-module.wasm",
     "libopentui.dylib": "node_modules/@opentui/core-darwin-arm64/libopentui.dylib",
     "sandbox.sh": "sandbox/sandbox.sh",
     "Dockerfile": "sandbox/Dockerfile"
