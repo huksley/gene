@@ -94,6 +94,30 @@ const SCHEMA = `
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tracker, identifier)
   );
+
+  -- Program triggers: the compiled "## Trigger" check per program plus its run
+  -- bookkeeping (src/trigger/). Keyed like program_state.
+  CREATE TABLE IF NOT EXISTS program_trigger (
+    tracker         TEXT NOT NULL,
+    identifier      TEXT NOT NULL,
+    prose_hash      TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    summary         TEXT,
+    code            TEXT,
+    interval_sec    INTEGER,
+    compile_error   TEXT,
+    compiled_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_check_at   TIMESTAMPTZ,
+    next_check_at   TIMESTAMPTZ,
+    last_outcome    TEXT,
+    last_reason     TEXT,
+    used_io         BOOLEAN NOT NULL DEFAULT false,
+    error_streak    INTEGER NOT NULL DEFAULT 0,
+    error_commented BOOLEAN NOT NULL DEFAULT false,
+    state           JSONB,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tracker, identifier)
+  );
 `;
 
 let dbPromise: Promise<Db> | null = null;
