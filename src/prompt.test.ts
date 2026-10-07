@@ -49,3 +49,29 @@ test("program prompt: with a repo, still no change request but mentions the work
   assert.match(p, /never open a change request/i);
   assert.match(p, /working/i);
 });
+
+test("program prompt includes why a trigger fired", () => {
+  const prompt = buildPrompt({
+    issue: program,
+    comments: [],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false,
+    fireReason: "!87, !91 need rebase"
+  });
+  assert.match(prompt, /# Why this run fired/);
+  assert.match(prompt, /!87, !91 need rebase/);
+});
+
+test("program prompt omits the trigger section for a manual fire", () => {
+  const prompt = buildPrompt({
+    issue: program,
+    comments: [],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false
+  });
+  assert.doesNotMatch(prompt, /Why this run fired/);
+});

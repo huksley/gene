@@ -741,7 +741,7 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
 const dispatchProgram = async (
   program: Issue,
   comments: Comment[],
-  opts: { source: ProgramSource; recordResting: boolean }
+  opts: { source: ProgramSource; recordResting: boolean; reason?: string }
 ): Promise<void> => {
   if (inFlight.has(program.id)) {
     logger.info(`${logger.tag.flow} [${program.identifier}] program already running — skipping`);
@@ -773,7 +773,7 @@ const dispatchProgram = async (
     logger.info(`${logger.tag.flow} [${program.identifier}] at concurrency cap — deferring`);
     // Re-enqueue the fire so the next scan runs it; the row stays "queued" (do NOT
     // call agentSettled here — it would flip a merely-deferred program to "error").
-    if (opts.recordResting) fireProgram(program.identifier, opts.source);
+    if (opts.recordResting) fireProgram(program.identifier, opts.source, opts.reason);
     return;
   }
 
@@ -792,7 +792,8 @@ const dispatchProgram = async (
       lastSource: opts.source
     });
     const restingNote = restingState ?? `unchanged — fired from ${env.ACTIVE_STATE}`;
-    await record(program, "program-fired", `source: ${opts.source} (resting: ${restingNote})`, {
+    const why = opts.reason ? ` — ${opts.reason}` : "";
+    await record(program, "program-fired", `source: ${opts.source}${why} (resting: ${restingNote})`, {
       source: opts.source
     });
   }
@@ -833,7 +834,8 @@ const dispatchProgram = async (
       hasRepo,
       forge,
       repoLabel,
-      subdir: target?.subdir
+      subdir: target?.subdir,
+      fireReason: opts.reason
     });
 
     const result = await invokeAgent(
@@ -885,7 +887,8 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
     monitor.setProgramRow(program.identifier, program.title, program.stateName, program.description);
 
     const runInFlight = inFlight.has(program.id);
-    const source = hasFireRequest(program.identifier) ? takeFireRequest(program.identifier) : undefined;
+    const request = hasFireRequest(program.identifier) ? takeFireRequest(program.identifier) : undefined;
+    const source = request?.source;
     const comments =
       source !== undefined || program.stateName === env.BLOCKED_STATE || program.stateName === env.ACTIVE_STATE
         ? await tracker.getComments(program)
@@ -920,12 +923,12 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
       case "nothing":
         break;
       case "fire":
-        await dispatchProgram(program, comments, { source: action.source, recordResting: true });
+        await dispatchProgram(program, comments, { source: action.source, recordResting: true, reason: request?.reason });
         break;
       case "restart":
         // Cancel the live run; re-enqueue so the next scan fires once the lock frees.
         monitor.requestCancel(program.identifier);
-        fireProgram(program.identifier, action.source);
+        fireProgram(program.identifier, action.source, request?.reason);
         break;
       case "resume":
       case "resume-interrupted":

@@ -46,6 +46,8 @@ export type PromptInputs = {
   subdir?: string;
   /** Forge review state (failing CI / new comments), present only for review-fix. */
   reviewContext?: ReviewContext;
+  /** Why a trigger fired this program run (program intent only); absent for a manual fire. */
+  fireReason?: string;
 };
 
 const formatTimestamp = (isoDate: string): string => {
@@ -305,7 +307,7 @@ const renderDriftAdvice = (n: number, baseBranch: string): string => {
  * agent writes back to the ticket and may spawn child coding tickets.
  */
 const buildProgramPrompt = (inputs: PromptInputs): string => {
-  const { issue, worktreePath, hasRepo, attachmentRelativePaths } = inputs;
+  const { issue, worktreePath, hasRepo, attachmentRelativePaths, fireReason } = inputs;
   const workspace = hasRepo
     ? `# Working tree\n\nYou are in a git worktree at \`${worktreePath}\`. Read and run things here, but do NOT commit, push, or open a change request — this is a program run, not a coding task.`
     : `# Working directory\n\nYou are in a scratch working directory at \`${worktreePath}\` (no git repository). Use it for any temporary files.`;
@@ -324,6 +326,9 @@ const buildProgramPrompt = (inputs: PromptInputs): string => {
     "",
     issue.description || "(no description)",
     "",
+    ...(fireReason
+      ? ["# Why this run fired", "", `This run was started automatically by the program's trigger: ${fireReason}`, ""]
+      : []),
     workspace,
     attachments,
     "",

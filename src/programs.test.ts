@@ -125,7 +125,7 @@ test("decide: BLOCKED with a !gene stop reply → stop", () => {
 test("fire queue: enqueue, observe, take-once", () => {
   fireProgram("PRG-9", "manual");
   assert.equal(hasFireRequest("prg-9"), true); // case-insensitive
-  assert.equal(takeFireRequest("PRG-9"), "manual");
+  assert.equal(takeFireRequest("PRG-9")?.source, "manual");
   assert.equal(takeFireRequest("PRG-9"), undefined); // drained
   assert.equal(hasFireRequest("PRG-9"), false);
 });
@@ -154,4 +154,15 @@ test("extractProgramSections pulls each section body", () => {
 
 test("extractProgramSections tolerates missing sections", () => {
   assert.deepEqual(extractProgramSections("## Trigger\nx"), { trigger: "x", workflow: "", acceptance: "" });
+});
+
+test("takeFireRequest returns source and reason, once", () => {
+  fireProgram("PRG-R1", "trigger", "!87 needs rebase");
+  assert.deepEqual(takeFireRequest("prg-r1"), { source: "trigger", reason: "!87 needs rebase" });
+  assert.equal(takeFireRequest("PRG-R1"), undefined);
+});
+
+test("manual fire has no reason", () => {
+  fireProgram("PRG-R2");
+  assert.deepEqual(takeFireRequest("PRG-R2"), { source: "manual", reason: undefined });
 });

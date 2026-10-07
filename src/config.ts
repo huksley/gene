@@ -163,6 +163,19 @@ export const env = {
   // Extra tools granted to a program agent on top of BASE + tracker (+ forge, when the
   // program links a repo). e.g. "Bash(pup *),Bash(datadog *)". Comma-separated.
   PROGRAM_ALLOWED_TOOLS: list("GENE_PROGRAM_ALLOWED_TOOLS"),
+  // Program triggers (opt-in). When on, each program's `## Trigger` prose is compiled
+  // once into a sandboxed check that fires the program automatically (src/trigger/).
+  PROGRAM_TRIGGERS: bool("GENE_PROGRAM_TRIGGERS", false),
+  // Minimum minutes between two fires of the same program by its trigger (a manual
+  // `g` fire counts as the last fire too).
+  PROGRAM_TRIGGER_COOLDOWN_MIN: int("GENE_PROGRAM_TRIGGER_COOLDOWN_MIN", 30),
+  // Command prefixes a trigger check may run via gene.exec, e.g.
+  // "glab api,argocd app list". Empty ⇒ cron/URL triggers only.
+  TRIGGER_EXEC_ALLOW: list("GENE_TRIGGER_EXEC_ALLOW"),
+  // Floor (minutes) between runs of a check that calls fetch/exec.
+  TRIGGER_IO_MIN_INTERVAL_MIN: int("GENE_TRIGGER_IO_MIN_INTERVAL_MIN", 5),
+  // Model for the one-off prose → check compile.
+  TRIGGER_COMPILE_MODEL: str("GENE_TRIGGER_COMPILE_MODEL", "haiku"),
   GITLAB_HOST: str("GITLAB_HOST", ""),
   // Review-comment patterns that must NOT trigger a re-dispatch (see ignore.ts).
   // Unlike the tracker settings above these are NOT prefix-namespaced: the forge is

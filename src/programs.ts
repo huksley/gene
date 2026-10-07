@@ -24,24 +24,27 @@ export type ProgramAction =
   | { kind: "resume-interrupted" }
   | { kind: "stop" };
 
-// --- Manual-fire queue (Phase 1: manual only; triggers enqueue here in Phase 2) ----
-const pendingFires = new Map<string, ProgramSource>();
+/** A queued fire: who asked, and (for a trigger) why — surfaced in the run's prompt. */
+export type FireRequest = { source: ProgramSource; reason?: string };
 
-/** Enqueue a fire for a program (idempotent per identifier). */
-export const fireProgram = (identifier: string, source: ProgramSource = "manual"): void => {
-  pendingFires.set(identifier.toLowerCase(), source);
+// --- Fire queue (manual `g` and triggers both enqueue here) -------------------------
+const pendingFires = new Map<string, FireRequest>();
+
+/** Enqueue a fire for a program (idempotent per identifier; the latest request wins). */
+export const fireProgram = (identifier: string, source: ProgramSource = "manual", reason?: string): void => {
+  pendingFires.set(identifier.toLowerCase(), { source, reason });
 };
 
 export const hasFireRequest = (identifier: string): boolean =>
   pendingFires.has(identifier.toLowerCase());
 
-/** Remove and return a pending fire's source (undefined if none). Consuming it
+/** Remove and return a pending fire (undefined if none). Consuming it
  *  guarantees exactly one dispatch per request. */
-export const takeFireRequest = (identifier: string): ProgramSource | undefined => {
+export const takeFireRequest = (identifier: string): FireRequest | undefined => {
   const key = identifier.toLowerCase();
-  const source = pendingFires.get(key);
-  if (source !== undefined) pendingFires.delete(key);
-  return source;
+  const request = pendingFires.get(key);
+  if (request !== undefined) pendingFires.delete(key);
+  return request;
 };
 
 // --- Pure decision ------------------------------------------------------------------
