@@ -38,6 +38,7 @@ import type { AgentEvent, AgentState } from "../monitor.ts";
 import type { IssueLogRow } from "../db.ts";
 import { compactTokens, humanDuration, truncate } from "./format.ts";
 import { palette, statusColor, statusLabel } from "./theme.ts";
+import { formatTriggerLine } from "./trigger-line.ts";
 
 /** Max lines retained in the live pane (oldest dropped past this). */
 const MAX_LINES = 800;
@@ -95,6 +96,8 @@ export class Detail {
   private issueTitle: TextRenderable;
   private titleLine: TextRenderable;
   private subLine: TextRenderable;
+  /** Program trigger status (⚡ summary · next · last); hidden for non-programs. */
+  private triggerLine: TextRenderable;
   private actionsLabel: TextRenderable;
   private actionsBox: BoxRenderable;
   private liveLabel: TextRenderable;
@@ -107,7 +110,9 @@ export class Detail {
   private currentId: string | null = null;
   private historyLoaded = false;
   /** Which source currently fills the live pane: nothing yet / agent attached but idle / history fallback / live stream. */
-  private liveMode: "pending" | "waiting" | "history" | "live" = "pending";
+  private liveMode: "pending" | "waiting" | "history" | "live" | "code" = "pending";
+  /** `t` toggles the program's compiled trigger code into the live pane. */
+  private showTriggerCode = false;
   private liveRendered = 0;
   private seq = 0;
 
@@ -136,7 +141,9 @@ export class Detail {
     this.subLine = new TextRenderable(renderer, { id: "gene-detail-sub", content: "", flexShrink: 0 });
     this.root.add(this.issueTitle);
     this.root.add(this.titleLine);
+    this.triggerLine = new TextRenderable(renderer, { id: "gene-detail-trigger", content: "", flexShrink: 0, visible: false });
     this.root.add(this.subLine);
+    this.root.add(this.triggerLine);
 
     // Pinned "recent actions" summary: the last few persisted activity-log rows,
     // always visible (flexShrink:0) so it never scrolls away. Sits directly under
@@ -173,6 +180,7 @@ export class Detail {
   /** Switch to a ticket: clear both panes and show a loading placeholder until history arrives. */
   open(id: string): void {
     this.currentId = id;
+    this.showTriggerCode = false;
     this.historyLoaded = false;
     this.historyRows = [];
     this.liveMode = "pending";
@@ -236,14 +244,28 @@ export class Detail {
       : "—";
     this.subLine.content = t`${fg(palette.muted)("pid")} ${fg(palette.text)(pid)}   ${fg(palette.muted)("age")} ${fg(palette.text)(age)}   ${fg(palette.muted)("tools")} ${fg(palette.text)(tools)}   ${fg(palette.muted)("tokens")} ${fg(palette.text)(tokens)}`;
 
+    const trig = agent?.isProgram ? agent.trigger : undefined;
+    this.triggerLine.visible = !!trig;
+    this.triggerLine.content = trig
+      ? t`${fg(trig.status === "ok" && trig.lastOutcome !== "error" ? palette.accent : palette.warn)(formatTriggerLine(trig, now))}`
+      : "";
+
+    const codeHint = trig?.code ? `${fg(palette.muted)("t")} trigger code  ` : "";
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
-      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} retry  ${fg(palette.muted)("R")} reset  ${fg(palette.muted)("F")} fork  ${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
+      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} retry  ${fg(palette.muted)("R")} reset  ${fg(palette.muted)("F")} fork  ${codeHint}${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
 
     // Live pane: stream the agent's events while a run is live — programs and coding
     // tickets alike — else fall back to the full persisted history. (A program at rest
     // shows its activity log, not a "waiting…" placeholder: it isn't waiting for output.)
-    if (agent && agent.events.length > 0) {
+    if (this.showTriggerCode && trig?.code) {
+      if (this.liveMode !== "code") {
+        this.clearLive();
+        for (const line of trig.code.split("\n")) this.addLiveLine(line, palette.text);
+        this.liveMode = "code";
+      }
+      this.liveLabel.content = this.sectionLabel("trigger code (t to close)");
+    } else if (agent && agent.events.length > 0) {
       if (this.liveMode !== "live") {
         this.clearLive();
         this.liveRendered = 0;
@@ -270,6 +292,14 @@ export class Detail {
       }
       this.liveLabel.content = this.sectionLabel("activity log");
     }
+  }
+
+  /** Toggle the program's compiled trigger code in the live pane (the `t` key). */
+  toggleTriggerCode(): void {
+    this.showTriggerCode = !this.showTriggerCode;
+    this.liveMode = "pending";
+    this.liveRendered = 0;
+    this.clearLive();
   }
 
   /** Scroll the live pane by `lines` rows (negative = up). */

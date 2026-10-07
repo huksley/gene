@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filterAgents } from "./dashboard.ts";
+import { filterAgents, programLeadGlyph } from "./dashboard.ts";
 import type { AgentState } from "../monitor.ts";
 
 const agent = (id: string, isProgram: boolean): AgentState =>
@@ -23,4 +23,13 @@ test("filterAgents onlyPrograms keeps only program rows", () => {
 test("filterAgents without the filter returns everything", () => {
   const rows = [agent("PRG-1", true), agent("ENG-2", false)];
   assert.deepEqual(filterAgents(rows, { onlyPrograms: false }).map(a => a.id), ["PRG-1", "ENG-2"]);
+});
+
+test("programLeadGlyph: ⚡ for an ok trigger, ⟳ otherwise, warn on failure", () => {
+  const p = agent("PRG-1", true);
+  assert.deepEqual(programLeadGlyph(p), { glyph: "⟳", warn: false });
+  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok" } }), { glyph: "⚡", warn: false });
+  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok", lastOutcome: "error" } }), { glyph: "⚡", warn: true });
+  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "invalid" } }), { glyph: "⟳", warn: true });
+  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "compiling" } }), { glyph: "⟳", warn: false });
 });

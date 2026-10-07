@@ -841,6 +841,11 @@ export const startUi = async (options: StartUiOptions): Promise<void> => {
           }
           paint();
           return;
+        case "t":
+          // `t` toggles the program's compiled trigger code in the live pane.
+          detail.toggleTriggerCode();
+          paint();
+          return;
         case "c":
           // `c` cancels the ticket's live agent (or explains for 2s why it can't).
           armCancel();

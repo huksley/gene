@@ -21,6 +21,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import type { TriggerView } from "./trigger/index.ts";
 
 /**
  * One distilled agent stream event — the structured sibling of the one-line
@@ -115,6 +116,8 @@ export interface AgentState {
   isProgram?: boolean;
   /** The program ticket's description body, stashed for the detail view's section breakdown. */
   description?: string;
+  /** The program's compiled trigger status (programs with GENE_PROGRAM_TRIGGERS on). */
+  trigger?: TriggerView;
 }
 
 /** Summary counts from one scan cycle (mirrors the daemon's scan-summary log). */
@@ -371,8 +374,13 @@ class Monitor extends EventEmitter {
    * so a queued/running/finished program is never downgraded back to `idle`. Always
    * (re)stamps the program flag, stage, title, lifecycle state, and description.
    */
-  /** Placeholder until the TUI shows trigger status (see setProgramRow). */
-  setProgramTrigger(_id: string, _view: unknown): void {}
+  /** Attach (or clear) a program row's trigger status for the dashboard glyph and detail line. */
+  setProgramTrigger(id: string, view: TriggerView | undefined): void {
+    const agent = this.agents.get(id);
+    if (!agent) return;
+    agent.trigger = view;
+    this.scheduleChange();
+  }
 
   setProgramRow(id: string, title: string, state: string, description?: string): void {
     const existed = this.agents.has(id);

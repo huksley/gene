@@ -91,6 +91,9 @@ export const statusLabel = (status: AgentStatus): string => status.toUpperCase()
 /** Marks a recurring program in the dashboard's ticket column. */
 export const PROGRAM_GLYPH = "⟳";
 
+/** Lead glyph for a program whose `## Trigger` compiled to an active automatic check. */
+export const TRIGGER_GLYPH = "⚡";
+
 /** Braille spinner frames; advance one per animation tick on running rows. */
 export const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
