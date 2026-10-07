@@ -79,9 +79,11 @@ Compiler rules stated in the prompt:
 
 **Validation before caching.** Parse the reply; load the code in a fresh sandbox; assert
 `check` is a function; do one **dry invocation** with stub host functions (`fetch` →
-`{status: 200, text: ""}`, `exec` → `{code: 0, stdout: "", stderr: ""}`, `cron` → `false`)
-and validate the result shape (§2). On any failure, retry the compile **once** with the
-error appended to the prompt.
+`{status: 200, text: "{}"}`, `exec` → `{code: 0, stdout: "[]", stderr: ""}`, `cron` →
+`false`). A syntax error, a missing `check`, a limit breach, or a *returned* value of the
+wrong shape fails validation. A **throw** during the dry invocation does not — stub data
+can't stand in for real API output, so a runtime error there is inconclusive. On any
+failure, retry the compile **once** with the error appended to the prompt.
 
 **Failure** (UNCOMPILABLE, or still invalid after the retry): store `status =
 uncompilable | invalid` with `compile_error` for this hash. No automatic firing; `g` still
@@ -219,7 +221,7 @@ update `last_*` + a debug console line).
 - List: programs keep **⟳**; a program with an `ok` compiled trigger shows **⚡** instead;
   `uncompilable` / `invalid` / `error_streak > 0` render the glyph in the warning colour.
 - Detail, Trigger section: the prose, then a status line, e.g.
-  `⚡ Weekdays 09:00 Europe/Berlin · every 1m · next 09:00 · last: no fire 08:59 · fired 2× today`,
+  `⚡ Weekdays 09:00 Europe/Berlin · every 1m · next 09:00 · last: no fire 08:59`,
   or the compile/check error.
 - **`t`** in the detail view toggles the compiled code (unused key today).
 - `g` unchanged.
@@ -250,8 +252,10 @@ Documented in README "Programs" (replacing "Triggers are a later phase") and
 - **compile** — reply parsing (code fence, SUMMARY, INTERVAL, UNCOMPILABLE), validation
   failure → one retry with error, stub runner.
 - **store** — round-trip against PGlite in a temp `GENE_DB_DIR`.
-- **integration** — one `scanPrograms` pass with a stub tracker and a cached cron trigger
-  due → program ends up dispatched with `source: trigger` and the reason in the prompt.
+- **integration** — the trigger scanner (`src/trigger/index.ts`) with injected deps (stub
+  compile runner, real sandbox, in-memory store fakes): new prose → compiled → due cron →
+  `fire(identifier, reason)` called once; busy/cooldown skip; failure comment once per hash.
+  (`index.ts` can't be imported in tests, so the scanner takes its daemon hooks as deps.)
 
 ## Out of scope
 
