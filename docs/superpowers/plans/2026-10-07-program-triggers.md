@@ -10,6 +10,33 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-07-program-triggers-design.md`
 
+## Amendment A (2026-10-07, before execution) — real trial run + exec problem detection
+
+Overrides the named parts of Tasks 4, 6 and 7; everything else stands.
+
+- **Task 4** adds `execProblem(cmd: string, args: string[], r: ExecResult): string | undefined`
+  (non-zero exit → `` `${cmd} ${args[0] ?? ""}: exit ${code}: ${firstStderrLine}` ``; else first
+  stderr line matching `/\b(error|exception|fail(ed|ure)?|unauthori[sz]ed|forbidden|denied)\b/i`;
+  else `undefined`), and `createHost` returns `CheckHost & { problems: string[] }`, pushing
+  each exec problem. Tests: exit 2 → problem; stderr "Error: not logged in" with exit 0 →
+  problem; stderr "warning: deprecated" → none; fetch 503 → no problem.
+- **Task 6**: `validateCode` is replaced by
+  `trialRun(code: string, host: CheckHost & { problems: string[] }): Promise<{ error?: string; fire?: boolean; reason?: string; problems: string[] }>`
+  (any `!ok` outcome → `error`, thrown or not). `compileTrigger(prose, runner, opts)` gains
+  `opts.trialHost: () => CheckHost & { problems: string[] }`. Attempt 1: `error` or
+  `problems.length > 0` → retry with that feedback. Attempt 2: `error` → `invalid`;
+  problems only → accept. The ok result becomes
+  `{ kind: "ok"; trigger: CompiledTrigger; trial: { fire: boolean; reason?: string; problems: string[] } }`.
+  Tests use a stub trial host; add: problems on attempt 1 → retry prompt contains them;
+  problems on both → `ok` with `trial.problems`; a throw on the trial → retry, then invalid.
+- **Task 7**: `TriggerDeps.check` returns `Promise<{ outcome: CheckOutcome; problems: string[] }>`.
+  An `ok` outcome with `fire: false` and `problems.length > 0` is handled exactly like an
+  error with message `` `exec problems: ${problems.join("; ")}` ``. `trigger-compiled` detail
+  is `` `${summary} — would fire now: ${trial.fire ? "yes" : "no"}${trial.reason ? ` (${trial.reason})` : ""}${trial.problems.length ? ` ⚠ ${trial.problems.join("; ")}` : ""}` ``.
+  Test: a check returning no-fire with problems three times → one "Trigger check failing"
+  comment; fire with problems → fires. The daemon wiring builds the trial host with
+  `createHost({ windowStart: now, now, execAllow })`.
+
 ## Global Constraints
 
 - Opt-in: `GENE_PROGRAM_TRIGGERS` default `false`; off ⇒ no compiles, no checks, no TUI trigger status.

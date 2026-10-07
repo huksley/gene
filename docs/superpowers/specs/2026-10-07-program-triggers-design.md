@@ -78,12 +78,18 @@ Compiler rules stated in the prompt:
 - Put the specifics in `reason` (which MRs, which apps) — it is passed to the run.
 
 **Validation before caching.** Parse the reply; load the code in a fresh sandbox; assert
-`check` is a function; do one **dry invocation** with stub host functions (`fetch` →
-`{status: 200, text: "{}"}`, `exec` → `{code: 0, stdout: "[]", stderr: ""}`, `cron` →
-`false`). A syntax error, a missing `check`, a limit breach, or a *returned* value of the
-wrong shape fails validation. A **throw** during the dry invocation does not — stub data
-can't stand in for real API output, so a runtime error there is inconclusive. On any
-failure, retry the compile **once** with the error appended to the prompt.
+`check` is a function; do one **trial run against the real host functions** (real
+`fetch`/allowlisted `exec`; `cron` window opens at now, so it reads `false`). The trial
+never fires the program; its verdict is reported as "would fire now: yes/no — reason".
+
+- Any error (syntax, missing `check`, a throw, a limit, a bad shape) fails validation.
+- **Output problems** (§2 "exec problems") on the first attempt are fed back too, so the
+  compiler can fix a wrong command or flag.
+
+On failure, retry the compile **once** with the error/problems appended to the prompt. If
+the second attempt's code runs but its commands still report problems (e.g. the CLI isn't
+logged in), it is saved as `ok` anyway — the runtime error flow (§3) then surfaces it and
+recovers by itself once the problem is fixed, without a recompile.
 
 **Failure** (UNCOMPILABLE, or still invalid after the retry): store `status =
 uncompilable | invalid` with `compile_error` for this hash. No automatic firing; `g` still
@@ -121,6 +127,11 @@ scope exposes only the `gene` object — no `process`, `require`, filesystem, en
 `--method`, `-f`, `-F`, `--field`, `--raw-field`, `--input` are rejected (read-only GET).
 Commands that print secrets (`bao kv get`, …) are the operator's responsibility to keep off
 the allowlist; the docs say so.
+
+**exec problems.** The host flags an exec call as a *problem* when it exits non-zero, or
+when its stderr matches `/\b(error|exception|fail(ed|ure)?|unauthori[sz]ed|forbidden|denied)\b/i`
+(the first matching line is kept). fetch status codes are never problems — a 503 is data
+for a health check. Problems feed compile validation (§1) and the runtime error flow (§3).
 
 **Limits per run** (exceeding any = error outcome, never a fire):
 
@@ -172,7 +183,9 @@ the gap). Condition checks simply re-evaluate next time.
 section when `reason` is set. Manual `g` behaviour is unchanged (bypasses trigger gates,
 restarts a running program).
 
-**Errors** (throw, limit, bad shape): log `trigger-error`; `error_streak += 1`; next check
+**Errors** (throw, limit, bad shape — or a **no-fire** result from a run whose exec calls
+reported problems, so an expired CLI login doesn't read as "nothing to do" forever; a
+`fire: true` result still fires, the check saw the output and decided): log `trigger-error`; `error_streak += 1`; next check
 backs off — effective interval × 2^streak, capped at 1 h. At `error_streak = 3`, post one
 ticket comment `⚠️ Trigger check failing: <error>` + `#gene-ai` (`error_commented = true`).
 First success resets both. Errors never fire.
@@ -249,8 +262,10 @@ Documented in README "Programs" (replacing "Triggers are a later phase") and
   rejection; output truncation (local `execFile` of `node -e`).
 - **schedule** — `decideTrigger` gate order; cron window (skipped advances window, single
   catch-up, no fire right after compile); interval clamp, IO floor, error backoff.
-- **compile** — reply parsing (code fence, SUMMARY, INTERVAL, UNCOMPILABLE), validation
-  failure → one retry with error, stub runner.
+- **compile** — reply parsing (code fence, SUMMARY, INTERVAL, UNCOMPILABLE), trial-run
+  failure or exec problems → one retry with the feedback; problems on the retry → saved ok
+  with problems; stub runner and stub host.
+- **host** — exec problem detection (non-zero exit, stderr keywords, clean stderr ok).
 - **store** — round-trip against PGlite in a temp `GENE_DB_DIR`.
 - **integration** — the trigger scanner (`src/trigger/index.ts`) with injected deps (stub
   compile runner, real sandbox, in-memory store fakes): new prose → compiled → due cron →
