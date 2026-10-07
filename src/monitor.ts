@@ -371,6 +371,9 @@ class Monitor extends EventEmitter {
    * so a queued/running/finished program is never downgraded back to `idle`. Always
    * (re)stamps the program flag, stage, title, lifecycle state, and description.
    */
+  /** Placeholder until the TUI shows trigger status (see setProgramRow). */
+  setProgramTrigger(_id: string, _view: unknown): void {}
+
   setProgramRow(id: string, title: string, state: string, description?: string): void {
     const existed = this.agents.has(id);
     const agent = this.upsert(id);

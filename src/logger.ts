@@ -63,6 +63,7 @@ export interface Logger {
     linear: string;
     update: string;
     export: string;
+    trigger: string;
   };
   verbose: (...args: unknown[]) => void;
   info: (...args: unknown[]) => void;
@@ -234,6 +235,7 @@ const logger: Logger = {
     linear: chalk.blueBright("[gene:linear]"),
     update: chalk.cyanBright("[gene:update]"),
     export: chalk.cyanBright("[gene:export]"),
+    trigger: chalk.magentaBright("[gene:trigger]"),
   }
 };
 

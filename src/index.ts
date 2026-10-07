@@ -46,6 +46,11 @@ import {
   type ProgramSource
 } from "./programs.ts";
 import { readProgramState, writeProgramState, safeRestingState } from "./program-state.ts";
+import { createTriggerScanner } from "./trigger/index.ts";
+import { dbTriggerStore } from "./trigger/store.ts";
+import { compileTrigger, claudeRunner } from "./trigger/compile.ts";
+import { runCheck } from "./trigger/sandbox.ts";
+import { createHost } from "./trigger/host.ts";
 import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts";
 import { dispatch as dispatchPluginEvent, setupPlugins } from "./plugins/index.ts";
 import { closeDb, findInterruptedRuns, hasUnfinishedRun, logEvent, readTokenTotal, readIssueLog } from "./db.ts";
@@ -196,6 +201,49 @@ interface InFlightContext {
  * and enforces the concurrency cap.
  */
 const inFlight = new Map<string, InFlightContext>();
+
+/**
+ * Program triggers (GENE_PROGRAM_TRIGGERS): keeps each program's compiled `## Trigger`
+ * check in step with its prose and fires due ones through the program fire queue.
+ */
+const triggerScanner = createTriggerScanner({
+  trackerName: tracker.name,
+  store: dbTriggerStore,
+  now: () => new Date(),
+  isResting: p =>
+    p.stateName !== env.ACTIVE_STATE &&
+    p.stateName !== env.BLOCKED_STATE &&
+    !inFlight.has(p.id) &&
+    !hasFireRequest(p.identifier),
+  lastFiredAt: async p => {
+    const st = await readProgramState(tracker.name, p.identifier);
+    return st?.lastFiredAt ? new Date(st.lastFiredAt) : undefined;
+  },
+  fire: (p, reason) => fireProgram(p.identifier, "trigger", reason),
+  record,
+  comment: (p, body) => tracker.postComment(p, body),
+  compile: prose =>
+    compileTrigger(prose, claudeRunner(env.TRIGGER_COMPILE_MODEL), {
+      execAllow: env.TRIGGER_EXEC_ALLOW,
+      ioFloorMin: env.TRIGGER_IO_MIN_INTERVAL_MIN,
+      trialHost: () => {
+        const now = new Date();
+        return createHost({ windowStart: now, now, execAllow: env.TRIGGER_EXEC_ALLOW });
+      }
+    }),
+  check: async (code, state, windowStart, now) => {
+    const host = createHost({ windowStart, now, execAllow: env.TRIGGER_EXEC_ALLOW });
+    const outcome = await runCheck(code, host, state);
+    return { outcome, problems: host.problems };
+  },
+  publish: (id, view) => monitor.setProgramTrigger(id, view),
+  cfg: {
+    dryRun: env.DRY_RUN,
+    cooldownMs: env.PROGRAM_TRIGGER_COOLDOWN_MIN * 60_000,
+    pollMs: env.POLL_INTERVAL_MS,
+    ioFloorMs: env.TRIGGER_IO_MIN_INTERVAL_MIN * 60_000
+  }
+});
 const isAtConcurrencyCap = (): boolean => inFlight.size >= env.MAX_CONCURRENT;
 
 // Plugin-event dedup state (by issue id), so each scan emits a change exactly once.
@@ -882,6 +930,10 @@ const dispatchProgram = async (
  * in Blocked/Active) so a resting-program poll stays cheap.
  */
 const scanPrograms = async (programs: Issue[]): Promise<void> => {
+  // Triggers first, so a fire they enqueue is dispatched by the loop below in this same scan.
+  if (env.PROGRAM_TRIGGERS) {
+    await triggerScanner.scan(programs.filter(p => tracker.isAssignedToOwner(p)));
+  }
   for (const program of programs) {
     if (!tracker.isAssignedToOwner(program)) continue;
     monitor.setProgramRow(program.identifier, program.title, program.stateName, program.description);
