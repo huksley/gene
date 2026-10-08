@@ -1,5 +1,5 @@
 /**
- * Compiles a program's free-form `## Trigger` prose into a `check(gene)` function, once
+ * Compiles a program's free-form `## Trigger` prose into an `async function check()`, once
  * per prose hash. A short tool-less `claude -p` run writes the code; we parse it,
  * trial-run it once against the real host (never firing the program), and retry once
  * with any error or exec problems. Runner and trial host are injected so tests spawn
@@ -31,6 +31,14 @@ type ParsedReply =
 
 const FENCE = "```";
 
+/**
+ * Version of the API a compiled check is written against (the sandbox globals and the
+ * check() contract). It is part of {@link proseHash}, so bumping it recompiles every cached
+ * check on the next scan instead of letting old code fail against a new sandbox.
+ * v1: `gene.*` object. v2: standard-looking globals (fetch, exec, cron, localStorage, console).
+ */
+export const TRIGGER_API_VERSION = 2;
+
 /** Trimmed prose, or null when the section means "no trigger" (missing, empty, manual, none). */
 export const normaliseTriggerProse = (section: string): string | null => {
   const text = section.trim();
@@ -38,7 +46,8 @@ export const normaliseTriggerProse = (section: string): string | null => {
   return text;
 };
 
-export const proseHash = (prose: string): string => crypto.createHash("sha256").update(prose.trim()).digest("hex");
+export const proseHash = (prose: string): string =>
+  crypto.createHash("sha256").update(`v${TRIGGER_API_VERSION}\n${prose.trim()}`).digest("hex");
 
 export const buildCompilePrompt = (
   prose: string,
@@ -53,17 +62,18 @@ export const buildCompilePrompt = (
     "",
     "# The function",
     "",
-    "Write exactly one `async function check(gene)` that returns `{ fire: boolean, reason?: string }`. It runs in a sandbox with NO other globals (no fetch, process, require, timers). Available API:",
+    "Write exactly one `async function check()` (no parameters) that returns `{ fire: boolean, reason?: string }`. It runs in a sandboxed JavaScript engine (QuickJS) — not Node, not a browser. Standard JS built-ins work (`JSON`, `Math`, `Date`, `Array`, `RegExp`, `Intl` is NOT guaranteed). These globals are available, and nothing else (no `require`, `import`, `process`, `setTimeout`, `Buffer`):",
     "",
-    "- `gene.cron(expr, { tz? })` → boolean: true if the 5-field cron `expr` had a tick since the previous check. Use it for any time-based schedule.",
-    "- `await gene.fetch(url, { method?, headers?, body? })` → `{ status, headers, text, json() }`. http/https only, no credentials are added — use it only for public or unauthenticated endpoints.",
+    "- `await fetch(url, init)` — the standard WHATWG fetch (same as in browsers / Node 18+): `init` takes `method`, `headers`, `body`; the response has `ok`, `status`, `headers.get(name)`, `await res.text()`, `await res.json()`. http/https only. No credentials are added — use it only for public or unauthenticated endpoints. A non-2xx status is returned, not thrown.",
     opts.execAllow.length > 0
-      ? `- \`await gene.exec(cmd, args)\` → \`{ code, stdout, stderr }\`. No shell (no pipes, no $()). ONLY commands starting with one of: ${opts.execAllow.map(a => `\`${a}\``).join(", ")}. Prefer these CLIs for anything that needs authentication; they are already logged in. \`glab api\` is read-only (no -X/--method/-f/-F).`
-      : "- `gene.exec` is not available (no commands are allowed). Use only `gene.cron` and `gene.fetch`.",
-    "- `gene.state`: a JSON object kept between runs (≤ 16 KB) — e.g. to remember what you already reported.",
-    "- `gene.now()` → ISO timestamp; `gene.log(msg)` for debugging.",
+      ? `- \`await exec(cmd, args)\` — run a CLI program, like zx's \`$\`, execa's \`execa(cmd, args)\` or Node's \`child_process.execFile\`, but it resolves to \`{ exitCode, stdout, stderr }\` and never throws on a non-zero exit (check \`exitCode\` yourself). \`args\` is an array of strings; there is no shell (no pipes, globs, \`$()\`, \`&&\`). ONLY commands starting with one of: ${opts.execAllow.map(a => `\`${a}\``).join(", ")}. Prefer these CLIs for anything that needs authentication; they are already logged in. \`glab api\` is read-only (only \`--paginate\`, \`-i\`, \`--silent\` flags; no -X/-f/-F/--field); host/config flags such as \`--hostname\`, \`--server\`, \`--kubeconfig\` are refused.`
+      : "- `exec` is not available (no commands are allowed). Use only `cron` and `fetch`.",
+    "- `cron(expr, { tz })` → boolean — Gene-specific (no standard equivalent): true if the 5-field cron expression `expr` (minute hour day-of-month month day-of-week, as in crontab) had a tick since the previous check. `tz` is an optional IANA zone such as \"Europe/Berlin\" (default UTC). Use it for every time-based schedule instead of comparing `Date` values yourself.",
+    "- `localStorage` — the standard Web Storage API (`getItem`, `setItem`, `removeItem`, `clear`, `key`, `length`; values are strings, use `JSON.stringify`/`JSON.parse` for objects), kept between runs of this check, ≤ 16 KB. Use it to remember what you already reported.",
+    "- `Date.now()` / `new Date()` — the current time, as usual.",
+    "- `console.log` (also `.info`, `.warn`, `.error`) — for debugging; output is captured.",
     "",
-    "At most 10 fetch/exec calls per run; 1 s of CPU.",
+    "At most 10 fetch/exec calls per run; 1 s of CPU; 60 s in total.",
     "",
     "# Rules",
     "",
@@ -77,7 +87,7 @@ export const buildCompilePrompt = (
     'SUMMARY: <one line plain English, e.g. "Weekdays at 09:00 Europe/Berlin">',
     "INTERVAL: <e.g. 1m | 15m | 1h>",
     `${FENCE}js`,
-    "async function check(gene) { ... }",
+    "async function check() { ... }",
     FENCE,
     ...(opts.previousError
       ? ["", "# Your previous answer was rejected", "", opts.previousError, "", "Fix it and answer again in the same format."]

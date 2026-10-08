@@ -270,20 +270,21 @@ the same Blocked → resume flow as a coding ticket.
 
 **Triggers (opt-in)** Set `GENE_PROGRAM_TRIGGERS=true` and Gene fires programs on its
 own from their `## Trigger` prose. When the prose is new or changes, a short agent run
-compiles it once into a small JavaScript check — "every hour" becomes a cron check,
+compiles it once into a small JavaScript `check()` function — written against
+standard-looking globals (`fetch`, `exec`, `cron`, `localStorage`, `console`, `Date`) — "every hour" becomes a cron check,
 "when one of my MRs needs a rebase" becomes a `glab api` query — cached until the prose
 changes. The daemon runs due checks on its poll; when one matches, the program fires and
 the check's reason (e.g. `!87, !91 need rebase`) is handed to the run. Write `manual` in
 `## Trigger` to keep a program manual-only.
 
 - **Sandboxed.** Checks run in QuickJS with no filesystem, env, or network except
-  `gene.fetch` (http/https, no credentials added) and `gene.exec`, which only runs
+  `fetch` (http/https, no credentials added) and `exec`, which only runs
   commands matching `GENE_TRIGGER_EXEC_ALLOW` (e.g. `glab api,argocd app list`; empty by
   default). `glab api` is forced read-only, and flags that redirect a CLI to another host
   or config (`--hostname`, `--server`, `--auth-token`, `--kubeconfig`, …) are refused.
   Treat everything after an allowed prefix as written by whoever can edit the ticket:
   allow only read-only commands, and keep commands that print secrets (e.g. `bao kv get`)
-  off the list — a check can read a command's output and `gene.fetch` can reach any
+  off the list — a check can read a command's output and `fetch` can reach any
   http(s) host, including internal ones.
 - **Safety limits.** A trigger never fires a program that is already running, and waits
   `GENE_PROGRAM_TRIGGER_COOLDOWN_MIN` (default 30) after the last fire — a `g` press

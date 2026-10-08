@@ -1,5 +1,5 @@
 /**
- * The real capabilities behind a trigger check's `gene` API: cron windows, HTTP, and
+ * The real capabilities behind a trigger check's globals (fetch, exec, cron): cron windows, HTTP, and
  * allowlisted CLI calls. Everything a check can reach goes through here, so the limits
  * live here too (timeouts, output caps, the exec allowlist, glab api read-only).
  */
@@ -96,7 +96,6 @@ export const createHost = (opts: {
   return {
     problems,
     cron: (expr, tz) => cronDue(expr, tz, opts.windowStart, opts.now),
-    now: () => opts.now,
     fetch: async (url: string, init: FetchInit): Promise<FetchResult> => {
       const parsed = new URL(url);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {

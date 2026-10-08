@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CheckHost } from "./sandbox.ts";
+import crypto from "node:crypto";
 import {
+  TRIGGER_API_VERSION,
   normaliseTriggerProse,
   proseHash,
   buildCompilePrompt,
@@ -23,8 +25,7 @@ const stubHost = (problemsPerRun: string[] = []): CheckHost & { problems: string
     exec: async () => {
       problems.push(...problemsPerRun);
       return { code: 0, stdout: "[]", stderr: "" };
-    },
-    now: () => new Date("2026-10-07T09:00:00Z")
+    }
   };
 };
 
@@ -39,6 +40,30 @@ test("normaliseTriggerProse: manual/none/empty mean no trigger", () => {
   assert.equal(normaliseTriggerProse("  every hour \n"), "every hour");
 });
 
+test("prompt describes the standard globals with their familiar equivalents", () => {
+  const p = buildCompilePrompt("every hour", { execAllow: ["glab api"], ioFloorMin: 5 });
+  for (const needle of [
+    /`await fetch\(url, init\)`.*WHATWG fetch/,
+    /`await res\.json\(\)`/,
+    /`await exec\(cmd, args\)`.*zx.*execa.*execFile/,
+    /exitCode/,
+    /`localStorage`.*Web Storage/,
+    /`Date\.now\(\)`/,
+    /`console\.log`/,
+    /`cron\(expr, \{ tz \}\)`/,
+    /async function check\(\)/
+  ]) assert.match(p, needle);
+  assert.doesNotMatch(p, /gene\./);
+});
+
+// Bumping the API version changes every hash, so checks compiled against an older sandbox
+// API are recompiled on the next scan instead of failing at runtime.
+test("proseHash includes the trigger API version", () => {
+  assert.ok(TRIGGER_API_VERSION >= 2);
+  assert.notEqual(proseHash("every hour"), crypto.createHash("sha256").update("every hour").digest("hex"));
+  assert.equal(proseHash("every hour"), crypto.createHash("sha256").update(`v${TRIGGER_API_VERSION}\nevery hour`).digest("hex"));
+});
+
 test("proseHash is stable and differs by content", () => {
   assert.equal(proseHash("every hour"), proseHash("every hour"));
   assert.notEqual(proseHash("every hour"), proseHash("every day"));
@@ -50,11 +75,11 @@ test("prompt lists allowed exec prefixes and the previous error", () => {
   assert.match(p, /every hour/);
   assert.match(p, /`glab api`/);
   assert.match(p, /boom/);
-  assert.match(buildCompilePrompt("x", { execAllow: [], ioFloorMin: 5 }), /`gene.exec` is not available/);
+  assert.match(buildCompilePrompt("x", { execAllow: [], ioFloorMin: 5 }), /`exec` is not available/);
 });
 
 test("parseCompileReply: ok", () => {
-  const r = parseCompileReply(reply(`async function check(gene) { return { fire: gene.cron("0 * * * *") }; }`, "15m", "Every hour"));
+  const r = parseCompileReply(reply(`async function check() { return { fire: cron("0 * * * *") }; }`, "15m", "Every hour"));
   assert.equal(r.kind, "ok");
   if (r.kind === "ok") {
     assert.equal(r.trigger.summary, "Every hour");
@@ -73,12 +98,12 @@ test("parseCompileReply: missing parts are invalid", () => {
 });
 
 test("trialRun reports the real verdict and any exec problems", async () => {
-  const ok = await trialRun(`async function check(gene) { await gene.exec("glab", ["api", "x"]); return { fire: true, reason: "r" }; }`, stubHost(["Error: not logged in"]));
+  const ok = await trialRun(`async function check() { await exec("glab", ["api", "x"]); return { fire: true, reason: "r" }; }`, stubHost(["Error: not logged in"]));
   assert.deepEqual(ok, { fire: true, reason: "r", problems: ["Error: not logged in"] });
 });
 
 test("trialRun: a throw on real data is an error", async () => {
-  const r = await trialRun(`async function check(gene) { const x = await gene.fetch("https://x"); return { fire: x.json().nope.length > 0 }; }`, stubHost());
+  const r = await trialRun(`async function check() { const x = await fetch("https://x"); return { fire: (await x.json()).nope.length > 0 }; }`, stubHost());
   assert.ok(r.error);
 });
 
@@ -93,7 +118,7 @@ test("compileTrigger retries once with the trial error", async () => {
 
 test("compileTrigger feeds exec problems back on the first attempt", async () => {
   const prompts: string[] = [];
-  const code = `async function check(gene) { await gene.exec("glab", ["api", "x"]); return { fire: false }; }`;
+  const code = `async function check() { await exec("glab", ["api", "x"]); return { fire: false }; }`;
   const result = await compileTrigger("my MRs", async p => (prompts.push(p), reply(code)), opts([() => stubHost(["glab api: exit 1: unknown flag"]), () => stubHost()]));
   assert.equal(result.kind, "ok");
   assert.equal(prompts.length, 2);
@@ -102,7 +127,7 @@ test("compileTrigger feeds exec problems back on the first attempt", async () =>
 });
 
 test("compileTrigger accepts code whose commands still report problems on the retry", async () => {
-  const code = `async function check(gene) { await gene.exec("glab", ["api", "x"]); return { fire: false }; }`;
+  const code = `async function check() { await exec("glab", ["api", "x"]); return { fire: false }; }`;
   const result = await compileTrigger("my MRs", async () => reply(code), opts(() => stubHost(["Error: not logged in"])));
   assert.equal(result.kind, "ok");
   if (result.kind === "ok") {

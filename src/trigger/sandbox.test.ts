@@ -4,25 +4,45 @@ import { runCheck, DEFAULT_LIMITS, type CheckHost } from "./sandbox.ts";
 
 const host = (over: Partial<CheckHost> = {}): CheckHost => ({
   cron: () => false,
-  fetch: async () => ({ status: 200, headers: {}, text: "{\"ok\":true}" }),
+  fetch: async () => ({ status: 200, headers: { "content-type": "application/json" }, text: "{\"ok\":true}" }),
   exec: async () => ({ code: 0, stdout: "[]", stderr: "" }),
-  now: () => new Date("2026-10-07T09:00:00Z"),
   ...over
 });
 
-test("returns fire + reason and persists state", async () => {
-  const out = await runCheck(
-    `async function check(gene) { gene.state = { n: (gene.state?.n ?? 0) + 1 }; return { fire: true, reason: "go" }; }`,
-    host(),
-    { n: 41 }
-  );
-  assert.deepEqual(out, { ok: true, fire: true, reason: "go", state: { n: 42 }, logs: [], usedIo: false });
+test("returns fire + reason; localStorage persists between runs", async () => {
+  const code = `async function check() {
+    const n = Number(localStorage.getItem("n") ?? "0") + 1;
+    localStorage.setItem("n", n);
+    return { fire: true, reason: "go " + n };
+  }`;
+  const first = await runCheck(code, host(), null);
+  assert.deepEqual(first, { ok: true, fire: true, reason: "go 1", state: { n: "1" }, logs: [], usedIo: false });
+  const second = await runCheck(code, host(), first.ok ? first.state : null);
+  assert.equal(second.ok && second.reason, "go 2");
 });
 
-test("cron is synchronous and passes tz", async () => {
+test("localStorage is the Web Storage shape", async () => {
+  const out = await runCheck(
+    `async function check() {
+       localStorage.setItem("a", 1); localStorage.setItem("b", "x");
+       localStorage.removeItem("b");
+       return { fire: false, reason: [localStorage.getItem("a"), localStorage.getItem("b"), localStorage.length, localStorage.key(0)].join(",") };
+     }`,
+    host(),
+    { stale: "keep" }
+  );
+  assert.equal(out.ok && out.reason, "1,,2,stale");
+});
+
+test("a non-object stored state starts localStorage empty", async () => {
+  const out = await runCheck(`async function check() { return { fire: false, reason: String(localStorage.length) }; }`, host(), [1, 2]);
+  assert.equal(out.ok && out.reason, "0");
+});
+
+test("cron is a synchronous global and passes tz", async () => {
   const seen: unknown[] = [];
   const out = await runCheck(
-    `async function check(gene) { return { fire: gene.cron("0 9 * * 1-5", { tz: "Europe/Berlin" }) }; }`,
+    `async function check() { return { fire: cron("0 9 * * 1-5", { tz: "Europe/Berlin" }) }; }`,
     host({ cron: (e, tz) => (seen.push([e, tz]), true) }),
     null
   );
@@ -30,22 +50,56 @@ test("cron is synchronous and passes tz", async () => {
   assert.deepEqual(seen, [["0 9 * * 1-5", "Europe/Berlin"]]);
 });
 
-test("fetch and exec round-trip and mark usedIo", async () => {
+test("fetch returns a Response-like object", async () => {
   const out = await runCheck(
-    `async function check(gene) {
-       const r = await gene.fetch("https://x/health");
-       const e = await gene.exec("glab", ["api", "merge_requests"]);
-       return { fire: r.json().ok && JSON.parse(e.stdout).length === 0, reason: String(r.status) };
+    `async function check() {
+       const res = await fetch("https://x/health", { method: "GET" });
+       const body = await res.json();
+       return { fire: res.ok && res.status === 200 && body.ok === true, reason: res.headers.get("Content-Type") + "|" + (await res.text()) };
      }`,
     host(),
     null
   );
-  assert.deepEqual(out.ok && [out.fire, out.reason, out.usedIo], [true, "200", true]);
+  assert.deepEqual(out.ok && [out.fire, out.reason, out.usedIo], [true, "application/json|{\"ok\":true}", true]);
+});
+
+test("fetch: a non-2xx status is data, res.ok is false", async () => {
+  const out = await runCheck(
+    `async function check() { const r = await fetch("https://x"); return { fire: !r.ok, reason: String(r.status) }; }`,
+    host({ fetch: async () => ({ status: 503, headers: {}, text: "down" }) }),
+    null
+  );
+  assert.deepEqual(out.ok && [out.fire, out.reason], [true, "503"]);
+});
+
+test("exec returns { exitCode, stdout, stderr } and does not throw on a non-zero exit", async () => {
+  const out = await runCheck(
+    `async function check() { const r = await exec("glab", ["api", "x"]); return { fire: r.exitCode !== 0, reason: r.exitCode + ":" + r.stderr }; }`,
+    host({ exec: async () => ({ code: 2, stdout: "", stderr: "nope" }) }),
+    null
+  );
+  assert.deepEqual(out.ok && [out.fire, out.reason], [true, "2:nope"]);
+});
+
+test("Date is the real clock", async () => {
+  const before = Date.now();
+  const out = await runCheck(`async function check() { return { fire: false, reason: String(Date.now()) }; }`, host(), null);
+  const t = Number(out.ok && out.reason);
+  assert.ok(t >= before && t <= Date.now() + 1000);
+});
+
+test("console.* is captured", async () => {
+  const out = await runCheck(
+    `async function check() { console.log("a", 1, { b: 2 }); console.warn("w"); console.error("e"); return { fire: false }; }`,
+    host(),
+    null
+  );
+  assert.deepEqual(out.logs, ["a 1 {\"b\":2}", "w", "e"]);
 });
 
 test("host rejection surfaces as a thrown error in the check", async () => {
   const out = await runCheck(
-    `async function check(gene) { await gene.exec("rm", ["-rf", "/"]); return { fire: true }; }`,
+    `async function check() { await exec("rm", ["-rf", "/"]); return { fire: true }; }`,
     host({ exec: async () => { throw new Error("exec not allowed: rm"); } }),
     null
   );
@@ -54,13 +108,13 @@ test("host rejection surfaces as a thrown error in the check", async () => {
   assert.equal(!out.ok && out.thrown, true);
 });
 
-test("no ambient capabilities", async () => {
+test("no ambient capabilities, and the raw bridge is not reachable", async () => {
   const out = await runCheck(
-    `async function check() { return { fire: false, reason: [typeof process, typeof require, typeof setTimeout, typeof fetch].join(",") }; }`,
+    `async function check() { return { fire: false, reason: [typeof process, typeof require, typeof setTimeout, typeof __host_async, typeof __host_cron, typeof gene].join(",") }; }`,
     host(),
     null
   );
-  assert.equal(out.ok && out.reason, "undefined,undefined,undefined,undefined");
+  assert.equal(out.ok && out.reason, "undefined,undefined,undefined,undefined,undefined,undefined");
 });
 
 test("missing check function", async () => {
@@ -110,7 +164,7 @@ test("memory limit", async () => {
 
 test("wall clock limit while awaiting a slow host call", async () => {
   const out = await runCheck(
-    `async function check(gene) { await gene.fetch("https://slow"); return { fire: true }; }`,
+    `async function check() { await fetch("https://slow"); return { fire: true }; }`,
     host({ fetch: () => new Promise(() => {}) }),
     null,
     { ...DEFAULT_LIMITS, wallMs: 200 }
@@ -127,7 +181,7 @@ test("a check that never settles errors instead of hanging", async () => {
 
 test("call budget", async () => {
   const out = await runCheck(
-    `async function check(gene) { for (let i = 0; i < 11; i++) await gene.exec("glab", ["api", "x"]); return { fire: false }; }`,
+    `async function check() { for (let i = 0; i < 11; i++) await exec("glab", ["api", "x"]); return { fire: false }; }`,
     host(),
     null
   );
@@ -135,15 +189,13 @@ test("call budget", async () => {
   assert.match(!out.ok ? out.error : "", /more than 10/);
 });
 
-test("state too large or not JSON", async () => {
-  const big = await runCheck(`async function check(gene) { gene.state = "x".repeat(20000); return { fire: false }; }`, host(), null);
-  assert.match(!big.ok ? big.error : "", /state/);
-  const cyc = await runCheck(`async function check(gene) { const a = {}; a.a = a; gene.state = a; return { fire: false }; }`, host(), null);
-  assert.equal(cyc.ok, false);
+test("localStorage too large", async () => {
+  const big = await runCheck(`async function check() { localStorage.setItem("k", "x".repeat(20000)); return { fire: false }; }`, host(), null);
+  assert.match(!big.ok ? big.error : "", /localStorage/);
 });
 
-test("log lines are captured and capped", async () => {
-  const out = await runCheck(`async function check(gene) { for (let i = 0; i < 30; i++) gene.log("l" + i); return { fire: false }; }`, host(), null);
+test("console lines are captured and capped", async () => {
+  const out = await runCheck(`async function check() { for (let i = 0; i < 30; i++) console.log("l" + i); return { fire: false }; }`, host(), null);
   assert.equal(out.logs.length, 20);
   assert.equal(out.logs[0], "l0");
 });
@@ -153,6 +205,6 @@ test("log lines are captured and capped", async () => {
 test("error message and log lines are length-capped", async () => {
   const thrown = await runCheck(`async function check() { throw new Error("x".repeat(100000)); }`, host(), null);
   assert.ok(!thrown.ok && thrown.error.length <= 1000);
-  const logged = await runCheck(`async function check(gene) { gene.log("y".repeat(100000)); return { fire: false }; }`, host(), null);
+  const logged = await runCheck(`async function check() { console.log("y".repeat(100000)); return { fire: false }; }`, host(), null);
   assert.equal(logged.logs[0]!.length, 500);
 });

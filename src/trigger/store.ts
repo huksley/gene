@@ -1,7 +1,7 @@
 /**
  * Persistence for program triggers (`program_trigger`, schema in db.ts): the compiled
  * check for a program's `## Trigger` prose, keyed by a hash of that prose, plus the
- * bookkeeping its schedule needs (cron window, next run, error streak, gene.state).
+ * bookkeeping its schedule needs (cron window, next run, error streak, localStorage).
  * Exposed as a {@link TriggerStore} interface so the scanner can be tested against a fake.
  */
 import { getDb } from "../db.ts";

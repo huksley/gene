@@ -1,8 +1,10 @@
 /**
  * Runs a compiled trigger check in a QuickJS sandbox. The check is untrusted (compiled
  * from ticket prose), so the sandbox is the security boundary: a fresh runtime per run,
- * no ambient globals, and only the `gene` API — whose capabilities are host functions
- * injected by the caller (see host.ts for the real ones). Knows nothing about programs.
+ * no ambient capabilities beyond a few standard-looking globals — `fetch`, `exec`,
+ * `cron`, `localStorage`, `console` (plus QuickJS's own `Date`, `JSON`, …) — whose
+ * capabilities are host functions injected by the caller (see host.ts for the real ones).
+ * Knows nothing about programs.
  */
 import {
   newQuickJSWASMModuleFromVariant,
@@ -24,7 +26,6 @@ export type CheckHost = {
   cron: (expr: string, tz?: string) => boolean;
   fetch: (url: string, init: FetchInit) => Promise<FetchResult>;
   exec: (cmd: string, args: string[]) => Promise<ExecResult>;
-  now: () => Date;
 };
 
 export type CheckLimits = {
@@ -72,21 +73,54 @@ const loadQuickJS = (): Promise<QuickJSWASMModule> => {
   return modulePromise;
 };
 
-// The in-sandbox side of the `gene` API. Host functions speak JSON strings so no
-// handle juggling leaks into user code; `__host_async` returns a promise.
+// The in-sandbox side of the API: familiar globals (WHATWG-like fetch, Web Storage
+// localStorage, console, a zx/execa-style exec) built over raw host functions that speak
+// JSON strings, so no host object or handle ever reaches user code. The raw bridge is
+// captured in a closure and deleted from the global scope before user code loads.
 const PRELUDE = `
-  const __call = async (name, args) => JSON.parse(await __host_async(name, JSON.stringify(args)));
-  globalThis.gene = {
-    cron: (expr, opts) => __host_cron(String(expr), opts && opts.tz ? String(opts.tz) : ""),
-    fetch: async (url, opts) => {
-      const r = await __call("fetch", [String(url), opts || {}]);
-      return { status: r.status, headers: r.headers, text: r.text, json: () => JSON.parse(r.text) };
-    },
-    exec: (cmd, args) => __call("exec", [String(cmd), (args || []).map(String)]),
-    now: () => __host_now(),
-    log: msg => __host_log(String(msg)),
-    state: JSON.parse(__initial_state)
-  };
+  (() => {
+    const host = { async: __host_async, cron: __host_cron, log: __host_log };
+    const parsed = JSON.parse(__initial_state_value);
+    for (const name of ["__host_async", "__host_cron", "__host_log", "__initial_state_value"]) delete globalThis[name];
+    const call = async (name, args) => JSON.parse(await host.async(name, JSON.stringify(args)));
+
+    const store = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    const has = key => Object.prototype.hasOwnProperty.call(store, key);
+    globalThis.localStorage = {
+      getItem: key => (has(String(key)) ? String(store[String(key)]) : null),
+      setItem: (key, value) => { store[String(key)] = String(value); },
+      removeItem: key => { delete store[String(key)]; },
+      clear: () => { for (const key of Object.keys(store)) delete store[key]; },
+      key: index => Object.keys(store)[index] ?? null,
+      get length() { return Object.keys(store).length; }
+    };
+
+    const log = (...parts) => host.log(parts.map(p => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
+    globalThis.console = { log, info: log, warn: log, error: log, debug: log };
+
+    globalThis.fetch = async (input, init) => {
+      const r = await call("fetch", [String(input), init || {}]);
+      const headers = r.headers || {};
+      return {
+        ok: r.status >= 200 && r.status < 300,
+        status: r.status,
+        url: String(input),
+        headers: { get: name => headers[String(name).toLowerCase()] ?? null, has: name => String(name).toLowerCase() in headers },
+        text: async () => r.text,
+        json: async () => JSON.parse(r.text)
+      };
+    };
+
+    globalThis.exec = async (cmd, args) => {
+      const r = await call("exec", [String(cmd), (args || []).map(String)]);
+      return { exitCode: r.code, stdout: r.stdout, stderr: r.stderr };
+    };
+
+    globalThis.cron = (expr, opts) => host.cron(String(expr), opts && opts.tz ? String(opts.tz) : "");
+
+    // Read by the runner after check() resolves; returns the user's own storage only.
+    Object.defineProperty(globalThis, "__gene_storage", { value: () => JSON.stringify(store) });
+  })();
 `;
 
 const RUNNER = `
@@ -94,17 +128,11 @@ const RUNNER = `
     if (typeof check !== "function") throw { __gene: "check is not a function" };
     let result;
     try {
-      result = await check(gene);
+      result = await check();
     } catch (error) {
       throw { __thrown: String(error && error.message ? error.message : error) };
     }
-    let state;
-    try {
-      state = JSON.stringify(gene.state === undefined ? null : gene.state);
-    } catch (error) {
-      throw { __gene: "gene.state is not JSON-serialisable" };
-    }
-    return JSON.stringify({ result, state });
+    return JSON.stringify({ result, state: __gene_storage() });
   })()
 `;
 
@@ -162,7 +190,6 @@ export const runCheck = async (
       const tzValue = ctx.getString(tz);
       return host.cron(ctx.getString(expr), tzValue === "" ? undefined : tzValue) ? ctx.true : ctx.false;
     });
-    fn("__host_now", () => ctx.newString(host.now().toISOString()));
     fn("__host_log", msg => {
       if (logs.length < limits.maxLogLines) logs.push(ctx.getString(msg).slice(0, limits.maxLogLine));
       return undefined;
@@ -199,7 +226,7 @@ export const runCheck = async (
       return deferred.handle;
     });
     const stateHandle = ctx.newString(JSON.stringify(state ?? null));
-    ctx.setProp(ctx.global, "__initial_state", stateHandle);
+    ctx.setProp(ctx.global, "__initial_state_value", stateHandle);
     stateHandle.dispose();
 
     const prelude = slice(() => ctx.evalCode(PRELUDE, "prelude.js"));
@@ -289,7 +316,7 @@ export const runCheck = async (
       return fail(SHAPE_ERROR);
     }
     if (Buffer.byteLength(stateJson) > limits.maxStateBytes) {
-      return fail(`gene.state is larger than ${limits.maxStateBytes} bytes`);
+      return fail(`localStorage is larger than ${limits.maxStateBytes} bytes`);
     }
     const { fire, reason } = result as { fire: boolean; reason?: string };
     return {

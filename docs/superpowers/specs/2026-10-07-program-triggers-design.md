@@ -24,7 +24,7 @@ must not cost an agent run per poll.
 ## Approach
 
 When a program's `## Trigger` prose is new or changed, a short agent run **compiles** it
-once into a JavaScript `check(gene)` function. Gene caches the code keyed by a hash of the
+once into a JavaScript `async function check()`. Gene caches the code keyed by a hash of the
 prose and runs it regularly in a **QuickJS sandbox** whose only capabilities are host
 functions Gene provides (`cron`, `fetch`, allowlisted `exec`, persisted `state`). When a
 check returns `fire: true`, the program fires through the existing
@@ -37,10 +37,10 @@ Mapping the examples:
 
 | Program | Compiled check (sketch) |
 |---|---|
-| Logs scan, hourly | `return { fire: gene.cron("0 * * * *") }` |
+| Logs scan, hourly | `return { fire: cron("0 * * * *") }` |
 | Rebase MRs | `glab api "merge_requests?scope=created_by_me&state=opened"` → fire if any `detailed_merge_status == "need_rebase"`, reason `"!87, !91 need rebase"` |
 | Argo CD sync | `argocd app list -o json` → fire if any app `OutOfSync`, reason lists the apps |
-| Config review | condition needs judgment → schedule fallback, e.g. `gene.cron("0 8 * * *")`; the run itself does the review |
+| Config review | condition needs judgment → schedule fallback, e.g. `cron("0 8 * * *")`; the run itself does the review |
 
 ## 1. Compile: prose → cached check
 
@@ -55,14 +55,14 @@ Mapping the examples:
 
 **How.** A dedicated `claude -p` invocation (not a program run, no worktree, **no tools**),
 model `GENE_TRIGGER_COMPILE_MODEL` (default `haiku`). The prompt contains the trigger
-prose, the `gene` API reference (§2), the currently allowed exec prefixes
+prose, the check API reference (§2, with familiar equivalents), the currently allowed exec prefixes
 (`GENE_TRIGGER_EXEC_ALLOW`), the IO interval floor, and the reply format:
 
 ````
 SUMMARY: <one line, plain English, e.g. "Weekdays at 09:00 Europe/Berlin">
 INTERVAL: <duration, e.g. 1m | 15m | 1h>
 ```js
-async function check(gene) { ... return { fire, reason }; }
+async function check() { ... return { fire, reason }; }
 ```
 ````
 
@@ -70,7 +70,7 @@ or a single line `UNCOMPILABLE: <why>`.
 
 Compiler rules stated in the prompt:
 
-- Use only the `gene` API; use `exec` only with an allowed prefix.
+- Use only the check API globals; use `exec` only with an allowed prefix.
 - A condition that needs **judgment** (e.g. "anything needs fixing") compiles to a
   **schedule fallback** — the schedule from the prose if given, else daily 08:00 — and the
   SUMMARY says so ("Daily 08:00 — condition needs judgment; the run checks it").
@@ -106,21 +106,26 @@ now (§3), log `trigger-compiled` (summary + code). No ticket comment.
 (`@jitl/quickjs-wasmfile-release-sync`), embedded in the SEA binary as an asset the same
 way `pglite.wasm` is (`src/sea-assets.ts`, `sea.json`, `build.mjs`). Host functions return
 promises (`ctx.newPromise` + `runtime.executePendingJobs`), so generated code is
-`async function check(gene)`. Not the asyncify variant (slower, larger).
+`async function check()`. Not the asyncify variant (slower, larger).
 
 **Isolation.** A fresh QuickJS runtime + context per check run, disposed after. The global
-scope exposes only the `gene` object — no `process`, `require`, filesystem, env, timers.
+scope exposes only the check API globals (§2) — no `process`, `require`, filesystem, env, timers.
 
-**The `gene` API**
+**The check API (v2 — `TRIGGER_API_VERSION`, part of the prose hash).** A check is
+`async function check()` returning `{ fire, reason? }`, written against standard-looking
+globals so a model writes it from habit; the compile prompt names each one's familiar
+equivalent.
 
-| Member | Returns | Rules |
+| Global | Familiar as | Rules |
 |---|---|---|
-| `gene.cron(expr, { tz? })` | `boolean` — a scheduled tick fell in `(window_start, now]` | `cron-parser`; window semantics in §3 |
-| `await gene.fetch(url, { method?, headers?, body? })` | `{ status, headers, text, json() }` | `http:`/`https:` only; 10 s timeout; body truncated at 1 MB; Gene adds no credentials |
-| `await gene.exec(cmd, args)` | `{ code, stdout, stderr }` | `cmd + " " + args.join(" ")` must start with an entry of `GENE_TRIGGER_EXEC_ALLOW`; `execFile` (no shell); 20 s timeout; stdout/stderr truncated at 1 MB each; cwd = a fresh temp dir; inherits Gene's env so CLIs find their auth |
-| `gene.state` | plain object, read/write | persisted after the run; must be JSON-serialisable and ≤ 16 KB |
-| `gene.now()` | ISO-8601 string | — |
-| `gene.log(msg)` | — | to the console log at debug; first 20 lines per run kept with `trigger-error`/`trigger-fired` rows |
+| `await fetch(url, init)` → Response-like (`ok`, `status`, `headers.get()`, `await res.text()`, `await res.json()`) | WHATWG fetch | `http:`/`https:` only; 10 s timeout; body truncated at 1 MB; Gene adds no credentials; non-2xx is returned, not thrown |
+| `await exec(cmd, args)` → `{ exitCode, stdout, stderr }` | zx `$`, execa, Node `execFile` — but never throws on non-zero exit | whole-token prefix of `GENE_TRIGGER_EXEC_ALLOW`; `execFile` (no shell); 20 s timeout; stdout/stderr truncated at 1 MB each; cwd = a fresh temp dir; inherits Gene's env so CLIs find their auth |
+| `cron(expr, { tz })` → `boolean` | — (Gene-specific) | a tick of the 5-field cron in `(window_start, now]`; window semantics in §3 |
+| `localStorage` (`getItem`/`setItem`/`removeItem`/`clear`/`key`/`length`) | Web Storage | string values, persisted after the run, ≤ 16 KB as JSON |
+| `Date`, `console.log/info/warn/error` | standard | `console` output captured: 20 lines × 500 chars kept with `trigger-error`/`trigger-fired` rows |
+
+The raw host bridge (`__host_*`, JSON strings only) is captured in a closure and deleted
+from the global scope before the check loads.
 
 **exec hardening.** Matching is on whole tokens, not substrings (`glab api` matches
 `glab api foo`, not `glab apix`). For `glab api` specifically, args containing `-X`,

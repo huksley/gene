@@ -132,7 +132,7 @@ GENE_REQUIRE_SECTIONS=
 # GENE_PROGRAM_TRIGGER_COOLDOWN_MIN=30
 # Command prefixes a check may run (no shell). Empty = cron/URL triggers only.
 # Arguments after the prefix come from ticket text: allow read-only commands only,
-# never ones that print secrets (a check's gene.fetch can reach any http(s) host).
+# never ones that print secrets (a check's fetch() can reach any http(s) host).
 # GENE_TRIGGER_EXEC_ALLOW=glab api,argocd app list,argocd app get
 # GENE_TRIGGER_IO_MIN_INTERVAL_MIN=5
 # GENE_TRIGGER_COMPILE_MODEL=haiku

@@ -169,7 +169,7 @@ export const env = {
   // Minimum minutes between two fires of the same program by its trigger (a manual
   // `g` fire counts as the last fire too).
   PROGRAM_TRIGGER_COOLDOWN_MIN: int("GENE_PROGRAM_TRIGGER_COOLDOWN_MIN", 30),
-  // Command prefixes a trigger check may run via gene.exec, e.g.
+  // Command prefixes a trigger check may run via exec(), e.g.
   // "glab api,argocd app list". Empty ⇒ cron/URL triggers only.
   TRIGGER_EXEC_ALLOW: list("GENE_TRIGGER_EXEC_ALLOW"),
   // Floor (minutes) between runs of a check that calls fetch/exec.
