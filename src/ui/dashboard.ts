@@ -31,7 +31,7 @@ import { fit, humanDuration, stripAnsi, truncate } from "./format.ts";
 import { palette, spinner, statusColor, statusGlyph, PROGRAM_GLYPH, TRIGGER_GLYPH } from "./theme.ts";
 
 /** Fixed table column widths (characters). The EVENT column flexes to fill the rest. */
-const COL = { tracker: 1, id: 10, state: 11, glyph: 1, stage: 16, pid: 7, age: 8, tools: 5 } as const;
+const COL = { tracker: 2, id: 10, state: 11, glyph: 1, stage: 16, pid: 7, age: 8, tools: 5 } as const;
 
 /** Columns + the single-space separators between them, up to (not including) EVENT. */
 const FIXED_WIDTH =

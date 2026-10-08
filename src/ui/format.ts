@@ -56,8 +56,18 @@ export const truncate = (s: string, max: number): string => {
   return `${s.slice(0, max - 1)}…`;
 };
 
+/** Terminal cells a string occupies: emoji-presentation glyphs (⚡) take two, everything else one per code point. */
+export const displayWidth = (s: string): number => {
+  let width = 0;
+  for (const ch of s) width += /\p{Emoji_Presentation}/u.test(ch) ? 2 : 1;
+  return width;
+};
+
 /** Truncate then left-pad to exactly `width` columns, for fixed-width table cells. */
-export const fit = (s: string, width: number): string => truncate(s, width).padEnd(width);
+export const fit = (s: string, width: number): string => {
+  const cell = truncate(s, width);
+  return cell + " ".repeat(Math.max(0, width - displayWidth(cell)));
+};
 
 /** A fixed-width progress bar string from a 0..1 ratio (clamped). */
 export const progressBar = (
