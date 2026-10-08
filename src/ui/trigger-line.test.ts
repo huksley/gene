@@ -9,7 +9,7 @@ test("ok trigger line", () => {
     { status: "ok", summary: "Hourly", intervalSec: 60, nextCheckAt: now + 30_000, lastCheckAt: now - 30_000, lastOutcome: "no-fire" },
     now
   );
-  assert.equal(line, "⚡ Hourly · every 1m 00s · next in 30s · last: no fire");
+  assert.equal(line, "ϟ Hourly · every 1m 00s · next in 30s · last: no fire");
 });
 
 test("skipped and fired outcomes read plainly", () => {

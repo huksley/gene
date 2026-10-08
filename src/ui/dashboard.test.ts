@@ -25,11 +25,11 @@ test("filterAgents without the filter returns everything", () => {
   assert.deepEqual(filterAgents(rows, { onlyPrograms: false }).map(a => a.id), ["PRG-1", "ENG-2"]);
 });
 
-test("programLeadGlyph: ⚡ for an ok trigger, ⟳ otherwise, warn on failure", () => {
+test("programLeadGlyph: ϟ for an ok trigger, ⟳ otherwise, warn on failure", () => {
   const p = agent("PRG-1", true);
   assert.deepEqual(programLeadGlyph(p), { glyph: "⟳", warn: false });
-  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok" } }), { glyph: "⚡", warn: false });
-  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok", lastOutcome: "error" } }), { glyph: "⚡", warn: true });
+  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok" } }), { glyph: "ϟ", warn: false });
+  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok", lastOutcome: "error" } }), { glyph: "ϟ", warn: true });
   assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "invalid" } }), { glyph: "⟳", warn: true });
   assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "compiling" } }), { glyph: "⟳", warn: false });
 });

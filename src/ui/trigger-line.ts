@@ -15,7 +15,7 @@ const outcomeText = (v: TriggerView): string => {
 export const formatTriggerLine = (v: TriggerView, now: number): string => {
   if (v.status === "compiling") return "⟳ compiling trigger…";
   if (v.status !== "ok") return `⚠ trigger not compiled: ${v.error ?? v.status}`;
-  const parts = [`⚡ ${v.summary ?? "trigger"}`];
+  const parts = [`ϟ ${v.summary ?? "trigger"}`];
   if (v.intervalSec) parts.push(`every ${humanDuration(v.intervalSec * 1000)}`);
   if (v.nextCheckAt !== undefined) parts.push(v.nextCheckAt <= now ? "due" : `next in ${humanDuration(v.nextCheckAt - now)}`);
   parts.push(`last: ${outcomeText(v)}`);

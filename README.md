@@ -291,7 +291,7 @@ the check's reason (e.g. `!87, !91 need rebase`) is handed to the run. Write `ma
   counts. Checks that call out run at most every `GENE_TRIGGER_IO_MIN_INTERVAL_MIN`
   (default 5) minutes. A condition that stays true re-fires once per cooldown until the
   run fixes it; set `## Trigger` to `manual` to silence it.
-- **Visible.** Armed programs show **⚡** instead of ⟳; the detail view shows the compiled
+- **Visible.** Armed programs show **ϟ** instead of ⟳; the detail view shows the compiled
   summary, next check and last result, and **`t`** shows the code. When a trigger compiles, Gene runs it once for real and logs
   whether it would fire right now. A trigger that can't be compiled, or whose check fails
   3 times in a row, gets one comment on the ticket — and a check whose commands exit

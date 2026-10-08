@@ -96,7 +96,7 @@ export class Detail {
   private issueTitle: TextRenderable;
   private titleLine: TextRenderable;
   private subLine: TextRenderable;
-  /** Program trigger status (⚡ summary · next · last); hidden for non-programs. */
+  /** Program trigger status (ϟ summary · next · last); hidden for non-programs. */
   private triggerLine: TextRenderable;
   private actionsLabel: TextRenderable;
   private actionsBox: BoxRenderable;

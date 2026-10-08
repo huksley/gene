@@ -7,5 +7,5 @@ test("program glyph is the recycle symbol", () => {
 });
 
 test("trigger glyph is a lightning bolt", () => {
-  assert.equal(TRIGGER_GLYPH, "⚡");
+  assert.equal(TRIGGER_GLYPH, "ϟ");
 });

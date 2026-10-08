@@ -31,7 +31,7 @@ import { fit, humanDuration, stripAnsi, truncate } from "./format.ts";
 import { palette, spinner, statusColor, statusGlyph, PROGRAM_GLYPH, TRIGGER_GLYPH } from "./theme.ts";
 
 /** Fixed table column widths (characters). The EVENT column flexes to fill the rest. */
-const COL = { tracker: 2, id: 10, state: 11, glyph: 1, stage: 16, pid: 7, age: 8, tools: 5 } as const;
+const COL = { tracker: 1, id: 10, state: 11, glyph: 1, stage: 16, pid: 7, age: 8, tools: 5 } as const;
 
 /** Columns + the single-space separators between them, up to (not including) EVENT. */
 const FIXED_WIDTH =
@@ -152,7 +152,7 @@ const rowLine = (
   const idCell = fit(a.id, COL.id);
   const idChunk = selected ? bold(fg("#FFFFFF")(idCell)) : fg(palette.text)(idCell);
 
-  // Programs replace the tracker-initial cell with the ⟳ glyph — ⚡ when their trigger is
+  // Programs replace the tracker-initial cell with the ⟳ glyph — ϟ when their trigger is
   // armed — accent-coloured so it reads as a recurring run (warn-coloured when the trigger
   // is failing); everything else keeps the initial.
   const lead = a.isProgram ? programLeadGlyph(a) : undefined;
@@ -163,7 +163,7 @@ const rowLine = (
   return t`${leadChunk} ${idChunk} ${fg(palette.info)(state)} ${fg(statusColor(a.status))(fit(glyph, COL.glyph))} ${fg(palette.muted)(fit(a.stage, COL.stage))} ${fg(palette.dim)(fit(pid, COL.pid))} ${fg(palette.muted)(fit(age, COL.age))} ${fg(palette.dim)(fit(tools, COL.tools))} ${fg(eventColor)(truncate(a.lastEvent, eventWidth))}`;
 };
 
-/** Lead cell for a program row: ⚡ when its trigger is armed, else ⟳; warn when the trigger is failing. */
+/** Lead cell for a program row: ϟ when its trigger is armed, else ⟳; warn when the trigger is failing. */
 export const programLeadGlyph = (a: AgentState): { glyph: string; warn: boolean } => {
   const t = a.trigger;
   const warn = !!t && (t.status === "uncompilable" || t.status === "invalid" || t.lastOutcome === "error");
