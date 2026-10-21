@@ -59,7 +59,8 @@ const harness = (over: Partial<TriggerDeps> = {}) => {
     trackerName: "linear",
     store,
     now: () => clock,
-    isResting: p => p.stateName === "Todo",
+    isResting: p => p.stateName !== "In Progress" && p.stateName !== "Blocked",
+    isArmed: p => p.stateName === "Todo",
     lastFiredAt: async () => undefined,
     fire: (p, reason) => void fires.push([p.identifier, reason]),
     record: async (_p, event, detail) => void events.push([event, detail]),
@@ -111,6 +112,25 @@ test("busy and cooldown skip the check without running it", async () => {
   await h2.scanner.scan([program("PRG-3", "every hour")]);
   assert.deepEqual(h2.fires, []);
   assert.equal(h2.store.rows.get("PRG-3")?.lastOutcome, "skipped:cooldown");
+});
+
+test("a program outside Todo is not armed: no check, no fire, published as unarmed", async () => {
+  let checks = 0;
+  const views: (boolean | undefined)[] = [];
+  const h = harness({ check: async () => (checks++, { outcome: fired(), problems: [] }), publish: (_id, v) => void views.push(v?.armed) });
+  await h.scanner.scan([program("PRG-T", "every hour", "Triage")]);
+  await h.scanner.idle();
+  await h.scanner.scan([program("PRG-T", "every hour", "Triage")]);
+  assert.equal(checks, 0);
+  assert.deepEqual(h.fires, []);
+  assert.equal(h.store.rows.get("PRG-T")?.lastOutcome, "skipped:inactive");
+  assert.equal(views.at(-1), false);
+
+  h.tick(60_000); // moved to Todo by a human: armed from the next due check
+  await h.scanner.scan([program("PRG-T", "every hour")]);
+  assert.equal(checks, 1);
+  assert.deepEqual(h.fires, [["PRG-T", undefined]]);
+  assert.equal(views.at(-1), true);
 });
 
 test("uncompilable posts one comment per prose hash", async () => {

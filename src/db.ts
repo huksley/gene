@@ -81,9 +81,10 @@ const SCHEMA = `
   ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS tokens_in  BIGINT;
   ALTER TABLE issue_log ADD COLUMN IF NOT EXISTS tokens_out BIGINT;
 
-  -- Programs mode: per-program lifecycle status (resting state, last fire, last
-  -- result, source). This is OBSERVABILITY only — mutual exclusion for a running
-  -- program is the per-issue file lock (lock.ts), not this row.
+  -- Programs mode: per-program lifecycle status (last fire, last result, source;
+  -- resting_state is legacy — a program always rests in the trigger state). This is
+  -- OBSERVABILITY only — mutual exclusion for a running program is the per-issue file
+  -- lock (lock.ts), not this row.
   CREATE TABLE IF NOT EXISTS program_state (
     tracker       TEXT NOT NULL,
     identifier    TEXT NOT NULL,

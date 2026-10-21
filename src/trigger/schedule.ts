@@ -1,25 +1,31 @@
 /**
  * Pure scheduling rules for trigger checks: when a check is due, which gate skips it
- * (busy / cooldown), and how long until the next evaluation. No I/O — the scanner
+ * (busy / inactive / cooldown), and how long until the next evaluation. No I/O — the scanner
  * (index.ts) feeds it the facts and acts on the verdict.
  */
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 
-export type TriggerGate = { kind: "not-due" } | { kind: "skip"; reason: "busy" | "cooldown" } | { kind: "run" };
+export type TriggerGate = { kind: "not-due" } | { kind: "skip"; reason: "busy" | "inactive" | "cooldown" } | { kind: "run" };
 
 export const decideTrigger = (i: {
   now: Date;
   nextCheckAt?: Date;
   /** Program at rest: not active/blocked, no run in flight, no fire queued. */
   resting: boolean;
+  /**
+   * Program is in the trigger state (Todo, "activated"). Outside it — Triage, Backlog —
+   * it is still with humans, so the check doesn't run. Defaults to armed.
+   */
+  armed?: boolean;
   /** Last fire of any source (manual `g` included). */
   lastFiredAt?: Date;
   cooldownMs: number;
 }): TriggerGate => {
   if (i.nextCheckAt && i.now.getTime() < i.nextCheckAt.getTime()) return { kind: "not-due" };
   if (!i.resting) return { kind: "skip", reason: "busy" };
+  if (i.armed === false) return { kind: "skip", reason: "inactive" };
   if (i.lastFiredAt && i.now.getTime() - i.lastFiredAt.getTime() < i.cooldownMs) {
     return { kind: "skip", reason: "cooldown" };
   }

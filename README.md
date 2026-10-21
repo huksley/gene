@@ -251,13 +251,14 @@ forge CLI, when the program links a repo) — with `GENE_PROGRAM_ALLOWED_TOOLS`
 
 Unlike a normal ticket, a program **never opens a change request** and is **never moved
 to Done**. It runs, **writes its result back to the ticket** (a comment, and it may open
-child tickets — those carry the `Gene` label, never `Program`), and returns to its
-**resting state**. Each run is ephemeral: no lingering In-Review, no merge, no lifecycle
+child tickets — those carry the `Gene` label, never `Program`), and returns to **Todo**
+(`GENE_TRIGGER_STATE`) — at rest a program is always in Todo, whatever state it was fired
+from. Each run is ephemeral: no lingering In-Review, no merge, no lifecycle
 progression.
 
 **Firing a program** From the dashboard, select a program row and press **`g`** (press
 `g` again within 2 s to confirm). Gene moves it to **In Progress** for the run, then
-restores its resting state when it finishes. Pressing `g` on an already-running program
+back to **Todo** when it finishes. Pressing `g` on an already-running program
 **restarts** it (cancels the live run and re-fires). Programs are marked in the list with
 the **⟳** glyph; **`Shift+P`** toggles a programs-only view, and opening a program shows
 the **live agent progress** while it runs — and its activity log at rest — exactly like a
@@ -277,6 +278,12 @@ changes. The daemon runs due checks on its poll; when one matches, the program f
 the check's reason (e.g. `!87, !91 need rebase`) is handed to the run. Write `manual` in
 `## Trigger` to keep a program manual-only.
 
+A trigger is **armed only while the program is in Todo** — Todo means "program
+activated". A new program in Triage or Backlog is still with humans: its trigger compiles
+(so you can review it with `t`) but never runs until you move the ticket to Todo. A
+Blocked program waits for a human too. Ticks that pass while a program isn't armed are
+dropped, not caught up later.
+
 - **Sandboxed.** Checks run in QuickJS with no filesystem, env, or network except
   `fetch` (http/https, no credentials added) and `exec`, which only runs
   commands matching `GENE_TRIGGER_EXEC_ALLOW` (e.g. `glab api,argocd app list`; empty by
@@ -291,7 +298,8 @@ the check's reason (e.g. `!87, !91 need rebase`) is handed to the run. Write `ma
   counts. Checks that call out run at most every `GENE_TRIGGER_IO_MIN_INTERVAL_MIN`
   (default 5) minutes. A condition that stays true re-fires once per cooldown until the
   run fixes it; set `## Trigger` to `manual` to silence it.
-- **Visible.** Armed programs show **ϟ** instead of ⟳; the detail view shows the compiled
+- **Visible.** Armed programs show **ϟ** instead of ⟳ (a compiled trigger on a program
+  outside Todo shows ⟳, and its last result reads `skipped (inactive)`); the detail view shows the compiled
   summary, next check and last result, and **`t`** shows the code. When a trigger compiles, Gene runs it once for real and logs
   whether it would fire right now. A trigger that can't be compiled, or whose check fails
   3 times in a row, gets one comment on the ticket — and a check whose commands exit

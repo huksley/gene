@@ -45,7 +45,7 @@ import {
   newChildIdentifiers,
   type ProgramSource
 } from "./programs.ts";
-import { readProgramState, writeProgramState, safeRestingState } from "./program-state.ts";
+import { readProgramState, writeProgramState } from "./program-state.ts";
 import { createTriggerScanner } from "./trigger/index.ts";
 import { dbTriggerStore } from "./trigger/store.ts";
 import { compileTrigger, claudeRunner } from "./trigger/compile.ts";
@@ -215,6 +215,7 @@ const triggerScanner = createTriggerScanner({
     p.stateName !== env.BLOCKED_STATE &&
     !inFlight.has(p.id) &&
     !hasFireRequest(p.identifier),
+  isArmed: p => p.stateName === env.TRIGGER_STATE,
   lastFiredAt: async p => {
     const st = await readProgramState(tracker.name, p.identifier);
     return st?.lastFiredAt ? new Date(st.lastFiredAt) : undefined;
@@ -714,8 +715,8 @@ const prepareProgramWorkspace = async (
 };
 
 /**
- * Wind down a finished program run: restore its resting state (never Done),
- * unless it was cancelled (leave ACTIVE for the re-fire) or the agent parked it
+ * Wind down a finished program run: return it to the trigger state (Todo — a program at
+ * rest is always activated, wherever it was fired from), unless it was cancelled (leave ACTIVE for the re-fire) or the agent parked it
  * in Blocked (leave it awaiting a reply). Records the outcome and logs any new
  * Gene-labelled child tickets it spun off.
  */
@@ -739,8 +740,7 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
     return;
   }
 
-  const state = await readProgramState(tracker.name, program.identifier);
-  const resting = safeRestingState(state?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE, env.BLOCKED_STATE);
+  const resting = env.TRIGGER_STATE;
   try {
     await tracker.moveToState(program, resting);
   } catch (error) {
@@ -781,15 +781,15 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
 
 /**
  * Run a program: gate on required sections (fire-time only), resolve an optional
- * repo, register the row, then spawn the agent under the file lock. `recordResting`
- * is true for a fresh fire (records the state to restore) and false for a
- * resume/interrupted continuation. Mirrors {@link dispatchAgent} for concurrency,
+ * repo, register the row, then spawn the agent under the file lock. `freshFire`
+ * is true for a fresh fire (records the fire) and false for a resume/interrupted
+ * continuation. Mirrors {@link dispatchAgent} for concurrency,
  * inFlight bookkeeping, and plugin/monitor lifecycle — but never opens a CR.
  */
 const dispatchProgram = async (
   program: Issue,
   comments: Comment[],
-  opts: { source: ProgramSource; recordResting: boolean; reason?: string }
+  opts: { source: ProgramSource; freshFire: boolean; reason?: string }
 ): Promise<void> => {
   if (inFlight.has(program.id)) {
     logger.info(`${logger.tag.flow} [${program.identifier}] program already running — skipping`);
@@ -797,7 +797,7 @@ const dispatchProgram = async (
   }
 
   // Section gate (fire time only — a resume/interrupted continuation skips it).
-  if (opts.recordResting && env.PROGRAM_REQUIRE_SECTIONS.length > 0) {
+  if (opts.freshFire && env.PROGRAM_REQUIRE_SECTIONS.length > 0) {
     const missing = findMissingSections(program.description, env.PROGRAM_REQUIRE_SECTIONS);
     if (missing.length > 0) {
       logger.warn(`${logger.tag.flow} [${program.identifier}] missing sections: ${missing.join(", ")} — not firing`);
@@ -821,27 +821,17 @@ const dispatchProgram = async (
     logger.info(`${logger.tag.flow} [${program.identifier}] at concurrency cap — deferring`);
     // Re-enqueue the fire so the next scan runs it; the row stays "queued" (do NOT
     // call agentSettled here — it would flip a merely-deferred program to "error").
-    if (opts.recordResting) fireProgram(program.identifier, opts.source, opts.reason);
+    if (opts.freshFire) fireProgram(program.identifier, opts.source, opts.reason);
     return;
   }
 
-  if (opts.recordResting) {
-    // Never record the active state as the state to come back to. Firing a program that
-    // already reads ACTIVE is legitimate (an operator hits `g` after a cancel, or while
-    // a stale run is being cleaned up), but its ticket state says nothing about where it
-    // rests — so leave the stored value alone (writeProgramState COALESCE-merges, so
-    // undefined keeps the last good one; with none on record safeRestingState falls back
-    // to the trigger state). Recording it would make every finish restore the program to
-    // "running" and re-fire it on the next poll.
-    const restingState = program.stateName === env.ACTIVE_STATE ? undefined : program.stateName;
+  if (opts.freshFire) {
     await writeProgramState(tracker.name, program.identifier, {
-      restingState,
       lastFiredAt: new Date().toISOString(),
       lastSource: opts.source
     });
-    const restingNote = restingState ?? `unchanged — fired from ${env.ACTIVE_STATE}`;
     const why = opts.reason ? ` — ${opts.reason}` : "";
-    await record(program, "program-fired", `source: ${opts.source}${why} (resting: ${restingNote})`, {
+    await record(program, "program-fired", `source: ${opts.source}${why} (from: ${program.stateName})`, {
       source: opts.source
     });
   }
@@ -975,7 +965,7 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
       case "nothing":
         break;
       case "fire":
-        await dispatchProgram(program, comments, { source: action.source, recordResting: true, reason: request?.reason });
+        await dispatchProgram(program, comments, { source: action.source, freshFire: true, reason: request?.reason });
         break;
       case "restart":
         // Cancel the live run; re-enqueue so the next scan fires once the lock frees.
@@ -984,12 +974,11 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
         break;
       case "resume":
       case "resume-interrupted":
-        await dispatchProgram(program, comments, { source: "manual", recordResting: false });
+        await dispatchProgram(program, comments, { source: "manual", freshFire: false });
         break;
       case "stop": {
         // User replied `!gene stop` on a Blocked program: abandon it, return to rest.
-        const st = await readProgramState(tracker.name, program.identifier);
-        const resting = safeRestingState(st?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE, env.BLOCKED_STATE);
+        const resting = env.TRIGGER_STATE;
         try {
           await tracker.moveToState(program, resting);
         } catch (error) {

@@ -32,4 +32,5 @@ test("programLeadGlyph: ϟ for an ok trigger, ⟳ otherwise, warn on failure", (
   assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok", lastOutcome: "error" } }), { glyph: "ϟ", warn: true });
   assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "invalid" } }), { glyph: "⟳", warn: true });
   assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "compiling" } }), { glyph: "⟳", warn: false });
+  assert.deepEqual(programLeadGlyph({ ...p, trigger: { status: "ok", armed: false } }), { glyph: "⟳", warn: false });
 });

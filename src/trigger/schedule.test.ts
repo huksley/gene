@@ -20,6 +20,14 @@ test("busy beats cooldown", () => {
   );
 });
 
+// A program outside the trigger state (Triage, Backlog — still with humans) is not armed:
+// its check never runs, and ticks that pass meanwhile are dropped, not caught up later.
+test("an unarmed program skips as inactive; busy still wins", () => {
+  assert.deepEqual(decideTrigger({ now, nextCheckAt: now, resting: true, armed: false, cooldownMs: 30 * min }), { kind: "skip", reason: "inactive" });
+  assert.deepEqual(decideTrigger({ now, nextCheckAt: now, resting: false, armed: false, cooldownMs: 30 * min }), { kind: "skip", reason: "busy" });
+  assert.deepEqual(decideTrigger({ now, nextCheckAt: new Date(now.getTime() + 1), resting: true, armed: false, cooldownMs: 30 * min }), { kind: "not-due" });
+});
+
 test("cooldown measured from last fire of any source", () => {
   const recent = new Date(now.getTime() - 29 * min);
   const old = new Date(now.getTime() - 31 * min);

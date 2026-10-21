@@ -163,11 +163,14 @@ const rowLine = (
   return t`${leadChunk} ${idChunk} ${fg(palette.info)(state)} ${fg(statusColor(a.status))(fit(glyph, COL.glyph))} ${fg(palette.muted)(fit(a.stage, COL.stage))} ${fg(palette.dim)(fit(pid, COL.pid))} ${fg(palette.muted)(fit(age, COL.age))} ${fg(palette.dim)(fit(tools, COL.tools))} ${fg(eventColor)(truncate(a.lastEvent, eventWidth))}`;
 };
 
-/** Lead cell for a program row: ϟ when its trigger is armed, else ⟳; warn when the trigger is failing. */
+/**
+ * Lead cell for a program row: ϟ when its trigger is armed (compiled, program in the
+ * trigger state), else ⟳; warn when the trigger is failing.
+ */
 export const programLeadGlyph = (a: AgentState): { glyph: string; warn: boolean } => {
   const t = a.trigger;
   const warn = !!t && (t.status === "uncompilable" || t.status === "invalid" || t.lastOutcome === "error");
-  return { glyph: t?.status === "ok" ? TRIGGER_GLYPH : PROGRAM_GLYPH, warn };
+  return { glyph: t?.status === "ok" && t.armed !== false ? TRIGGER_GLYPH : PROGRAM_GLYPH, warn };
 };
 
 /** One reusable table row: a full-width Box (for the highlight) wrapping one Text. */

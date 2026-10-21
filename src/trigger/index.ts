@@ -28,6 +28,8 @@ export type TriggerView = {
   lastOutcome?: string;
   lastReason?: string;
   intervalSec?: number;
+  /** False while the program sits outside the trigger state, so the check doesn't run. */
+  armed?: boolean;
 };
 
 export type TriggerDeps = {
@@ -35,6 +37,8 @@ export type TriggerDeps = {
   store: TriggerStore;
   now: () => Date;
   isResting: (program: Issue) => boolean;
+  /** Program is in the trigger state (activated); anywhere else its check doesn't run. */
+  isArmed: (program: Issue) => boolean;
   lastFiredAt: (program: Issue) => Promise<Date | undefined>;
   fire: (program: Issue, reason: string | undefined) => void;
   record: (program: Issue, event: string, detail: string, data?: unknown) => Promise<void>;
@@ -48,7 +52,7 @@ export type TriggerDeps = {
 
 export type TriggerScanner = { scan(programs: Issue[]): Promise<void>; idle(): Promise<void> };
 
-const viewOf = (row: TriggerRow): TriggerView => ({
+const viewOf = (row: TriggerRow, armed?: boolean): TriggerView => ({
   status: row.status,
   summary: row.summary,
   code: row.code,
@@ -57,7 +61,8 @@ const viewOf = (row: TriggerRow): TriggerView => ({
   lastCheckAt: row.lastCheckAt?.getTime(),
   lastOutcome: row.lastOutcome,
   lastReason: row.lastReason,
-  intervalSec: row.intervalSec
+  intervalSec: row.intervalSec,
+  armed
 });
 
 export const createTriggerScanner = (deps: TriggerDeps): TriggerScanner => {
@@ -135,15 +140,17 @@ export const createTriggerScanner = (deps: TriggerDeps): TriggerScanner => {
     }
 
     const now = deps.now();
+    const armed = deps.isArmed(program);
     const gate = decideTrigger({
       now,
       nextCheckAt: row.nextCheckAt,
       resting: deps.isResting(program),
+      armed,
       lastFiredAt: await deps.lastFiredAt(program),
       cooldownMs: deps.cfg.cooldownMs
     });
     if (gate.kind === "not-due") {
-      deps.publish(id, viewOf(row));
+      deps.publish(id, viewOf(row, armed));
       return;
     }
     if (gate.kind === "skip") {
@@ -206,7 +213,7 @@ export const createTriggerScanner = (deps: TriggerDeps): TriggerScanner => {
       }
     }
     const updated = await deps.store.read(deps.trackerName, id);
-    deps.publish(id, updated ? viewOf(updated) : undefined);
+    deps.publish(id, updated ? viewOf(updated, armed) : undefined);
   };
 
   return {
