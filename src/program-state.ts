@@ -85,23 +85,32 @@ export const setRestingState = async (
 };
 
 /**
- * The state to restore a finished run to — never Done, never the *active* state, nor
- * undefined.
+ * The state to restore a finished run to — never Done, never the *active* or *blocked*
+ * state, nor undefined.
  *
  * The active-state guard is load-bearing, not belt-and-braces: a program whose recorded
  * resting state is the active state gets "restored" by {@link finishProgramRun} to the
  * one state that makes the next scan treat it as a run to resume, and it then re-fires
  * every poll forever (CLOUD-2014 ran 394 times that way). `activeState` is optional so
  * callers that genuinely have no notion of one keep the old two-guard behaviour.
+ *
+ * The blocked guard: Blocked means "waiting on a human", never "at rest". A program fired
+ * from Blocked (the human unlocking it) recorded Blocked as its resting state, so every
+ * finished run parked it there again — and a Blocked program's trigger never runs
+ * (CLOUD-2243 and CLOUD-2629 sat silent for 13 days). It comes back to the trigger state
+ * (Todo, "program activated") instead. An agent that parks a run in Blocked on purpose is
+ * honoured before this is consulted (finishProgramRun).
  */
 export const safeRestingState = (
   resting: string | undefined,
   doneState: string | undefined,
   triggerState: string,
-  activeState?: string
+  activeState?: string,
+  blockedState?: string
 ): string => {
   if (!resting) return triggerState;
   if (doneState && resting === doneState) return triggerState;
   if (activeState && resting === activeState) return triggerState;
+  if (blockedState && resting === blockedState) return triggerState;
   return resting;
 };

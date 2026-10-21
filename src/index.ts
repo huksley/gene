@@ -740,7 +740,7 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
   }
 
   const state = await readProgramState(tracker.name, program.identifier);
-  const resting = safeRestingState(state?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE);
+  const resting = safeRestingState(state?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE, env.BLOCKED_STATE);
   try {
     await tracker.moveToState(program, resting);
   } catch (error) {
@@ -989,7 +989,7 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
       case "stop": {
         // User replied `!gene stop` on a Blocked program: abandon it, return to rest.
         const st = await readProgramState(tracker.name, program.identifier);
-        const resting = safeRestingState(st?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE);
+        const resting = safeRestingState(st?.restingState, env.DONE_STATE, env.TRIGGER_STATE, env.ACTIVE_STATE, env.BLOCKED_STATE);
         try {
           await tracker.moveToState(program, resting);
         } catch (error) {

@@ -15,7 +15,14 @@ test("safeRestingState never returns the active state", () => {
 });
 
 test("safeRestingState keeps a non-active resting state when active is given", () => {
-  assert.equal(safeRestingState("Blocked", "Done", "Todo", "In Progress"), "Blocked");
+  assert.equal(safeRestingState("Backlog", "Done", "Todo", "In Progress", "Blocked"), "Backlog");
+});
+
+// Regression (CLOUD-2243, CLOUD-2629): a program fired from Blocked recorded Blocked as
+// its resting state, so every finished run parked it back in Blocked — where its trigger
+// is skipped as busy forever. Blocked waits on a human; at rest a program is activated.
+test("safeRestingState never returns the blocked state", () => {
+  assert.equal(safeRestingState("Blocked", "Done", "Todo", "In Progress", "Blocked"), "Todo");
 });
 
 test("safeRestingState never returns the Done state", () => {
