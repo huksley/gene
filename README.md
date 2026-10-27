@@ -278,11 +278,50 @@ changes. The daemon runs due checks on its poll; when one matches, the program f
 the check's reason (e.g. `!87, !91 need rebase`) is handed to the run. Write `manual` in
 `## Trigger` to keep a program manual-only.
 
+Triggers are **off by default**. To turn them on, add to your `.gene.config` (or
+`.env.development`) and restart Gene:
+
+```sh
+GENE_PROGRAM_TRIGGERS=true
+# Commands a check may run, if a trigger needs to query something (no shell; read-only only).
+# Leave empty for schedule-only ("every day at 08:00") and plain-URL triggers.
+GENE_TRIGGER_EXEC_ALLOW=glab api,linear
+# Optional tuning (defaults shown)
+# GENE_PROGRAM_TRIGGER_COOLDOWN_MIN=30
+# GENE_TRIGGER_IO_MIN_INTERVAL_MIN=5
+# GENE_TRIGGER_COMPILE_MODEL=haiku
+```
+
+Then write the condition in the program's `## Trigger` section, e.g.:
+
+```md
+## Trigger
+Every weekday at 08:00 UTC, if any open issue in the Cloud team has "YWH" in the title
+and no `gene-triaged` label.
+```
+
+and move the ticket to **Todo**. Open the program in the TUI to see its trigger line
+(`ϟ <summary> · in 4m · last: no fire`) and press **`t`** to review the compiled code.
+
 A trigger is **armed only while the program is in Todo** — Todo means "program
 activated". A new program in Triage or Backlog is still with humans: its trigger compiles
 (so you can review it with `t`) but never runs until you move the ticket to Todo. A
 Blocked program waits for a human too. Ticks that pass while a program isn't armed are
 dropped, not caught up later.
+
+**Trigger not firing?** Check, in order:
+
+1. **No trigger line on the program's detail screen** → `GENE_PROGRAM_TRIGGERS=true` isn't
+   set for this Gene instance.
+2. **Row shows ⟳ instead of ϟ** → the program isn't in exactly the trigger state
+   (`LINEAR_TRIGGER_STATE` / `TRELLO_TRIGGER_STATE`, default `Todo`; the name must match
+   the team's state), or its trigger hasn't compiled yet.
+3. **Still nothing** → the program must carry the program label and be assigned to the
+   configured assignee (`LINEAR_ASSIGNEE` / `TRELLO_ASSIGNEE`, default `me`); triggers of
+   programs assigned to someone else are never checked.
+4. **Trigger line in warning colour / "Couldn't compile the trigger" comment** → the
+   compile or check failed: `claude` isn't logged in on this machine, or the check runs
+   a command not in `GENE_TRIGGER_EXEC_ALLOW`.
 
 - **Sandboxed.** Checks run in QuickJS with no filesystem, env, or network except
   `fetch` (http/https, no credentials added) and `exec`, which only runs
