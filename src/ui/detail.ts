@@ -250,10 +250,13 @@ export class Detail {
       ? t`${fg(trig.status === "ok" && trig.lastOutcome !== "error" ? palette.accent : palette.warn)(formatTriggerLine(trig, now))}`
       : "";
 
-    const codeHint = trig?.code ? `${fg(palette.muted)("t")} trigger code  ` : "";
+    // Key and label stay separate chunks: a styled chunk inside a plain template string
+    // stringifies to "[object Object]".
+    const codeKey = trig?.code ? fg(palette.muted)("t") : "";
+    const codeLabel = trig?.code ? " trigger code  " : "";
     this.footer.content = notice
       ? t`${bold(fg(palette.warn)(notice))}`
-      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} retry  ${fg(palette.muted)("R")} reset  ${fg(palette.muted)("F")} fork  ${codeHint}${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
+      : t`${fg(palette.muted)("↑↓")} scroll  ${fg(palette.muted)("PgUp/PgDn")}  ${fg(palette.muted)("Home/End")}  ${fg(palette.muted)("c")} cancel  ${fg(palette.muted)("r")} retry  ${fg(palette.muted)("R")} reset  ${fg(palette.muted)("F")} fork  ${codeKey}${codeLabel}${fg(palette.muted)("esc")} back  ${fg(palette.muted)("q")} quit`;
 
     // Live pane: stream the agent's events while a run is live — programs and coding
     // tickets alike — else fall back to the full persisted history. (A program at rest
