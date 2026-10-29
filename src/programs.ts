@@ -131,3 +131,18 @@ export const extractProgramSections = (description: string): ProgramSections => 
   workflow: sectionBody(description, "## Workflow"),
   acceptance: sectionBody(description, "## Acceptance criteria")
 });
+
+/**
+ * The branch a program pins in its `## Branch` section — the first non-empty line,
+ * with markdown backticks and an `origin/` prefix stripped. Undefined when the
+ * section is absent/empty (the run then uses the repo link's /tree/<ref>/, else the
+ * repo's default branch).
+ */
+export const programBranch = (description: string): string | undefined => {
+  const line = sectionBody(description, "## Branch")
+    .split("\n")
+    .map(l => l.replace(/`/g, "").trim())
+    .find(l => l !== "");
+  const branch = line?.replace(/^origin\//, "");
+  return branch || undefined;
+};

@@ -72,3 +72,29 @@ export const removeWorktree = async (localPath: string, worktreePath: string): P
 export const deleteBranch = async (localPath: string, branch: string): Promise<void> => {
   await run("git", ["-C", localPath, "branch", "-D", branch]);
 };
+
+/**
+ * Bring a reused worktree level with origin/<baseBranch> before a run: fetch the
+ * branch, force-check out `branch` at its remote tip (discarding a previous run's
+ * leftovers — tracked edits and local commits; untracked files stay), then verify
+ * nothing is left behind. Throws with a human-readable reason when the branch
+ * can't be fetched (typo, deleted, no access) or the worktree is still stale.
+ */
+export const syncWorktreeToBase = async (
+  localPath: string,
+  worktreePath: string,
+  branch: string,
+  baseBranch: string
+): Promise<void> => {
+  const fetched = await run("git", ["-C", localPath, "fetch", "origin", baseBranch]);
+  if (fetched.code !== 0) {
+    throw new Error(
+      `could not fetch branch "${baseBranch}" from origin: ${fetched.stderr.trim() || `exit ${fetched.code}`}`
+    );
+  }
+  await runOrThrow("git", ["-C", worktreePath, "checkout", "--force", "-B", branch, `origin/${baseBranch}`]);
+  const behind = await commitsBehind(worktreePath, baseBranch);
+  if (behind > 0) {
+    throw new Error(`worktree is still ${behind} commit(s) behind origin/${baseBranch} after sync`);
+  }
+};

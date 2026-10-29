@@ -30,7 +30,7 @@ import { tracker, findIssue } from "./tracker/index.ts";
 import type { Comment, Issue } from "./tracker/index.ts";
 import { resolveTarget, targetLabel, localPathFor, type RepoTarget } from "./repos.ts";
 import { selectForge, type Forge } from "./forge/index.ts";
-import { commitsBehind, detectDefaultBranch } from "./git.ts";
+import { commitsBehind, detectDefaultBranch, syncWorktreeToBase } from "./git.ts";
 import { ensureWorktree, invokeAgent, worktreePathFor, type ExistingChangeRequest, type InvokeResult } from "./invoke.ts";
 import { buildPrompt, type PromptIntent } from "./prompt.ts";
 import { evaluateDraftPickup, evaluateReview, findMergedChangeRequest, findOpenChangeRequest, isChangeRequestLinked, writeCursor, type ReviewContext } from "./review.ts";
@@ -43,6 +43,7 @@ import {
   takeFireRequest,
   childTicketIds,
   newChildIdentifiers,
+  programBranch,
   type ProgramSource
 } from "./programs.ts";
 import { readProgramState, writeProgramState } from "./program-state.ts";
@@ -699,6 +700,10 @@ const findProgram = async (identifier: string): Promise<Issue | undefined> => {
  * A place for the agent to work: the repo worktree when the program links one,
  * else a scratch dir under `.gene/programs/<ID>` (repo-less programs are fine —
  * they read the tracker / run tools, they don't push code).
+ *
+ * The repo worktree is reused across runs, so every run first brings it level with
+ * the remote tip of its branch: the program's `## Branch` section, else the repo
+ * link's /tree/<ref>/, else the repo default. Throws when that branch can't be synced.
  */
 const prepareProgramWorkspace = async (
   program: Issue,
@@ -706,7 +711,14 @@ const prepareProgramWorkspace = async (
   forge: Forge | undefined
 ): Promise<{ worktreePath: string; hasRepo: boolean }> => {
   if (target && forge) {
-    const { worktreePath } = await ensureWorktree(target, program, forge);
+    const pinned = programBranch(program.description);
+    const { worktreePath, baseBranch, workBranch } = await ensureWorktree(
+      pinned ? { ...target, ref: pinned } : target,
+      program,
+      forge
+    );
+    await syncWorktreeToBase(localPathFor(target), worktreePath, workBranch, baseBranch);
+    logger.info(`${logger.tag.flow} [${program.identifier}] worktree up to date with origin/${baseBranch}`);
     return { worktreePath, hasRepo: true };
   }
   const scratch = path.join(GENE_DIR, "programs", program.identifier);
@@ -850,7 +862,33 @@ const dispatchProgram = async (
   const spawnPromise = withLock(program.identifier, async () => {
     await postStartComment(program, "program");
     await tracker.moveToState(program, env.ACTIVE_STATE);
-    const { worktreePath, hasRepo } = await prepareProgramWorkspace(program, target, forge);
+    let workspace: { worktreePath: string; hasRepo: boolean };
+    try {
+      workspace = await prepareProgramWorkspace(program, target, forge);
+    } catch (error) {
+      // A stale or unreachable branch needs a human (fix `## Branch`, grant access) —
+      // park in Blocked with the reason; a reply resumes the run and retries the sync.
+      const reason = error instanceof Error ? error.message : String(error);
+      logger.warn(`${logger.tag.flow} [${program.identifier}] branch sync failed: ${reason}`);
+      try {
+        await tracker.postComment(
+          program,
+          `⚠ Not running: couldn't bring the repo up to date before the run — ${reason}\n\n` +
+            "Fix the branch (the `## Branch` section, or the repo link) and reply here to retry."
+        );
+        await tracker.moveToState(program, env.BLOCKED_STATE);
+      } catch (followUp) {
+        logger.warn(
+          `${logger.tag.flow} [${program.identifier}] could not park in ${env.BLOCKED_STATE}:`,
+          followUp instanceof Error ? followUp.message : followUp
+        );
+      }
+      await record(program, "program-run-done", `branch sync failed → ${env.BLOCKED_STATE}`, {
+        last_result: "blocked"
+      });
+      return "branch-sync-failed" as const;
+    }
+    const { worktreePath, hasRepo } = workspace;
 
     let attachmentRelativePaths: string[] = [];
     try {

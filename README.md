@@ -249,6 +249,22 @@ gate), and grant a program agent extra tools — on top of the base set + tracke
 forge CLI, when the program links a repo) — with `GENE_PROGRAM_ALLOWED_TOOLS`
 (e.g. `Bash(pup *),Bash(datadog *)`).
 
+**Branch** A program that links a repo runs on that repo's default branch. Pin another
+one with an optional **`## Branch`** section holding just the branch name (or link the
+repo as `…/tree/<branch>`; `## Branch` wins when both are set):
+
+```markdown
+## Branch
+release/2.x
+```
+
+The program's worktree is reused across runs, so before **every** run Gene fetches the
+branch and resets the worktree to `origin/<branch>`. Leftover edits and local commits
+from the previous run are discarded; untracked files are kept. If the branch can't be
+fetched (a typo, a deleted branch, no access), the program doesn't run. Gene comments
+with the reason and moves the program to **Blocked**. Fix the branch and reply on the
+ticket to retry.
+
 Unlike a normal ticket, a program **never opens a change request** and is **never moved
 to Done**. It runs, **writes its result back to the ticket** (a comment, and it may open
 child tickets — those carry the `Gene` label, never `Program`), and returns to **Todo**

@@ -10,7 +10,8 @@ import {
   takeFireRequest,
   childTicketIds,
   newChildIdentifiers,
-  extractProgramSections
+  extractProgramSections,
+  programBranch
 } from "./programs.ts";
 
 /** Minimal Issue factory — mirrors src/subcards.test.ts's real Issue shape. */
@@ -165,4 +166,14 @@ test("takeFireRequest returns source and reason, once", () => {
 test("manual fire has no reason", () => {
   fireProgram("PRG-R2");
   assert.deepEqual(takeFireRequest("PRG-R2"), { source: "manual", reason: undefined });
+});
+
+test("programBranch: reads the ## Branch section, stripping backticks and origin/", () => {
+  assert.equal(programBranch("## Workflow\ndo it\n\n## Branch\n`release/2.x`\n"), "release/2.x");
+  assert.equal(programBranch("## Branch\n\n  origin/develop  \n## Workflow\nx"), "develop");
+});
+
+test("programBranch: absent or empty section → undefined", () => {
+  assert.equal(programBranch("## Workflow\ndo it"), undefined);
+  assert.equal(programBranch("## Branch\n\n## Workflow\nx"), undefined);
 });
