@@ -107,3 +107,16 @@ test("a fresh program run's prompt carries no comments", () => {
   });
   assert.doesNotMatch(prompt, /Run report: all quiet/);
 });
+
+test("program prompt tells the run where to write its notes", () => {
+  const prompt = buildPrompt({
+    issue: program,
+    comments: [],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false,
+    runNotesPath: "/tmp/.gene/programs/PRG-1/.gene-run-notes.md"
+  });
+  assert.match(prompt, /\/tmp\/\.gene\/programs\/PRG-1\/\.gene-run-notes\.md/);
+});

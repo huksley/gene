@@ -324,6 +324,23 @@ export class LinearTracker implements Tracker {
     return ids.length;
   }
 
+  /** Replace the issue's description (markdown). No-op (logged) under dry-run. */
+  async updateDescription(issue: Issue, description: string): Promise<void> {
+    if (env.DRY_RUN) {
+      logger.info(`[linear] (dry-run) would update the description of ${issue.identifier}`);
+      return;
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), "gene-description-"));
+    const file = path.join(dir, "description.md");
+    try {
+      await writeFile(file, description, "utf-8");
+      await runOrThrow("linear", ["issue", "update", issue.identifier, "--description-file", file, ...workspaceArgs()]);
+      logger.info(`[linear] updated the description of ${issue.identifier}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
   /** Move an issue to a workflow state (by name). No-op (logged) under dry-run. */
   async moveToState(issue: Issue, stateName: string): Promise<void> {
     if (env.DRY_RUN) {

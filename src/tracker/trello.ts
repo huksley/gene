@@ -317,6 +317,16 @@ export class TrelloTracker implements Tracker {
     logger.info(`[trello] commented on ${issue.identifier}`);
   }
 
+  /** Replace the card's description (markdown). No-op (logged) under dry-run. */
+  async updateDescription(issue: Issue, description: string): Promise<void> {
+    if (env.DRY_RUN) {
+      logger.info(`[trello] (dry-run) would update the description of ${issue.identifier}`);
+      return;
+    }
+    await trello().updateCard(issue.id, { desc: description });
+    logger.info(`[trello] updated the description of ${issue.identifier}`);
+  }
+
   /** Move a card to the list whose name is `stateName`. No-op (logged) under dry-run. */
   async moveToState(issue: Issue, stateName: string): Promise<void> {
     if (env.DRY_RUN) {

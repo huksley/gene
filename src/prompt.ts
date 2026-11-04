@@ -50,6 +50,8 @@ export type PromptInputs = {
   fireReason?: string;
   /** A program run resuming from Blocked: the question it asked and the replies since. */
   conversation?: Comment[];
+  /** Where a program run writes its new `## Run notes` (program intent only). */
+  runNotesPath?: string;
 };
 
 const formatTimestamp = (isoDate: string): string => {
@@ -309,7 +311,7 @@ const renderDriftAdvice = (n: number, baseBranch: string): string => {
  * agent writes back to the ticket and may spawn child coding tickets.
  */
 const buildProgramPrompt = (inputs: PromptInputs): string => {
-  const { issue, worktreePath, hasRepo, attachmentRelativePaths, fireReason, conversation } = inputs;
+  const { issue, worktreePath, hasRepo, attachmentRelativePaths, fireReason, conversation, runNotesPath } = inputs;
   const workspace = hasRepo
     ? `# Working tree\n\nYou are in a git worktree at \`${worktreePath}\`. Read and run things here, but do NOT commit, push, or open a change request — this is a program run, not a coding task.`
     : `# Working directory\n\nYou are in a scratch working directory at \`${worktreePath}\` (no git repository). Use it for any temporary files.`;
@@ -353,6 +355,18 @@ const buildProgramPrompt = (inputs: PromptInputs): string => {
     "",
     tracker.writeBackSnippet(issue),
     "",
+    ...(runNotesPath
+      ? [
+          "# Run notes",
+          "",
+          "The description's `## Run notes` section is this program's memory between runs, and it's yours to keep " +
+            "(the last thing you reviewed, what to pick up next). To change it, write the complete new notes — markdown, " +
+            `no \`#\`/\`##\` headings — to \`${runNotesPath}\`. When the run ends Gene puts them in place of the ` +
+            "section. Keep them short and current: replace, don't append a history. If you write nothing, the notes stay " +
+            "as they are. Never edit the ticket description yourself, and never change its other sections.",
+          ""
+        ]
+      : []),
     "# Creating follow-up tickets",
     "",
     `If the workflow calls for follow-up work (e.g. "create a ticket to fix flaky tests"), create child ticket(s) so Gene picks them up later. ${tracker.subcardSnippet(issue)} Give each the \`${env.LABEL}\` label (never the program label) so it enters the normal coding queue.`,

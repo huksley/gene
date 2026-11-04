@@ -217,9 +217,12 @@ export type ProgramSections = { trigger: string; workflow: string; acceptance: s
 
 const sectionBody = (desc: string, heading: string): string => {
   const text = desc || "";
-  const start = text.indexOf(heading);
-  if (start === -1) return "";
-  const rest = text.slice(start + heading.length);
+  // At the start of a line, so a `### Trigger` subheading (in the run notes, say) never
+  // reads as the `## Trigger` section.
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^${escaped}`, "m").exec(text);
+  if (!match) return "";
+  const rest = text.slice(match.index + heading.length);
   const next = rest.search(/\n##\s/);
   return (next === -1 ? rest : rest.slice(0, next)).trim();
 };
@@ -229,6 +232,30 @@ export const extractProgramSections = (description: string): ProgramSections => 
   workflow: sectionBody(description, "## Workflow"),
   acceptance: sectionBody(description, "## Acceptance criteria")
 });
+
+// --- Run notes ----------------------------------------------------------------------
+/** The description section a program run keeps its memory in between runs. */
+export const RUN_NOTES_HEADING = "## Run notes";
+const RUN_NOTES_LINE = /^##[ \t]+Run notes[ \t]*$/im;
+
+/**
+ * The description with its `## Run notes` section replaced by `notes` (appended when the
+ * section is missing). Only that section changes. Headings inside the notes are demoted
+ * to `###`, so they can't end the section early or pose as a program section.
+ */
+export const replaceRunNotes = (description: string, notes: string): string => {
+  const body = notes.trim().replace(/^#{1,2}(?=\s)/gm, "###");
+  const section = `${RUN_NOTES_HEADING}\n\n${body}\n`;
+  const match = RUN_NOTES_LINE.exec(description);
+  if (!match) {
+    const head = description.trimEnd();
+    return head ? `${head}\n\n${section}` : section;
+  }
+  const before = description.slice(0, match.index);
+  const rest = description.slice(match.index + match[0].length);
+  const next = rest.search(/^#{1,2}\s/m);
+  return next === -1 ? `${before}${section}` : `${before}${section}\n${rest.slice(next)}`;
+};
 
 /**
  * The branch a program pins in its `## Branch` section — the first non-empty line,

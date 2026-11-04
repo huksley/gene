@@ -89,6 +89,8 @@ export interface Tracker {
    * omits it. Resolves to how many threads were folded. Honours GENE_DRY_RUN (log-only).
    */
   foldCommentsBefore?(issue: Issue, cutoffIso: string): Promise<number>;
+  /** Replace an issue's description (markdown). Honours GENE_DRY_RUN (log-only). */
+  updateDescription(issue: Issue, description: string): Promise<void>;
   /** Move an issue to a lifecycle state by name. Honours GENE_DRY_RUN (log-only). */
   moveToState(issue: Issue, stateName: string): Promise<void>;
   /**

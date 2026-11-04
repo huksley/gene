@@ -295,6 +295,14 @@ readable, so a workflow can look back at an earlier run's report. The newest com
 stays open, and so does anything posted during the run. Trello has no collapsible threads,
 so its comments are left as they are.
 
+**Run notes** A program can keep a little memory between runs in its own description,
+under a **`## Run notes`** section: the last SHA it reviewed, where a rotation is up to. The
+run writes its new notes to a file. When the run ends, Gene puts them in place of that section
+and leaves the rest of the description alone (`## Trigger`, `## Workflow`, your edits made
+during the run). The notes are replaced, not appended to. A run that writes none leaves
+them as they are, and changing them never recompiles the trigger. To use them, say so in
+the workflow, e.g. *"Record the reviewed SHA in the run notes; start from the one there."*
+
 **Clarification loop** A program can stop mid-run to ask a question — it posts the
 question and moves the ticket to **Blocked**. Reply on the ticket (e.g. `!gene approve`,
 or just answer the question) and the next scan **resumes** the run from where it paused —

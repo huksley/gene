@@ -21,7 +21,7 @@
  */
 
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import logger from "./logger.ts";
 import { monitor } from "./monitor.ts";
 import { env, WATCHED_STATES, GENE_DIR } from "./config.ts";
@@ -45,6 +45,7 @@ import {
   newChildIdentifiers,
   programBranch,
   planProgramEnding,
+  replaceRunNotes,
   resumeExchange,
   type EndingPlan,
   type ProgramEnding,
@@ -784,13 +785,54 @@ const settleProgramRun = async (program: Issue, ending: ProgramEnding, runStarte
   return plan;
 };
 
+/** Where a program run writes its new `## Run notes` — in its worktree / scratch dir. */
+const RUN_NOTES_FILE = ".gene-run-notes.md";
+
 /**
- * Wind down a program run whose agent exited: settle it (Todo, or left in Blocked when
+ * Put the notes a run wrote (if any) in place of the live description's `## Run notes`
+ * section — only that section changes, and it's applied to the description as it is now,
+ * so an edit made during the run survives. Best-effort; the notes file is consumed.
+ */
+const saveRunNotes = async (program: Issue, live: Issue | undefined, notesPath: string): Promise<void> => {
+  let notes: string;
+  try {
+    notes = (await readFile(notesPath, "utf-8")).trim();
+  } catch {
+    return; // the run wrote no notes
+  }
+  try {
+    if (!notes) return;
+    if (!live) {
+      logger.warn(`${logger.tag.flow} [${program.identifier}] couldn't re-read the ticket — run notes not saved`);
+      return;
+    }
+    const next = replaceRunNotes(live.description, notes);
+    if (next === live.description) return;
+    await tracker.updateDescription(program, next);
+    await record(program, "run-notes-updated", `${notes.length} chars`);
+  } catch (error) {
+    logger.warn(
+      `${logger.tag.flow} [${program.identifier}] could not save run notes:`,
+      error instanceof Error ? error.message : error
+    );
+  } finally {
+    await rm(notesPath, { force: true }).catch(() => undefined);
+  }
+};
+
+/**
+ * Wind down a program run whose agent exited: save its run notes, settle it (Todo, or left in Blocked when
  * the agent parked it there to ask something; a cancel goes to Todo unless a restart
  * queued a re-fire) and log any new Gene-labelled child tickets it spun off.
  */
-const finishProgramRun = async (program: Issue, result: InvokeResult, runStartedAt: string): Promise<void> => {
+const finishProgramRun = async (
+  program: Issue,
+  result: InvokeResult,
+  runStartedAt: string,
+  runNotesPath: string
+): Promise<void> => {
   if (monitor.isCancelled(program.identifier)) {
+    await rm(runNotesPath, { force: true }).catch(() => undefined); // a cancelled run's notes aren't kept
     await settleProgramRun(
       program,
       { kind: "cancelled", refirePending: hasFireRequest(program.identifier) },
@@ -798,14 +840,16 @@ const finishProgramRun = async (program: Issue, result: InvokeResult, runStarted
     );
     return;
   }
-  // Re-read the ticket: the agent may have parked it in Blocked awaiting a decision.
-  let liveState: string | undefined;
+  // Re-read the ticket: the agent may have parked it in Blocked awaiting a decision, and
+  // its notes go into the description as it is now.
+  let live: Issue | undefined;
   try {
-    liveState = (await findProgram(program.identifier))?.stateName;
+    live = await findProgram(program.identifier);
   } catch {
-    liveState = undefined;
+    live = undefined;
   }
-  const plan = await settleProgramRun(program, { kind: "finished", result, liveState }, runStartedAt);
+  await saveRunNotes(program, live, runNotesPath);
+  const plan = await settleProgramRun(program, { kind: "finished", result, liveState: live?.stateName }, runStartedAt);
   if (plan.lastResult === "blocked") return;
 
   // Child-ticket detection (best-effort observability): log Gene-labelled children of
@@ -900,6 +944,7 @@ const dispatchProgram = async (
     // comment: In Progress (and the dashboard) already says the program is running.
     const runStartedAt = new Date().toISOString();
     let result: InvokeResult;
+    let runNotesPath: string;
     try {
       await tracker.moveToState(program, env.ACTIVE_STATE);
       let workspace: { worktreePath: string; hasRepo: boolean };
@@ -914,6 +959,9 @@ const dispatchProgram = async (
         return "branch-sync-failed" as const;
       }
       const { worktreePath, hasRepo } = workspace;
+      // A notes file left by an earlier, cancelled run isn't this run's notes.
+      runNotesPath = path.join(worktreePath, RUN_NOTES_FILE);
+      await rm(runNotesPath, { force: true });
 
       let attachmentRelativePaths: string[] = [];
       try {
@@ -937,7 +985,8 @@ const dispatchProgram = async (
         repoLabel,
         subdir: target?.subdir,
         fireReason: opts.reason,
-        conversation: opts.conversation
+        conversation: opts.conversation,
+        runNotesPath
       });
 
       result = await invokeAgent(
@@ -954,7 +1003,7 @@ const dispatchProgram = async (
       await settleProgramRun(program, { kind: "crashed", error: message }, runStartedAt);
       return "crashed" as const;
     }
-    await finishProgramRun(program, result, runStartedAt);
+    await finishProgramRun(program, result, runStartedAt, runNotesPath);
     return result;
   })
     .then(result => {

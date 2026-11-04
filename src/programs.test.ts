@@ -13,7 +13,8 @@ import {
   extractProgramSections,
   programBranch,
   planProgramEnding,
-  resumeExchange
+  resumeExchange,
+  replaceRunNotes
 } from "./programs.ts";
 
 /** Minimal Issue factory — mirrors src/subcards.test.ts's real Issue shape. */
@@ -267,4 +268,36 @@ test("resumeExchange: Gene's latest comment and the replies after it, nothing ol
     comment("reply", false, "2026-11-03T09:00:00.000Z", "staging")
   ];
   assert.deepEqual(resumeExchange(comments).map(c => c.id), ["question", "reply"]);
+});
+
+// --- Run notes ----------------------------------------------------------------------
+test("replaceRunNotes: swaps the section body and leaves the program's sections alone", () => {
+  const desc = "## Trigger\nDaily.\n\n## Run notes\n\nLast SHA: aaa\n\n## Workflow\nReview.\n";
+  assert.equal(
+    replaceRunNotes(desc, "Last SHA: bbb"),
+    "## Trigger\nDaily.\n\n## Run notes\n\nLast SHA: bbb\n\n## Workflow\nReview.\n"
+  );
+});
+
+test("replaceRunNotes: appends the section when the description has none", () => {
+  assert.equal(
+    replaceRunNotes("## Trigger\nDaily.\n\n## Workflow\nReview.", "Last SHA: bbb"),
+    "## Trigger\nDaily.\n\n## Workflow\nReview.\n\n## Run notes\n\nLast SHA: bbb\n"
+  );
+});
+
+test("replaceRunNotes: the old notes' subheadings are replaced too", () => {
+  const desc = "## Workflow\nReview.\n\n## Run notes\n\n### Last run\nSHA aaa\n### Rotation\nA01";
+  assert.equal(replaceRunNotes(desc, "SHA bbb"), "## Workflow\nReview.\n\n## Run notes\n\nSHA bbb\n");
+});
+
+test("replaceRunNotes: headings in the notes are demoted so they can't pose as program sections", () => {
+  const out = replaceRunNotes("## Trigger\nDaily.\n\n## Workflow\nReview.", "## Trigger\nhourly\n# Big\ntext");
+  assert.equal(extractProgramSections(out).trigger, "Daily.");
+  assert.equal(out, "## Trigger\nDaily.\n\n## Workflow\nReview.\n\n## Run notes\n\n### Trigger\nhourly\n### Big\ntext\n");
+});
+
+test("extractProgramSections: a ### subheading with a section's name isn't that section", () => {
+  const desc = "## Workflow\nReview.\n\n## Run notes\n\n### Trigger\nfrom notes";
+  assert.equal(extractProgramSections(desc).trigger, "");
 });
