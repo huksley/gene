@@ -200,9 +200,17 @@ test("ending: a run the agent parked in Blocked stays there", () => {
   assert.equal(plan.comment, undefined);
 });
 
-test("ending: an unreadable live state still goes back to Todo", () => {
+// The agent may have parked it in Blocked; moving it would orphan the question. If it is
+// still In Progress, the next scan's sweep returns it to Todo.
+test("ending: an unreadable live state leaves the ticket where it is", () => {
   const plan = planProgramEnding({ kind: "finished", result: okRun, liveState: undefined });
-  assert.equal(plan.moveTo, env.TRIGGER_STATE);
+  assert.equal(plan.moveTo, null);
+});
+
+test("ending: an unreadable live state still explains an incomplete run", () => {
+  const plan = planProgramEnding({ kind: "finished", result: { ...okRun, exitCode: 1 }, liveState: undefined });
+  assert.equal(plan.moveTo, null);
+  assert.match(plan.comment ?? "", /exited with code 1/);
 });
 
 test("ending: an incomplete run goes back to Todo and says why on the ticket", () => {
@@ -300,4 +308,21 @@ test("replaceRunNotes: headings in the notes are demoted so they can't pose as p
 test("extractProgramSections: a ### subheading with a section's name isn't that section", () => {
   const desc = "## Workflow\nReview.\n\n## Run notes\n\n### Trigger\nfrom notes";
   assert.equal(extractProgramSections(desc).trigger, "");
+});
+
+test("replaceRunNotes: unchanged notes leave the description untouched", () => {
+  const desc = "## Workflow\nReview.\n\n## Run notes\n\nLast SHA: aaa";
+  assert.equal(replaceRunNotes(desc, "Last SHA: aaa\n"), desc);
+});
+
+test("replaceRunNotes: code fences in the notes are kept as written", () => {
+  const out = replaceRunNotes("## Workflow\nReview.", "Ran:\n```sh\n# list MRs\nglab mr list\n```");
+  assert.equal(out, "## Workflow\nReview.\n\n## Run notes\n\nRan:\n```sh\n# list MRs\nglab mr list\n```\n");
+});
+
+test("replaceRunNotes: a heading with trailing text is still the notes section", () => {
+  assert.equal(
+    replaceRunNotes("## Run notes (kept by Gene)\n\nold\n\n## Workflow\nReview.", "new"),
+    "## Run notes\n\nnew\n\n## Workflow\nReview."
+  );
 });

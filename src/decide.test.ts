@@ -29,3 +29,8 @@ test("findMissingSections: a present-but-empty section is reported", () => {
 test("findMissingSections: empty description reports all", () => {
   assert.deepEqual(findMissingSections("", PROGRAM_SECTIONS), PROGRAM_SECTIONS);
 });
+
+test("findMissingSections: a ### subheading of the same name above the section doesn't hide its body", () => {
+  const desc = "## Run notes\n\n### Trigger\n\n## Trigger\nDaily.\n\n## Workflow\nReview.\n\n## Acceptance criteria\nA report.";
+  assert.deepEqual(findMissingSections(desc, ["## Trigger", "## Workflow", "## Acceptance criteria"]), []);
+});

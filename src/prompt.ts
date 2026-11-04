@@ -335,9 +335,9 @@ const buildProgramPrompt = (inputs: PromptInputs): string => {
       : []),
     ...(conversation && conversation.length > 0
       ? [
-          "# Resuming after your question",
+          "# Resuming after a human's reply",
           "",
-          "This run continues one that paused to ask a human something. Your question and the reply are below — " +
+          "This run continues one that paused for a human. Gene's last comment and the reply are below — " +
             "use the reply and carry on with the workflow.",
           "",
           formatTranscript(conversation),
@@ -380,6 +380,8 @@ const buildProgramPrompt = (inputs: PromptInputs): string => {
     "",
     "# Hard rules",
     "",
+    `- **Mark every comment (CRITICAL):** end every comment you post on the ticket with this exact line on its own: \`${env.AGENT_MARKER}\`. ` +
+      "Gene tells your comments from a human's only by it — an unmarked question reads as the human's answer.",
     "- **Never open a change request** (no PR/MR), and never push code.",
     "- Never move the ticket to a Done/closed state — Gene manages the program's resting state.",
     "- Stay within the program's stated workflow and tools."

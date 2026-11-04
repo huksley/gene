@@ -46,6 +46,18 @@ const readLock = (file: string): LockFile | null => {
   }
 };
 
+/**
+ * Whether a live process holds this issue's lock — however long it has held it. A
+ * program run can outlast the reclaim age, and a second Gene process (a `--once`, another
+ * daemon) has no other way to see the run.
+ */
+export const isHeldByLiveProcess = (issueId: string): boolean => {
+  const file = lockPath(issueId);
+  if (!existsSync(file)) return false;
+  const lock = readLock(file);
+  return lock !== null && isAlive(lock.pid);
+};
+
 export type Lock = { issueId: string; path: string };
 
 export const acquireLock = (issueId: string): Lock | null => {

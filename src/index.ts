@@ -61,7 +61,7 @@ import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts
 import { dispatch as dispatchPluginEvent, setupPlugins } from "./plugins/index.ts";
 import { closeDb, findInterruptedRuns, hasUnfinishedRun, logEvent, readTokenTotal, readIssueLog } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
-import { listOwnedLocks, withLock } from "./lock.ts";
+import { isHeldByLiveProcess, listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
 import { requestRetry, takeRetryRequest } from "./retry-request.ts";
 import { forkIssue } from "./fork.ts";
@@ -841,12 +841,19 @@ const finishProgramRun = async (
     return;
   }
   // Re-read the ticket: the agent may have parked it in Blocked awaiting a decision, and
-  // its notes go into the description as it is now.
+  // its notes go into the description as it is now. One retry — an unreadable state
+  // leaves the ticket where it is (and drops the notes).
   let live: Issue | undefined;
-  try {
-    live = await findProgram(program.identifier);
-  } catch {
-    live = undefined;
+  for (let attempt = 1; attempt <= 2 && live === undefined; attempt += 1) {
+    try {
+      live = await findProgram(program.identifier);
+    } catch (error) {
+      logger.warn(
+        `${logger.tag.flow} [${program.identifier}] could not re-read the ticket (attempt ${attempt}):`,
+        error instanceof Error ? error.message : error
+      );
+      if (attempt === 1) await new Promise(resolve => setTimeout(resolve, 2_000));
+    }
   }
   await saveRunNotes(program, live, runNotesPath);
   const plan = await settleProgramRun(program, { kind: "finished", result, liveState: live?.stateName }, runStartedAt);
@@ -1127,6 +1134,8 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
         try {
           const live = await findProgram(program.identifier);
           if (!live || live.stateName !== env.ACTIVE_STATE || inFlight.has(program.id)) break;
+          // Another Gene process (a `--once`, a second daemon) may be running it.
+          if (isHeldByLiveProcess(program.identifier)) break;
           await tracker.moveToState(program, resting);
           logger.info(`${logger.tag.flow} [${program.identifier}] ${env.ACTIVE_STATE} with no run → "${resting}"`);
           await record(program, "program-rested", `${env.ACTIVE_STATE} with no run → ${resting}`);

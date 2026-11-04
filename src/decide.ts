@@ -36,10 +36,13 @@ export const findMissingSections = (desc: string, required: string[]): string[] 
       `^${section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`,
       "m"
     );
-    if (!headingPattern.test(text)) {
+    const heading = headingPattern.exec(text);
+    if (!heading) {
       return true;
     }
-    const sectionStart = text.indexOf(section);
+    // From the heading line itself, not the first raw occurrence (which could sit inside
+    // a `### …` subheading of the same name).
+    const sectionStart = heading.index;
     const nextHeading = text.slice(sectionStart + section.length).search(/\n##\s/);
     const body =
       nextHeading === -1

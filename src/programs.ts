@@ -196,9 +196,16 @@ export const planProgramEnding = (ending: ProgramEnding): EndingPlan => {
         return { moveTo: null, lastResult: "blocked", detail: `parked in ${env.BLOCKED_STATE}` };
       }
       const why = incompleteReason(ending.result);
+      const lastResult = why === null ? "ok" : "incomplete";
+      const comment = why === null ? undefined : didNotFinish(why);
+      // State unreadable: the agent may have parked it in Blocked, so don't move it. If it
+      // is still ACTIVE, the next scan's sweep returns it to rest.
+      if (ending.liveState === undefined) {
+        return { moveTo: null, comment, lastResult, detail: `state unreadable — left for the next scan (${lastResult})` };
+      }
       return why === null
-        ? { moveTo: rest, lastResult: "ok", detail: `→ ${rest} (ok)` }
-        : { moveTo: rest, comment: didNotFinish(why), lastResult: "incomplete", detail: `→ ${rest} (incomplete: ${why})` };
+        ? { moveTo: rest, lastResult, detail: `→ ${rest} (ok)` }
+        : { moveTo: rest, comment, lastResult, detail: `→ ${rest} (incomplete: ${why})` };
     }
   }
 };
@@ -236,15 +243,28 @@ export const extractProgramSections = (description: string): ProgramSections => 
 // --- Run notes ----------------------------------------------------------------------
 /** The description section a program run keeps its memory in between runs. */
 export const RUN_NOTES_HEADING = "## Run notes";
-const RUN_NOTES_LINE = /^##[ \t]+Run notes[ \t]*$/im;
+const RUN_NOTES_LINE = /^##[ \t]+Run notes\b.*$/im;
+
+/** Demote `#`/`##` headings to `###`, leaving fenced code blocks as written. */
+const demoteHeadings = (markdown: string): string => {
+  let inFence = false;
+  return markdown
+    .split("\n")
+    .map(line => {
+      if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+      return inFence ? line : line.replace(/^#{1,2}(?=\s)/, "###");
+    })
+    .join("\n");
+};
 
 /**
  * The description with its `## Run notes` section replaced by `notes` (appended when the
- * section is missing). Only that section changes. Headings inside the notes are demoted
- * to `###`, so they can't end the section early or pose as a program section.
+ * section is missing). Only that section changes, and an unchanged section leaves the
+ * description byte-for-byte as it was. Headings inside the notes are demoted to `###`,
+ * so they can't end the section early or pose as a program section.
  */
 export const replaceRunNotes = (description: string, notes: string): string => {
-  const body = notes.trim().replace(/^#{1,2}(?=\s)/gm, "###");
+  const body = demoteHeadings(notes.trim());
   const section = `${RUN_NOTES_HEADING}\n\n${body}\n`;
   const match = RUN_NOTES_LINE.exec(description);
   if (!match) {
@@ -254,6 +274,8 @@ export const replaceRunNotes = (description: string, notes: string): string => {
   const before = description.slice(0, match.index);
   const rest = description.slice(match.index + match[0].length);
   const next = rest.search(/^#{1,2}\s/m);
+  const current = (next === -1 ? rest : rest.slice(0, next)).trim();
+  if (current === body) return description;
   return next === -1 ? `${before}${section}` : `${before}${section}\n${rest.slice(next)}`;
 };
 

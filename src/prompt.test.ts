@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildPrompt } from "./prompt.ts";
+import { env } from "./config.ts";
 import type { Issue, Comment } from "./tracker/index.ts";
 
 const program: Issue = {
@@ -119,4 +120,19 @@ test("program prompt tells the run where to write its notes", () => {
     runNotesPath: "/tmp/.gene/programs/PRG-1/.gene-run-notes.md"
   });
   assert.match(prompt, /\/tmp\/\.gene\/programs\/PRG-1\/\.gene-run-notes\.md/);
+});
+
+// Gene tells its own comments from a human's only by the marker. A program agent's
+// unmarked question reads as a human reply, so a Blocked program resumed itself.
+test("program prompt tells the agent to mark every comment it posts", () => {
+  const prompt = buildPrompt({
+    issue: program,
+    comments: [],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false
+  });
+  assert.ok(prompt.includes(env.AGENT_MARKER), "the marker itself is in the prompt");
+  assert.match(prompt, /end every comment/i);
 });
