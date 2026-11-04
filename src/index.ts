@@ -45,6 +45,7 @@ import {
   newChildIdentifiers,
   programBranch,
   planProgramEnding,
+  resumeExchange,
   type EndingPlan,
   type ProgramEnding,
   type ProgramSource
@@ -104,7 +105,10 @@ const record = (issue: Issue, event: string, detail: string, data?: unknown): Pr
     data
   });
 
-const intentFor = (action: Action): PromptIntent | null => {
+/** Coding intents announce themselves on the ticket; a program run doesn't (it's In Progress). */
+type CodingIntent = Exclude<PromptIntent, "program">;
+
+const intentFor = (action: Action): CodingIntent | null => {
   switch (action.kind) {
     case "processing":
     case "resume":
@@ -115,7 +119,7 @@ const intentFor = (action: Action): PromptIntent | null => {
   }
 };
 
-const startMessages: Record<PromptIntent, string> = {
+const startMessages: Record<CodingIntent, string> = {
   "processing":
     "🧬 Picking this up — exploring the code and figuring out the scope. " +
     "I'll comment again when I have a plan, a question, or a change request ready.",
@@ -128,9 +132,7 @@ const startMessages: Record<PromptIntent, string> = {
   "review-fix":
     "🧬 Spotted new review feedback / CI status on the change request — addressing it now and I'll push an update.",
   "continue":
-    "🧬 There's already a change request attached here — picking it up to finish the work, fix CI, and address review comments.",
-  "program":
-    "⟳ Running this program now — I'll comment on the ticket with the result when it's done."
+    "🧬 There's already a change request attached here — picking it up to finish the work, fix CI, and address review comments."
 };
 
 const buildClarificationComment = (missing: string[]): string => {
@@ -147,7 +149,7 @@ const buildClarificationComment = (missing: string[]): string => {
   ].join("\n");
 };
 
-const postStartComment = async (issue: Issue, intent: PromptIntent): Promise<void> => {
+const postStartComment = async (issue: Issue, intent: CodingIntent): Promise<void> => {
   try {
     await tracker.postComment(issue, startMessages[intent]);
   } catch (error) {
@@ -523,7 +525,7 @@ const dispatchAgent = async (
   comments: Comment[],
   target: RepoTarget,
   forge: Forge,
-  intent: PromptIntent,
+  intent: CodingIntent,
   extras: DispatchExtras = {}
 ): Promise<boolean> => {
   if (inFlight.has(issue.id)) {
@@ -731,10 +733,11 @@ const prepareProgramWorkspace = async (
 
 /**
  * Carry out how a run ended (see {@link planProgramEnding}): explain it on the ticket
- * when needed, move the ticket, and record the outcome. Best-effort throughout — a move
- * that fails leaves the ticket In Progress, which the next scan sweeps back to Todo.
+ * when needed, move the ticket, fold away the comments from before the run (only the
+ * newest stays open), and record the outcome. Best-effort throughout — a move that fails
+ * leaves the ticket In Progress, which the next scan sweeps back to Todo.
  */
-const settleProgramRun = async (program: Issue, ending: ProgramEnding): Promise<EndingPlan> => {
+const settleProgramRun = async (program: Issue, ending: ProgramEnding, runStartedAt: string): Promise<EndingPlan> => {
   const plan = planProgramEnding(ending);
   const why = (error: unknown): unknown => (error instanceof Error ? error.message : error);
   if (plan.comment) {
@@ -755,6 +758,15 @@ const settleProgramRun = async (program: Issue, ending: ProgramEnding): Promise<
     }
   } else if (plan.lastResult === "blocked") {
     logger.info(`${logger.tag.flow} [${program.identifier}] parked in ${env.BLOCKED_STATE} — awaiting reply`);
+  }
+  // A restart's cancel leaves folding to the re-fire that follows.
+  const restarting = ending.kind === "cancelled" && ending.refirePending;
+  if (tracker.foldCommentsBefore && !restarting) {
+    try {
+      await tracker.foldCommentsBefore(program, runStartedAt);
+    } catch (error) {
+      logger.warn(`${logger.tag.flow} [${program.identifier}] could not fold older comments:`, why(error));
+    }
   }
   try {
     await writeProgramState(tracker.name, program.identifier, {
@@ -777,9 +789,13 @@ const settleProgramRun = async (program: Issue, ending: ProgramEnding): Promise<
  * the agent parked it there to ask something; a cancel goes to Todo unless a restart
  * queued a re-fire) and log any new Gene-labelled child tickets it spun off.
  */
-const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<void> => {
+const finishProgramRun = async (program: Issue, result: InvokeResult, runStartedAt: string): Promise<void> => {
   if (monitor.isCancelled(program.identifier)) {
-    await settleProgramRun(program, { kind: "cancelled", refirePending: hasFireRequest(program.identifier) });
+    await settleProgramRun(
+      program,
+      { kind: "cancelled", refirePending: hasFireRequest(program.identifier) },
+      runStartedAt
+    );
     return;
   }
   // Re-read the ticket: the agent may have parked it in Blocked awaiting a decision.
@@ -789,7 +805,7 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
   } catch {
     liveState = undefined;
   }
-  const plan = await settleProgramRun(program, { kind: "finished", result, liveState });
+  const plan = await settleProgramRun(program, { kind: "finished", result, liveState }, runStartedAt);
   if (plan.lastResult === "blocked") return;
 
   // Child-ticket detection (best-effort observability): log Gene-labelled children of
@@ -822,7 +838,7 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
 const dispatchProgram = async (
   program: Issue,
   comments: Comment[],
-  opts: { source: ProgramSource; freshFire: boolean; reason?: string }
+  opts: { source: ProgramSource; freshFire: boolean; reason?: string; conversation?: Comment[] }
 ): Promise<void> => {
   if (inFlight.has(program.id)) {
     logger.info(`${logger.tag.flow} [${program.identifier}] program already running — skipping`);
@@ -873,7 +889,6 @@ const dispatchProgram = async (
   });
 
   if (env.DRY_RUN) {
-    await postStartComment(program, "program");
     await tracker.moveToState(program, env.ACTIVE_STATE);
     logger.info(`${logger.tag.flow} [${program.identifier}] (dry-run) would run program in ${repoLabel}`);
     monitor.agentSettled(program.identifier);
@@ -881,9 +896,11 @@ const dispatchProgram = async (
   }
 
   const spawnPromise = withLock(program.identifier, async () => {
+    // Comments from before this moment are folded away when the run ends. No start
+    // comment: In Progress (and the dashboard) already says the program is running.
+    const runStartedAt = new Date().toISOString();
     let result: InvokeResult;
     try {
-      await postStartComment(program, "program");
       await tracker.moveToState(program, env.ACTIVE_STATE);
       let workspace: { worktreePath: string; hasRepo: boolean };
       try {
@@ -893,7 +910,7 @@ const dispatchProgram = async (
         // park in Blocked with the reason; a reply resumes the run and retries the sync.
         const reason = error instanceof Error ? error.message : String(error);
         logger.warn(`${logger.tag.flow} [${program.identifier}] branch sync failed: ${reason}`);
-        await settleProgramRun(program, { kind: "branch-sync-failed", reason });
+        await settleProgramRun(program, { kind: "branch-sync-failed", reason }, runStartedAt);
         return "branch-sync-failed" as const;
       }
       const { worktreePath, hasRepo } = workspace;
@@ -919,7 +936,8 @@ const dispatchProgram = async (
         forge,
         repoLabel,
         subdir: target?.subdir,
-        fireReason: opts.reason
+        fireReason: opts.reason,
+        conversation: opts.conversation
       });
 
       result = await invokeAgent(
@@ -933,10 +951,10 @@ const dispatchProgram = async (
       // failure): put the program back to rest and say why, rather than strand it In Progress.
       const message = error instanceof Error ? error.message : String(error);
       logger.error(`${logger.tag.flow} [${program.identifier}] program run failed: ${message}`);
-      await settleProgramRun(program, { kind: "crashed", error: message });
+      await settleProgramRun(program, { kind: "crashed", error: message }, runStartedAt);
       return "crashed" as const;
     }
-    await finishProgramRun(program, result);
+    await finishProgramRun(program, result, runStartedAt);
     return result;
   })
     .then(result => {
@@ -1027,6 +1045,13 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
         fireProgram(program.identifier, action.source, request?.reason);
         break;
       case "resume":
+        // Hand the run the question it asked and the reply, so it doesn't start blind.
+        await dispatchProgram(program, comments, {
+          source: "manual",
+          freshFire: false,
+          conversation: resumeExchange(comments)
+        });
+        break;
       case "resume-interrupted":
         await dispatchProgram(program, comments, { source: "manual", freshFire: false });
         break;

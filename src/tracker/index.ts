@@ -82,6 +82,13 @@ export interface Tracker {
 
   /** Post a comment as Gene (marker appended). Honours GENE_DRY_RUN (log-only). */
   postComment(issue: Issue, body: string): Promise<void>;
+  /**
+   * Fold away the comment threads posted before `cutoffIso` (a run's start), keeping the
+   * newest comment open — so a program ticket doesn't grow a scroll of past runs. Folded
+   * comments stay readable. Optional: a backend without collapsible threads (Trello)
+   * omits it. Resolves to how many threads were folded. Honours GENE_DRY_RUN (log-only).
+   */
+  foldCommentsBefore?(issue: Issue, cutoffIso: string): Promise<number>;
   /** Move an issue to a lifecycle state by name. Honours GENE_DRY_RUN (log-only). */
   moveToState(issue: Issue, stateName: string): Promise<void>;
   /**

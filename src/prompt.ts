@@ -48,6 +48,8 @@ export type PromptInputs = {
   reviewContext?: ReviewContext;
   /** Why a trigger fired this program run (program intent only); absent for a manual fire. */
   fireReason?: string;
+  /** A program run resuming from Blocked: the question it asked and the replies since. */
+  conversation?: Comment[];
 };
 
 const formatTimestamp = (isoDate: string): string => {
@@ -307,7 +309,7 @@ const renderDriftAdvice = (n: number, baseBranch: string): string => {
  * agent writes back to the ticket and may spawn child coding tickets.
  */
 const buildProgramPrompt = (inputs: PromptInputs): string => {
-  const { issue, worktreePath, hasRepo, attachmentRelativePaths, fireReason } = inputs;
+  const { issue, worktreePath, hasRepo, attachmentRelativePaths, fireReason, conversation } = inputs;
   const workspace = hasRepo
     ? `# Working tree\n\nYou are in a git worktree at \`${worktreePath}\`. Read and run things here, but do NOT commit, push, or open a change request — this is a program run, not a coding task.`
     : `# Working directory\n\nYou are in a scratch working directory at \`${worktreePath}\` (no git repository). Use it for any temporary files.`;
@@ -328,6 +330,17 @@ const buildProgramPrompt = (inputs: PromptInputs): string => {
     "",
     ...(fireReason
       ? ["# Why this run fired", "", `This run was started automatically by the program's trigger: ${fireReason}`, ""]
+      : []),
+    ...(conversation && conversation.length > 0
+      ? [
+          "# Resuming after your question",
+          "",
+          "This run continues one that paused to ask a human something. Your question and the reply are below — " +
+            "use the reply and carry on with the workflow.",
+          "",
+          formatTranscript(conversation),
+          ""
+        ]
       : []),
     workspace,
     attachments,

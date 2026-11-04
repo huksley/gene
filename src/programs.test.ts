@@ -12,7 +12,8 @@ import {
   newChildIdentifiers,
   extractProgramSections,
   programBranch,
-  planProgramEnding
+  planProgramEnding,
+  resumeExchange
 } from "./programs.ts";
 
 /** Minimal Issue factory — mirrors src/subcards.test.ts's real Issue shape. */
@@ -256,4 +257,14 @@ test("ending: a failed branch sync parks in Blocked with the reason", () => {
   assert.equal(plan.moveTo, env.BLOCKED_STATE);
   assert.equal(plan.lastResult, "blocked");
   assert.match(plan.comment ?? "", /couldn't find remote ref release\/9/);
+});
+
+test("resumeExchange: Gene's latest comment and the replies after it, nothing older", () => {
+  const comments = [
+    comment("report", true, "2026-11-01T08:00:00.000Z", "Run report"),
+    comment("aside", false, "2026-11-01T09:00:00.000Z", "nice"),
+    comment("question", true, "2026-11-03T08:00:00.000Z", "Which cluster?"),
+    comment("reply", false, "2026-11-03T09:00:00.000Z", "staging")
+  ];
+  assert.deepEqual(resumeExchange(comments).map(c => c.id), ["question", "reply"]);
 });

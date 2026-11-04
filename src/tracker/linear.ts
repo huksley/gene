@@ -22,6 +22,7 @@ import { collectAttachmentRefsFromText, type AttachmentRef } from "../attachment
 import { run, runOrThrow } from "../exec.ts";
 import { fetchRetryTimeout } from "../fetch.ts";
 import type { Attachment, Comment, Issue, Tracker } from "./index.ts";
+import { threadsToFold, type ThreadComment } from "./fold.ts";
 
 type RawIssue = {
   id: string;
@@ -141,6 +142,26 @@ const LINK_URL_MUTATION =
 
 const REMOVE_LABEL_MUTATION =
   "mutation RemoveLabel($id: String!, $labelId: String!) { issueRemoveLabel(id: $id, labelId: $labelId) { success } }";
+
+// Every comment on an issue (replies included — they come back flat with a parent),
+// paged, with just what folding needs. `getComments` stops at the newest 100.
+const THREADS_QUERY =
+  "query Threads($id: String!, $after: String) { issue(id: $id) { comments(first: 100, after: $after) " +
+  "{ nodes { id createdAt resolvedAt parent { id } } pageInfo { hasNextPage endCursor } } } }";
+
+type RawThreadComment = { id: string; createdAt: string; resolvedAt: string | null; parent: { id: string } | null };
+
+/** One mutation resolving up to `ids.length` comment threads, aliased r0…rN. */
+const resolveMutation = (ids: string[]): { query: string; variables: Record<string, string> } => {
+  const params = ids.map((_, i) => `$c${i}: String!`).join(", ");
+  const fields = ids.map((_, i) => `r${i}: commentResolve(id: $c${i}) { success }`).join(" ");
+  return {
+    query: `mutation Fold(${params}) { ${fields} }`,
+    variables: Object.fromEntries(ids.map((id, i) => [`c${i}`, id]))
+  };
+};
+
+const FOLD_BATCH = 50;
 
 /** Ensure a comment body carries the agent marker so the daemon recognises it later. */
 const withAgentMarker = (body: string): string =>
@@ -267,6 +288,40 @@ export class LinearTracker implements Tracker {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Fold away (resolve) the comment threads that predate `cutoffIso`, keeping the
+   * newest comment open (see threadsToFold). Linear collapses resolved threads; they stay
+   * readable. Returns how many were folded. No-op (logged) under dry-run.
+   */
+  async foldCommentsBefore(issue: Issue, cutoffIso: string): Promise<number> {
+    const comments: ThreadComment[] = [];
+    let after: string | undefined;
+    do {
+      const data = await api<{
+        issue: { comments: { nodes: RawThreadComment[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } | null;
+      }>(THREADS_QUERY, after ? { id: issue.id, after } : { id: issue.id });
+      const page = data.issue?.comments;
+      if (!page) break;
+      for (const raw of page.nodes) {
+        comments.push({ id: raw.id, createdAt: raw.createdAt, parentId: raw.parent?.id ?? null, resolved: raw.resolvedAt !== null });
+      }
+      after = page.pageInfo.hasNextPage && page.pageInfo.endCursor ? page.pageInfo.endCursor : undefined;
+    } while (after);
+
+    const ids = threadsToFold(comments, cutoffIso);
+    if (ids.length === 0) return 0;
+    if (env.DRY_RUN) {
+      logger.info(`[linear] (dry-run) would fold ${ids.length} older comment thread(s) on ${issue.identifier}`);
+      return 0;
+    }
+    for (let i = 0; i < ids.length; i += FOLD_BATCH) {
+      const { query, variables } = resolveMutation(ids.slice(i, i + FOLD_BATCH));
+      await api(query, variables);
+    }
+    logger.info(`[linear] folded ${ids.length} older comment thread(s) on ${issue.identifier}`);
+    return ids.length;
   }
 
   /** Move an issue to a workflow state (by name). No-op (logged) under dry-run. */

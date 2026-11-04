@@ -75,3 +75,35 @@ test("program prompt omits the trigger section for a manual fire", () => {
   });
   assert.doesNotMatch(prompt, /Why this run fired/);
 });
+
+test("program prompt on a resume carries the agent's question and the human's reply", () => {
+  const exchange: Comment[] = [
+    { id: "q", body: "Which cluster should I scan? #gene-ai", createdAt: "2026-11-03T08:00:00.000Z", authorName: "ruslan", isAgent: true },
+    { id: "r", body: "Use the staging cluster", createdAt: "2026-11-03T09:00:00.000Z", authorName: "ruslan", isAgent: false }
+  ];
+  const prompt = buildPrompt({
+    issue: program,
+    comments: exchange,
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false,
+    conversation: exchange
+  });
+  assert.match(prompt, /Which cluster should I scan\?/);
+  assert.match(prompt, /Use the staging cluster/);
+});
+
+test("a fresh program run's prompt carries no comments", () => {
+  const prompt = buildPrompt({
+    issue: program,
+    comments: [
+      { id: "old", body: "Run report: all quiet", createdAt: "2026-11-02T08:00:00.000Z", authorName: "ruslan", isAgent: true }
+    ],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false
+  });
+  assert.doesNotMatch(prompt, /Run report: all quiet/);
+});

@@ -287,10 +287,19 @@ the **⟳** glyph; **`Shift+P`** toggles a programs-only view, and opening a pro
 the **live agent progress** while it runs — and its activity log at rest — exactly like a
 coding ticket. (The program's definition lives on the ticket itself.)
 
+**Quiet tickets** A program runs again and again, so its ticket is kept to what matters:
+the description, the **newest comment**, and its sub-issues. Gene posts no "running now"
+comment (In Progress already says so). When a run ends, Gene **folds away** (resolves) every
+comment thread from before that run. On Linear, folded threads are collapsed but still
+readable, so a workflow can look back at an earlier run's report. The newest comment always
+stays open, and so does anything posted during the run. Trello has no collapsible threads,
+so its comments are left as they are.
+
 **Clarification loop** A program can stop mid-run to ask a question — it posts the
 question and moves the ticket to **Blocked**. Reply on the ticket (e.g. `!gene approve`,
 or just answer the question) and the next scan **resumes** the run from where it paused —
-the same Blocked → resume flow as a coding ticket.
+the same Blocked → resume flow as a coding ticket. The resumed run gets its question and
+your reply in its prompt.
 
 **Triggers (opt-in)** Set `GENE_PROGRAM_TRIGGERS=true` and Gene fires programs on its
 own from their `## Trigger` prose. When the prose is new or changes, a short agent run

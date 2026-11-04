@@ -62,6 +62,15 @@ const newUserCommentsAfter = (comments: Comment[], afterIso: string | undefined)
     c => !c.isAgent && (afterIso === undefined || c.createdAt > afterIso) && !commentIsIgnored(env.TRACKER, c.body)
   );
 
+/**
+ * What a run resuming from Blocked needs to see: the question Gene last asked (its latest
+ * comment) and the human replies after it, oldest first.
+ */
+export const resumeExchange = (comments: Comment[]): Comment[] => {
+  const lastAgent = latestAgentComment(comments);
+  return [...(lastAgent ? [lastAgent] : []), ...newUserCommentsAfter(comments, lastAgent?.createdAt)];
+};
+
 export const decideProgramAction = (
   program: Issue,
   comments: Comment[],
