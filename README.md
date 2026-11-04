@@ -272,6 +272,13 @@ child tickets — those carry the `Gene` label, never `Program`), and returns to
 from. Each run is ephemeral: no lingering In-Review, no merge, no lifecycle
 progression.
 
+**Every run ends back in Todo**, except when it needs you: the agent parked it in
+**Blocked** to ask something, or the branch couldn't be synced (see **Branch**). A run
+cancelled from the dashboard goes back to Todo. A run that doesn't finish (Gene hits an
+error, the agent exits early, or `claude` isn't logged in) also goes back to Todo, and Gene
+comments with the reason. A program found **In Progress** with nothing running (a move back
+to Todo that failed, say) is returned to Todo on the next scan, so its trigger is armed again.
+
 **Firing a program** From the dashboard, select a program row and press **`g`** (press
 `g` again within 2 s to confirm). Gene moves it to **In Progress** for the run, then
 back to **Todo** when it finishes. Pressing `g` on an already-running program

@@ -22,7 +22,9 @@ export type ProgramAction =
   | { kind: "restart"; source: ProgramSource }
   | { kind: "resume"; latestUserCommentId: string }
   | { kind: "resume-interrupted" }
-  | { kind: "stop" };
+  | { kind: "stop" }
+  /** In ACTIVE with no run behind it: put it back to rest (Todo) — never re-run it. */
+  | { kind: "rest" };
 
 /** A queued fire: who asked, and (for a trigger) why — surfaced in the run's prompt. */
 export type FireRequest = { source: ProgramSource; reason?: string };
@@ -87,9 +89,11 @@ export const decideProgramAction = (
     // parked it there. Resume only against a logged unfinished run; that record is
     // closed by the run's own outcome row, so one interruption yields one resume
     // (CLOUD-2014 re-fired 394 times when this was inferred from the state alone).
+    // Without that record nothing is running it, so return it to rest (Todo) — which
+    // re-arms its trigger — rather than leave it In Progress forever (CLOUD-2629).
     if (opts.runInFlight) return { kind: "nothing", reason: "run in progress" };
     if (opts.interruptedRun === true) return { kind: "resume-interrupted" };
-    return { kind: "nothing", reason: "active, no unfinished run on record" };
+    return { kind: "rest" };
   }
   if (program.stateName === env.BLOCKED_STATE) {
     const lastAgent = latestAgentComment(comments);
@@ -103,6 +107,91 @@ export const decideProgramAction = (
     return { kind: "resume", latestUserCommentId: latest.id };
   }
   return { kind: "nothing", reason: "resting" };
+};
+
+// --- Where a run ends up ------------------------------------------------------------
+/** The parts of an agent run's result that decide whether it finished. */
+export type RunOutcome = {
+  exitCode: number;
+  sawSuccessResult: boolean;
+  transientFailure: boolean;
+  authFailure: boolean;
+};
+
+/** How a program run ended, as Gene saw it. */
+export type ProgramEnding =
+  /** The agent ran to an exit. `liveState` is the ticket's state re-read afterwards (undefined if unreadable). */
+  | { kind: "finished"; result: RunOutcome; liveState: string | undefined }
+  /** Cancelled from the dashboard; `refirePending` when it was a restart (a fire is queued). */
+  | { kind: "cancelled"; refirePending: boolean }
+  /** Gene itself threw while setting up or winding down the run. */
+  | { kind: "crashed"; error: string }
+  /** The repo couldn't be brought up to date, so the agent never started. */
+  | { kind: "branch-sync-failed"; reason: string };
+
+export type EndingPlan = {
+  /** The state to move the ticket to; null leaves it where it is. */
+  moveTo: string | null;
+  /** A comment Gene posts on the ticket, when the ending needs explaining. */
+  comment?: string;
+  lastResult: "ok" | "incomplete" | "blocked" | "cancelled" | "error";
+  /** Activity-log detail. */
+  detail: string;
+};
+
+/** Why a run didn't finish, or null when it did. */
+const incompleteReason = (result: RunOutcome): string | null => {
+  if (result.authFailure) return "the Claude CLI on the Gene host isn't logged in (run `claude /login` there)";
+  if (result.transientFailure) return "my connection to the model API dropped mid-run";
+  if (result.exitCode !== 0) return `the agent exited with code ${result.exitCode}`;
+  if (!result.sawSuccessResult) return "the agent stopped without producing a final result";
+  return null;
+};
+
+const didNotFinish = (why: string): string =>
+  `⚠ This run didn't finish: ${why}.\n\n` +
+  `The program is back in ${env.TRIGGER_STATE}. Its next trigger runs it again, or press \`g\` on it in Gene to run it now.`;
+
+/**
+ * Where a program goes when a run ends. A program at rest is always in the trigger
+ * state (Todo — "activated"), so every ending returns there except the two that need a
+ * human: the agent parking the run in Blocked to ask something, and a branch that
+ * can't be synced (re-firing would only fail again). A cancel for a restart stays
+ * ACTIVE for the queued re-fire.
+ */
+export const planProgramEnding = (ending: ProgramEnding): EndingPlan => {
+  const rest = env.TRIGGER_STATE;
+  switch (ending.kind) {
+    case "cancelled":
+      return ending.refirePending
+        ? { moveTo: null, lastResult: "cancelled", detail: "cancelled — re-fire queued" }
+        : { moveTo: rest, lastResult: "cancelled", detail: `cancelled → ${rest}` };
+    case "crashed":
+      return {
+        moveTo: rest,
+        comment: didNotFinish(`Gene hit an error — \`${ending.error.slice(0, 300)}\``),
+        lastResult: "error",
+        detail: `error → ${rest}: ${ending.error}`
+      };
+    case "branch-sync-failed":
+      return {
+        moveTo: env.BLOCKED_STATE,
+        comment:
+          `⚠ Not running: couldn't bring the repo up to date before the run — ${ending.reason}\n\n` +
+          "Fix the branch (the `## Branch` section, or the repo link) and reply here to retry.",
+        lastResult: "blocked",
+        detail: `branch sync failed → ${env.BLOCKED_STATE}`
+      };
+    case "finished": {
+      if (ending.liveState === env.BLOCKED_STATE) {
+        return { moveTo: null, lastResult: "blocked", detail: `parked in ${env.BLOCKED_STATE}` };
+      }
+      const why = incompleteReason(ending.result);
+      return why === null
+        ? { moveTo: rest, lastResult: "ok", detail: `→ ${rest} (ok)` }
+        : { moveTo: rest, comment: didNotFinish(why), lastResult: "incomplete", detail: `→ ${rest} (incomplete: ${why})` };
+    }
+  }
 };
 
 // --- Child-ticket detection (observability) -----------------------------------------

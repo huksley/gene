@@ -11,7 +11,8 @@ import {
   childTicketIds,
   newChildIdentifiers,
   extractProgramSections,
-  programBranch
+  programBranch,
+  planProgramEnding
 } from "./programs.ts";
 
 /** Minimal Issue factory — mirrors src/subcards.test.ts's real Issue shape. */
@@ -80,14 +81,16 @@ test("decide: ACTIVE, nothing running, an unfinished run on record → resume-in
 // NOT on its own evidence of an interrupted run — it is also what a program looks like
 // the instant a finished run "restored" it to a resting state that was itself ACTIVE, or
 // after something else (a coding dispatch, an operator) parked it there. Resuming on that
-// inference alone re-fires the program every poll, forever.
-test("decide: ACTIVE, nothing running, no unfinished run on record → nothing", () => {
+// inference alone re-fires the program every poll, forever. Instead it is put back to rest
+// (Todo) — never re-run — so its trigger is armed again (CLOUD-2629 sat In Progress for a
+// month with its trigger off).
+test("decide: ACTIVE, nothing running, no unfinished run on record → rest, not a re-run", () => {
   const a = decideProgramAction(prog(env.ACTIVE_STATE), [], {
     firePending: false,
     runInFlight: false,
     interruptedRun: false
   });
-  assert.equal(a.kind, "nothing");
+  assert.equal(a.kind, "rest");
 });
 
 test("decide: ACTIVE and running → nothing", () => {
@@ -176,4 +179,81 @@ test("programBranch: reads the ## Branch section, stripping backticks and origin
 test("programBranch: absent or empty section → undefined", () => {
   assert.equal(programBranch("## Workflow\ndo it"), undefined);
   assert.equal(programBranch("## Branch\n\n## Workflow\nx"), undefined);
+});
+
+// --- Where a run ends up ------------------------------------------------------------
+const okRun = { exitCode: 0, sawSuccessResult: true, transientFailure: false, authFailure: false };
+
+test("ending: a finished run goes back to Todo with no extra comment", () => {
+  const plan = planProgramEnding({ kind: "finished", result: okRun, liveState: env.ACTIVE_STATE });
+  assert.equal(plan.moveTo, env.TRIGGER_STATE);
+  assert.equal(plan.lastResult, "ok");
+  assert.equal(plan.comment, undefined);
+});
+
+test("ending: a run the agent parked in Blocked stays there", () => {
+  const plan = planProgramEnding({ kind: "finished", result: okRun, liveState: env.BLOCKED_STATE });
+  assert.equal(plan.moveTo, null);
+  assert.equal(plan.lastResult, "blocked");
+  assert.equal(plan.comment, undefined);
+});
+
+test("ending: an unreadable live state still goes back to Todo", () => {
+  const plan = planProgramEnding({ kind: "finished", result: okRun, liveState: undefined });
+  assert.equal(plan.moveTo, env.TRIGGER_STATE);
+});
+
+test("ending: an incomplete run goes back to Todo and says why on the ticket", () => {
+  const plan = planProgramEnding({
+    kind: "finished",
+    result: { ...okRun, sawSuccessResult: false, transientFailure: true },
+    liveState: env.ACTIVE_STATE
+  });
+  assert.equal(plan.moveTo, env.TRIGGER_STATE);
+  assert.equal(plan.lastResult, "incomplete");
+  assert.match(plan.comment ?? "", /connection to the model API dropped/);
+});
+
+test("ending: a non-zero exit is incomplete and names the exit code", () => {
+  const plan = planProgramEnding({ kind: "finished", result: { ...okRun, exitCode: 137 }, liveState: env.ACTIVE_STATE });
+  assert.equal(plan.lastResult, "incomplete");
+  assert.match(plan.comment ?? "", /137/);
+});
+
+test("ending: a run whose claude couldn't log in is incomplete and says so", () => {
+  const plan = planProgramEnding({
+    kind: "finished",
+    result: { ...okRun, sawSuccessResult: false, authFailure: true },
+    liveState: env.ACTIVE_STATE
+  });
+  assert.equal(plan.lastResult, "incomplete");
+  assert.match(plan.comment ?? "", /claude \/login/);
+});
+
+// A plain dashboard cancel used to leave the program In Progress forever (the code
+// expected a re-fire that only a restart queues), disarming its trigger.
+test("ending: a plain cancel goes back to Todo", () => {
+  const plan = planProgramEnding({ kind: "cancelled", refirePending: false });
+  assert.equal(plan.moveTo, env.TRIGGER_STATE);
+  assert.equal(plan.lastResult, "cancelled");
+});
+
+test("ending: a cancel for a restart stays In Progress for the re-fire", () => {
+  const plan = planProgramEnding({ kind: "cancelled", refirePending: true });
+  assert.equal(plan.moveTo, null);
+  assert.equal(plan.lastResult, "cancelled");
+});
+
+test("ending: Gene crashing mid-run goes back to Todo and posts the error", () => {
+  const plan = planProgramEnding({ kind: "crashed", error: "linear api error: rate limited" });
+  assert.equal(plan.moveTo, env.TRIGGER_STATE);
+  assert.equal(plan.lastResult, "error");
+  assert.match(plan.comment ?? "", /linear api error: rate limited/);
+});
+
+test("ending: a failed branch sync parks in Blocked with the reason", () => {
+  const plan = planProgramEnding({ kind: "branch-sync-failed", reason: "couldn't find remote ref release/9" });
+  assert.equal(plan.moveTo, env.BLOCKED_STATE);
+  assert.equal(plan.lastResult, "blocked");
+  assert.match(plan.comment ?? "", /couldn't find remote ref release\/9/);
 });

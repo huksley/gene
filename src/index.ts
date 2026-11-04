@@ -44,6 +44,9 @@ import {
   childTicketIds,
   newChildIdentifiers,
   programBranch,
+  planProgramEnding,
+  type EndingPlan,
+  type ProgramEnding,
   type ProgramSource
 } from "./programs.ts";
 import { readProgramState, writeProgramState } from "./program-state.ts";
@@ -686,8 +689,8 @@ const dispatchAgent = async (
 // ─── Programs ───────────────────────────────────────────────────────────────
 // Recurring, ephemeral runs off a `Program`-labelled ticket. Unlike coding
 // issues they never open a change request and are never moved to Done: a run
-// flips the ticket to ACTIVE_STATE, then restores its resting state on finish
-// (or parks it in BLOCKED_STATE awaiting a `!gene approve`). The file lock
+// flips the ticket to ACTIVE_STATE, then returns it to the trigger state (Todo) however
+// it ends — unless it needs a human and parks in BLOCKED_STATE. The file lock
 // (withLock) is the concurrency guard; program_state is status/observability.
 
 /** Re-fetch the live program ticket by identifier (for post-run state checks). */
@@ -727,47 +730,67 @@ const prepareProgramWorkspace = async (
 };
 
 /**
- * Wind down a finished program run: return it to the trigger state (Todo — a program at
- * rest is always activated, wherever it was fired from), unless it was cancelled (leave ACTIVE for the re-fire) or the agent parked it
- * in Blocked (leave it awaiting a reply). Records the outcome and logs any new
- * Gene-labelled child tickets it spun off.
+ * Carry out how a run ended (see {@link planProgramEnding}): explain it on the ticket
+ * when needed, move the ticket, and record the outcome. Best-effort throughout — a move
+ * that fails leaves the ticket In Progress, which the next scan sweeps back to Todo.
+ */
+const settleProgramRun = async (program: Issue, ending: ProgramEnding): Promise<EndingPlan> => {
+  const plan = planProgramEnding(ending);
+  const why = (error: unknown): unknown => (error instanceof Error ? error.message : error);
+  if (plan.comment) {
+    try {
+      await tracker.postComment(program, plan.comment);
+    } catch (error) {
+      logger.warn(`${logger.tag.flow} [${program.identifier}] could not comment on the run's ending:`, why(error));
+    }
+  }
+  if (plan.moveTo) {
+    try {
+      await tracker.moveToState(program, plan.moveTo);
+    } catch (error) {
+      logger.warn(
+        `${logger.tag.flow} [${program.identifier}] could not move to "${plan.moveTo}" (the next scan retries):`,
+        why(error)
+      );
+    }
+  } else if (plan.lastResult === "blocked") {
+    logger.info(`${logger.tag.flow} [${program.identifier}] parked in ${env.BLOCKED_STATE} — awaiting reply`);
+  }
+  try {
+    await writeProgramState(tracker.name, program.identifier, {
+      lastResult: plan.lastResult,
+      ...(ending.kind === "finished" ? { lastFiredAt: new Date().toISOString() } : {})
+    });
+  } catch (error) {
+    logger.warn(`${logger.tag.flow} [${program.identifier}] could not save program state:`, why(error));
+  }
+  try {
+    await record(program, "program-run-done", plan.detail, { last_result: plan.lastResult });
+  } catch (error) {
+    logger.warn(`${logger.tag.flow} [${program.identifier}] could not record the run's ending:`, why(error));
+  }
+  return plan;
+};
+
+/**
+ * Wind down a program run whose agent exited: settle it (Todo, or left in Blocked when
+ * the agent parked it there to ask something; a cancel goes to Todo unless a restart
+ * queued a re-fire) and log any new Gene-labelled child tickets it spun off.
  */
 const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<void> => {
-  // Cancelled (a restart or a UI cancel): leave the ticket ACTIVE so the re-fire /
-  // next scan picks it up; don't restore or clobber state.
   if (monitor.isCancelled(program.identifier)) {
-    await record(program, "program-run-done", "cancelled", { last_result: "cancelled" });
+    await settleProgramRun(program, { kind: "cancelled", refirePending: hasFireRequest(program.identifier) });
     return;
   }
-  // The agent may have parked the program in Blocked awaiting a decision — honour it.
-  let current: Issue | undefined;
+  // Re-read the ticket: the agent may have parked it in Blocked awaiting a decision.
+  let liveState: string | undefined;
   try {
-    current = await findProgram(program.identifier);
+    liveState = (await findProgram(program.identifier))?.stateName;
   } catch {
-    current = undefined;
+    liveState = undefined;
   }
-  if (current && current.stateName === env.BLOCKED_STATE) {
-    logger.info(`${logger.tag.flow} [${program.identifier}] parked in ${env.BLOCKED_STATE} — awaiting reply`);
-    await record(program, "program-run-done", `parked in ${env.BLOCKED_STATE}`, { last_result: "blocked" });
-    return;
-  }
-
-  const resting = env.TRIGGER_STATE;
-  try {
-    await tracker.moveToState(program, resting);
-  } catch (error) {
-    logger.warn(
-      `${logger.tag.flow} [${program.identifier}] could not restore to "${resting}":`,
-      error instanceof Error ? error.message : error
-    );
-  }
-
-  const ok = result.exitCode === 0 && result.sawSuccessResult && !result.transientFailure;
-  const lastResult = ok ? "ok" : "incomplete";
-  await writeProgramState(tracker.name, program.identifier, {
-    lastResult,
-    lastFiredAt: new Date().toISOString()
-  });
+  const plan = await settleProgramRun(program, { kind: "finished", result, liveState });
+  if (plan.lastResult === "blocked") return;
 
   // Child-ticket detection (best-effort observability): log Gene-labelled children of
   // this program that weren't logged before.
@@ -787,8 +810,6 @@ const finishProgramRun = async (program: Issue, result: InvokeResult): Promise<v
       error instanceof Error ? error.message : error
     );
   }
-
-  await record(program, "program-run-done", `→ ${resting} (${lastResult})`, { last_result: lastResult });
 };
 
 /**
@@ -860,66 +881,61 @@ const dispatchProgram = async (
   }
 
   const spawnPromise = withLock(program.identifier, async () => {
-    await postStartComment(program, "program");
-    await tracker.moveToState(program, env.ACTIVE_STATE);
-    let workspace: { worktreePath: string; hasRepo: boolean };
+    let result: InvokeResult;
     try {
-      workspace = await prepareProgramWorkspace(program, target, forge);
-    } catch (error) {
-      // A stale or unreachable branch needs a human (fix `## Branch`, grant access) —
-      // park in Blocked with the reason; a reply resumes the run and retries the sync.
-      const reason = error instanceof Error ? error.message : String(error);
-      logger.warn(`${logger.tag.flow} [${program.identifier}] branch sync failed: ${reason}`);
+      await postStartComment(program, "program");
+      await tracker.moveToState(program, env.ACTIVE_STATE);
+      let workspace: { worktreePath: string; hasRepo: boolean };
       try {
-        await tracker.postComment(
-          program,
-          `⚠ Not running: couldn't bring the repo up to date before the run — ${reason}\n\n` +
-            "Fix the branch (the `## Branch` section, or the repo link) and reply here to retry."
-        );
-        await tracker.moveToState(program, env.BLOCKED_STATE);
-      } catch (followUp) {
+        workspace = await prepareProgramWorkspace(program, target, forge);
+      } catch (error) {
+        // A stale or unreachable branch needs a human (fix `## Branch`, grant access) —
+        // park in Blocked with the reason; a reply resumes the run and retries the sync.
+        const reason = error instanceof Error ? error.message : String(error);
+        logger.warn(`${logger.tag.flow} [${program.identifier}] branch sync failed: ${reason}`);
+        await settleProgramRun(program, { kind: "branch-sync-failed", reason });
+        return "branch-sync-failed" as const;
+      }
+      const { worktreePath, hasRepo } = workspace;
+
+      let attachmentRelativePaths: string[] = [];
+      try {
+        const staged = await stageIssueAttachments(program, comments, worktreePath);
+        attachmentRelativePaths = staged.map(s => s.relativePath);
+      } catch (error) {
         logger.warn(
-          `${logger.tag.flow} [${program.identifier}] could not park in ${env.BLOCKED_STATE}:`,
-          followUp instanceof Error ? followUp.message : followUp
+          `${logger.tag.flow} [${program.identifier}] attachment staging failed:`,
+          error instanceof Error ? error.message : error
         );
       }
-      await record(program, "program-run-done", `branch sync failed → ${env.BLOCKED_STATE}`, {
-        last_result: "blocked"
+
+      const prompt = buildPrompt({
+        issue: program,
+        comments,
+        worktreePath,
+        intent: "program",
+        attachmentRelativePaths,
+        hasRepo,
+        forge,
+        repoLabel,
+        subdir: target?.subdir,
+        fireReason: opts.reason
       });
-      return "branch-sync-failed" as const;
-    }
-    const { worktreePath, hasRepo } = workspace;
 
-    let attachmentRelativePaths: string[] = [];
-    try {
-      const staged = await stageIssueAttachments(program, comments, worktreePath);
-      attachmentRelativePaths = staged.map(s => s.relativePath);
-    } catch (error) {
-      logger.warn(
-        `${logger.tag.flow} [${program.identifier}] attachment staging failed:`,
-        error instanceof Error ? error.message : error
+      result = await invokeAgent(
+        { issue: program, prompt, worktreePath, forge, extraAllowedTools: env.PROGRAM_ALLOWED_TOOLS },
+        (pid: number) => {
+          inFlight.set(program.id, { ...inFlight.get(program.id), pid });
+        }
       );
+    } catch (error) {
+      // Gene itself failed before the agent could finish (a tracker/API error, a spawn
+      // failure): put the program back to rest and say why, rather than strand it In Progress.
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(`${logger.tag.flow} [${program.identifier}] program run failed: ${message}`);
+      await settleProgramRun(program, { kind: "crashed", error: message });
+      return "crashed" as const;
     }
-
-    const prompt = buildPrompt({
-      issue: program,
-      comments,
-      worktreePath,
-      intent: "program",
-      attachmentRelativePaths,
-      hasRepo,
-      forge,
-      repoLabel,
-      subdir: target?.subdir,
-      fireReason: opts.reason
-    });
-
-    const result = await invokeAgent(
-      { issue: program, prompt, worktreePath, forge, extraAllowedTools: env.PROGRAM_ALLOWED_TOOLS },
-      (pid: number) => {
-        inFlight.set(program.id, { ...inFlight.get(program.id), pid });
-      }
-    );
     await finishProgramRun(program, result);
     return result;
   })
@@ -1026,6 +1042,26 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
           );
         }
         await record(program, "program-run-done", `stopped → ${resting}`, { last_result: "stopped" });
+        break;
+      }
+      case "rest": {
+        // In ACTIVE with no run behind it (a move back to Todo that failed, a run from an
+        // older Gene that left it there): put it back to rest so its trigger is armed again.
+        // The listing is from the start of this scan, so re-read first — a run that ended
+        // since may have parked it in Blocked, or a fire may have started a new one.
+        const resting = env.TRIGGER_STATE;
+        try {
+          const live = await findProgram(program.identifier);
+          if (!live || live.stateName !== env.ACTIVE_STATE || inFlight.has(program.id)) break;
+          await tracker.moveToState(program, resting);
+          logger.info(`${logger.tag.flow} [${program.identifier}] ${env.ACTIVE_STATE} with no run → "${resting}"`);
+          await record(program, "program-rested", `${env.ACTIVE_STATE} with no run → ${resting}`);
+        } catch (error) {
+          logger.warn(
+            `${logger.tag.flow} [${program.identifier}] could not return to "${resting}":`,
+            error instanceof Error ? error.message : error
+          );
+        }
         break;
       }
     }
