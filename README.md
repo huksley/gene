@@ -236,22 +236,136 @@ shared Postgres (`GENE_DATABASE_URL`). See [State store](#state-store).
 
 ## Programs
 
-A **program** is a recurring, on-demand job rather than a one-off change. It is a
-ticket carrying the **program label** (`LINEAR_PROGRAM_LABEL` / `TRELLO_PROGRAM_LABEL`,
-default `Program`) whose description has three sections:
+A **program** is a recurring job that lives on a ticket: a daily security review, an hourly
+log check, "rebase my open MRs". Gene runs it on demand or from its trigger, the agent does
+what the ticket's workflow says and reports back on the ticket, and the program goes back to
+rest until the next run. Unlike a coding ticket, a program **never opens a change request**
+and is **never moved to Done**.
 
-- **`## Trigger`** — when/why it should run (informational in this phase — see below).
-- **`## Workflow`** — the steps the agent performs on each run.
-- **`## Acceptance criteria`** — what a successful run looks like.
+### Writing a program
 
-Require them with `GENE_PROGRAM_REQUIRE_SECTIONS` (defaults to those three; empty = no
-gate), and grant a program agent extra tools — on top of the base set + tracker (+ the
-forge CLI, when the program links a repo) — with `GENE_PROGRAM_ALLOWED_TOOLS`
-(e.g. `Bash(pup *),Bash(datadog *)`).
+A program is a ticket with the **program label** (`LINEAR_PROGRAM_LABEL` /
+`TRELLO_PROGRAM_LABEL`, default `Program`), assigned to you, with these sections:
 
-**Branch** A program that links a repo runs on that repo's default branch. Pin another
-one with an optional **`## Branch`** section holding just the branch name (or link the
-repo as `…/tree/<branch>`; `## Branch` wins when both are set):
+```markdown
+## Trigger
+Every weekday at 08:00 UTC.
+
+## Workflow
+Review the commits merged to `main` since the SHA in the run notes. File a sub-issue
+for each finding. Record the newest reviewed SHA in the run notes.
+
+## Acceptance criteria
+A run report comment listing what was reviewed, and one sub-issue per finding.
+```
+
+- **`## Trigger`** says when it runs (see [Triggers](#triggers-opt-in)), or `manual`.
+- **`## Workflow`** is what the agent does on each run.
+- **`## Acceptance criteria`** is what a good run looks like.
+- **`## Branch`** (optional) pins the branch a repo-linked program runs on (see
+  [Branch](#branch)).
+- **`## Run notes`** is written by the program itself, not by you (see
+  [Run notes](#run-notes)).
+
+Gene won't fire a program that's missing a required section (`GENE_PROGRAM_REQUIRE_SECTIONS`,
+defaults to the first three; empty = no gate); it comments with what's missing instead.
+Give a program agent extra tools, on top of the base set, the tracker and (when the program
+links a repo) the forge CLI, with `GENE_PROGRAM_ALLOWED_TOOLS` (e.g.
+`Bash(pup *),Bash(datadog *)`). Follow-up work goes into **sub-issues** with the `Gene`
+label (never `Program`), so they enter the normal coding queue.
+
+### States
+
+The ticket's state says whether a program is switched on, running, or waiting for you.
+
+| State | What it means for a program |
+|---|---|
+| **Todo** | Switched on and at rest. Its trigger is armed, and `g` runs it. **Every run comes back here.** |
+| **In Progress** | A run is live. If nothing is running it, Gene moves it back to Todo on the next scan. |
+| **Blocked** | Waiting for a human: the run asked a question, or the branch can't be synced. Reply to resume, or reply `!gene stop` to drop the run (→ Todo). |
+| **Triage, Backlog, any other** | Switched off: still with humans. Its trigger compiles (review it with `t`) but isn't armed, so it never runs on its own. Move it to **Todo** to switch it on. (`g` still runs it once, and the run lands in Todo.) |
+
+A program only ever moves between Todo, In Progress and Blocked, and lands in Blocked
+only when it needs you. It never rests in Blocked or In Progress.
+
+### A run, step by step
+
+1. **Fired** — press `g` on it in the dashboard, or its trigger matches.
+2. Gene moves the ticket to **In Progress**. It posts no comment: the state says it's
+   running, and the dashboard shows the live progress.
+3. If the program links a repo, Gene brings its worktree level with the remote branch.
+4. The agent carries out the **Workflow**: it comments its result on the ticket, may open
+   sub-issues, and may update its **run notes**. If it needs a decision, it posts the
+   question and moves the ticket to **Blocked**.
+5. When the run ends, Gene saves the run notes, **folds away** the comments from before
+   this run, and moves the ticket as below.
+
+### How a run ends
+
+| The run… | Ticket goes to | Left on the ticket |
+|---|---|---|
+| finished | **Todo** | the agent's result comment |
+| asked a question | **Blocked** | the question; reply to resume |
+| didn't finish (Gene hit an error, the agent exited early or timed out, `claude` isn't logged in) | **Todo** | Gene's comment saying why |
+| was cancelled from the dashboard | **Todo** | — |
+| was restarted (`g` while running) | stays **In Progress** and fires again | — |
+| couldn't sync its branch | **Blocked** | Gene's comment with the reason; fix the branch and reply |
+
+A program found **In Progress** with nothing running (the move back to Todo failed, or an
+older Gene left it there) is returned to Todo on the next scan, which re-arms its trigger.
+It is never re-run on that basis.
+
+### What the ticket shows
+
+A program runs again and again, so its ticket is kept to what matters: the
+**description** (with its run notes), the **newest comment**, and its **sub-issues**.
+
+When a run ends, Gene **resolves** every comment thread from before that run. Linear
+collapses resolved threads, but they stay readable, so a workflow can still look back
+at an earlier run's report. The newest comment always stays open, and so does anything
+posted during the run. Trello has no collapsible threads, so its comments are left as
+they are.
+
+Every comment the agent posts ends with the agent marker (`GENE_AGENT_MARKER`, default
+`#gene-ai`). That's how Gene tells its own comments from yours, so a reply from you is what
+resumes a Blocked program.
+
+### Run notes
+
+A program can keep a little memory between runs in its own description, under
+**`## Run notes`**: the last SHA it reviewed, where a rotation is up to. The agent writes
+its new notes to a file. When the run ends, Gene replaces just that section of the
+description as it is at that moment. It doesn't touch `## Trigger`, `## Workflow`,
+`## Acceptance criteria`, or edits you made during the run.
+
+- The notes are **replaced, not appended to**, so they stay short.
+- A run that writes no notes, or the same notes, leaves the description untouched.
+- Changing the notes never recompiles the trigger.
+- A cancelled run's notes are dropped.
+
+To use them, say so in the workflow: *"Start from the SHA in the run notes; record the
+newest reviewed SHA there."*
+
+### Asking a human
+
+A program can stop mid-run to ask something: it posts the question and moves the ticket
+to **Blocked**. Reply on the ticket (`!gene approve`, or just answer) and the next scan
+**resumes** the run, with the question and your reply in its prompt. Reply `!gene stop`
+to drop the run instead; the program goes back to Todo.
+
+### Firing a program
+
+In the dashboard, select a program row and press **`g`**, then **`g`** again within 2 s to
+confirm. Pressing `g` on a running program **restarts** it: the live run is cancelled and
+fired again. Programs are marked **⟳** in the list (**ϟ** when a trigger is armed);
+**`Shift+P`** shows programs only. Opening a program shows the live agent progress while it
+runs, and its activity log at rest, just like a coding ticket.
+
+### Branch
+
+A program that links a repo runs on that repo's default branch. Pin another one with a
+**`## Branch`** section holding just the branch name (or link the repo as
+`…/tree/<branch>`; `## Branch` wins when both are set):
 
 ```markdown
 ## Branch
@@ -259,57 +373,14 @@ release/2.x
 ```
 
 The program's worktree is reused across runs, so before **every** run Gene fetches the
-branch and resets the worktree to `origin/<branch>`. Leftover edits and local commits
-from the previous run are discarded; untracked files are kept. If the branch can't be
-fetched (a typo, a deleted branch, no access), the program doesn't run. Gene comments
-with the reason and moves the program to **Blocked**. Fix the branch and reply on the
-ticket to retry.
+branch and resets the worktree to `origin/<branch>`. Leftover edits and local commits from
+the previous run are discarded; untracked files are kept. If the branch can't be fetched
+(a typo, a deleted branch, no access), the program doesn't run: Gene comments with the
+reason and moves it to **Blocked**. Fix the branch and reply on the ticket to retry.
 
-Unlike a normal ticket, a program **never opens a change request** and is **never moved
-to Done**. It runs, **writes its result back to the ticket** (a comment, and it may open
-child tickets — those carry the `Gene` label, never `Program`), and returns to **Todo**
-(`GENE_TRIGGER_STATE`) — at rest a program is always in Todo, whatever state it was fired
-from. Each run is ephemeral: no lingering In-Review, no merge, no lifecycle
-progression.
+### Triggers (opt-in)
 
-**Every run ends back in Todo**, except when it needs you: the agent parked it in
-**Blocked** to ask something, or the branch couldn't be synced (see **Branch**). A run
-cancelled from the dashboard goes back to Todo. A run that doesn't finish (Gene hits an
-error, the agent exits early, or `claude` isn't logged in) also goes back to Todo, and Gene
-comments with the reason. A program found **In Progress** with nothing running (a move back
-to Todo that failed, say) is returned to Todo on the next scan, so its trigger is armed again.
-
-**Firing a program** From the dashboard, select a program row and press **`g`** (press
-`g` again within 2 s to confirm). Gene moves it to **In Progress** for the run, then
-back to **Todo** when it finishes. Pressing `g` on an already-running program
-**restarts** it (cancels the live run and re-fires). Programs are marked in the list with
-the **⟳** glyph; **`Shift+P`** toggles a programs-only view, and opening a program shows
-the **live agent progress** while it runs — and its activity log at rest — exactly like a
-coding ticket. (The program's definition lives on the ticket itself.)
-
-**Quiet tickets** A program runs again and again, so its ticket is kept to what matters:
-the description, the **newest comment**, and its sub-issues. Gene posts no "running now"
-comment (In Progress already says so). When a run ends, Gene **folds away** (resolves) every
-comment thread from before that run. On Linear, folded threads are collapsed but still
-readable, so a workflow can look back at an earlier run's report. The newest comment always
-stays open, and so does anything posted during the run. Trello has no collapsible threads,
-so its comments are left as they are.
-
-**Run notes** A program can keep a little memory between runs in its own description,
-under a **`## Run notes`** section: the last SHA it reviewed, where a rotation is up to. The
-run writes its new notes to a file. When the run ends, Gene puts them in place of that section
-and leaves the rest of the description alone (`## Trigger`, `## Workflow`, your edits made
-during the run). The notes are replaced, not appended to. A run that writes none leaves
-them as they are, and changing them never recompiles the trigger. To use them, say so in
-the workflow, e.g. *"Record the reviewed SHA in the run notes; start from the one there."*
-
-**Clarification loop** A program can stop mid-run to ask a question — it posts the
-question and moves the ticket to **Blocked**. Reply on the ticket (e.g. `!gene approve`,
-or just answer the question) and the next scan **resumes** the run from where it paused —
-the same Blocked → resume flow as a coding ticket. The resumed run gets its question and
-your reply in its prompt.
-
-**Triggers (opt-in)** Set `GENE_PROGRAM_TRIGGERS=true` and Gene fires programs on its
+Set `GENE_PROGRAM_TRIGGERS=true` and Gene fires programs on its
 own from their `## Trigger` prose. When the prose is new or changes, a short agent run
 compiles it once into a small JavaScript `check()` function — written against
 standard-looking globals (`fetch`, `exec`, `cron`, `localStorage`, `console`, `Date`) — "every hour" becomes a cron check,
@@ -349,7 +420,9 @@ activated". A new program in Triage or Backlog is still with humans: its trigger
 Blocked program waits for a human too. Ticks that pass while a program isn't armed are
 dropped, not caught up later.
 
-**Trigger not firing?** Check, in order:
+#### Trigger not firing?
+
+Check, in order:
 
 1. **No trigger line on the program's detail screen** → `GENE_PROGRAM_TRIGGERS=true` isn't
    set for this Gene instance.
@@ -362,6 +435,8 @@ dropped, not caught up later.
 4. **Trigger line in warning colour / "Couldn't compile the trigger" comment** → the
    compile or check failed: `claude` isn't logged in on this machine, or the check runs
    a command not in `GENE_TRIGGER_EXEC_ALLOW`.
+
+#### Limits
 
 - **Sandboxed.** Checks run in QuickJS with no filesystem, env, or network except
   `fetch` (http/https, no credentials added) and `exec`, which only runs
