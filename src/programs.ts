@@ -125,6 +125,8 @@ export type RunOutcome = {
   sawSuccessResult: boolean;
   transientFailure: boolean;
   authFailure: boolean;
+  /** Stopped at GENE_AGENT_MAX_PROCESSING_TIME. */
+  timedOut: boolean;
 };
 
 /** How a program run ended, as Gene saw it. */
@@ -152,6 +154,9 @@ export type EndingPlan = {
 const incompleteReason = (result: RunOutcome): string | null => {
   if (result.authFailure) return "the Claude CLI on the Gene host isn't logged in (run `claude /login` there)";
   if (result.transientFailure) return "my connection to the model API dropped mid-run";
+  if (result.timedOut) {
+    return `it ran past the time limit (${Math.round(env.AGENT_MAX_PROCESSING_TIME / 60)} min, GENE_AGENT_MAX_PROCESSING_TIME)`;
+  }
   if (result.exitCode !== 0) return `the agent exited with code ${result.exitCode}`;
   if (!result.sawSuccessResult) return "the agent stopped without producing a final result";
   return null;

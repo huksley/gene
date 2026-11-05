@@ -137,6 +137,8 @@ export type InvokeResult = {
   authFailure: boolean;
   /** The CLI's auth error text (truncated), for the surfaced comment. */
   authReason: string | null;
+  /** True when the run was stopped at GENE_AGENT_MAX_PROCESSING_TIME. */
+  timedOut: boolean;
 };
 
 /** Absolute worktree path for an issue: `<repos>/.worktrees/<repoPath>/<IDENTIFIER>`. */
@@ -585,7 +587,7 @@ export const invokeAgent = async (
       `${logger.tag.invoke} [${id}] (dry-run) would spawn ${agentLabel} in ${worktreePath} ` +
       `(prompt ${prompt.length} chars, ${allowedTools.length} tools)`
     );
-    return { kind: "dry-run", worktreePath, exitCode: 0, sawSuccessResult: true, transientFailure: false, transientReason: null, authFailure: false, authReason: null };
+    return { kind: "dry-run", worktreePath, exitCode: 0, sawSuccessResult: true, transientFailure: false, transientReason: null, authFailure: false, authReason: null, timedOut: false };
   }
 
   // If GENE_CLAUDE_API_BILLING is true, passes the ANTHROPIC_API_KEY to the agent's environment
@@ -718,5 +720,5 @@ export const invokeAgent = async (
       `inspect, then re-trigger or \`npm run reset -- ${id}\``
     );
   }
-  return { kind: "spawned", worktreePath, exitCode, sawSuccessResult, transientFailure, transientReason, authFailure, authReason };
+  return { kind: "spawned", worktreePath, exitCode, sawSuccessResult, transientFailure, transientReason, authFailure, authReason, timedOut };
 };

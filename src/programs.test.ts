@@ -184,7 +184,7 @@ test("programBranch: absent or empty section → undefined", () => {
 });
 
 // --- Where a run ends up ------------------------------------------------------------
-const okRun = { exitCode: 0, sawSuccessResult: true, transientFailure: false, authFailure: false };
+const okRun = { exitCode: 0, sawSuccessResult: true, transientFailure: false, authFailure: false, timedOut: false };
 
 test("ending: a finished run goes back to Todo with no extra comment", () => {
   const plan = planProgramEnding({ kind: "finished", result: okRun, liveState: env.ACTIVE_STATE });
@@ -325,4 +325,16 @@ test("replaceRunNotes: a heading with trailing text is still the notes section",
     replaceRunNotes("## Run notes (kept by Gene)\n\nold\n\n## Workflow\nReview.", "new"),
     "## Run notes\n\nnew\n\n## Workflow\nReview."
   );
+});
+
+test("ending: a run stopped at the time limit says it timed out, not just an exit code", () => {
+  const plan = planProgramEnding({
+    kind: "finished",
+    result: { ...okRun, exitCode: 143, sawSuccessResult: false, timedOut: true },
+    liveState: env.ACTIVE_STATE
+  });
+  assert.equal(plan.moveTo, env.TRIGGER_STATE);
+  assert.equal(plan.lastResult, "incomplete");
+  assert.match(plan.comment ?? "", /time limit/);
+  assert.doesNotMatch(plan.comment ?? "", /exited with code/);
 });

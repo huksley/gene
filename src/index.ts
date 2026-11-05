@@ -1056,11 +1056,11 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
     if (!tracker.isAssignedToOwner(program)) continue;
     monitor.setProgramRow(program.identifier, program.title, program.stateName, program.description);
 
-    const runInFlight = inFlight.has(program.id);
-    const request = hasFireRequest(program.identifier) ? takeFireRequest(program.identifier) : undefined;
-    const source = request?.source;
+    // A pending fire stays queued until the decision below: a restart's cancelled run that
+    // ends while these awaits run must still see its re-fire queued, or it drops to Todo.
+    const firePending = hasFireRequest(program.identifier);
     const comments =
-      source !== undefined || program.stateName === env.BLOCKED_STATE || program.stateName === env.ACTIVE_STATE
+      firePending || program.stateName === env.BLOCKED_STATE || program.stateName === env.ACTIVE_STATE
         ? await tracker.getComments(program)
         : [];
 
@@ -1068,7 +1068,7 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
     // logged unfinished run — so the store is read just for that case. A failure here must
     // read as "no evidence" (never resume), not as a reason to re-fire.
     let interruptedRun = false;
-    if (source === undefined && !runInFlight && program.stateName === env.ACTIVE_STATE) {
+    if (!firePending && !inFlight.has(program.id) && program.stateName === env.ACTIVE_STATE) {
       try {
         interruptedRun = await hasUnfinishedRun(tracker.name, program.identifier);
       } catch (error) {
@@ -1079,6 +1079,10 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
       }
     }
 
+    // Read after the awaits, so a run that ended meanwhile counts as ended.
+    const runInFlight = inFlight.has(program.id);
+    const request = firePending ? takeFireRequest(program.identifier) : undefined;
+    const source = request?.source;
     const action = decideProgramAction(program, comments, {
       firePending: source !== undefined,
       source,
