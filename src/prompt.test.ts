@@ -122,6 +122,50 @@ test("program prompt tells the run where to write its notes", () => {
   assert.match(prompt, /\/tmp\/\.gene\/programs\/PRG-1\/\.gene-run-notes\.md/);
 });
 
+test("program prompt names the description's `## Current state` section when it has one", () => {
+  const prompt = buildPrompt({
+    issue: { ...program, description: `${program.description}\n## Current state\nLast SHA: aaa` },
+    comments: [],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false,
+    runNotesPath: "/tmp/.gene/programs/PRG-1/.gene-run-notes.md"
+  });
+  assert.match(prompt, /`## Current state` section is this program's memory/);
+  assert.doesNotMatch(prompt, /## Run notes/);
+});
+
+// A section the ticket already has is there to be kept current — an empty `## Current state`
+// heading must fill in after the next run, even when the workflow never mentions it.
+test("program prompt asks for the notes section every run when the ticket has one", () => {
+  const prompt = buildPrompt({
+    issue: { ...program, description: `${program.description}\n## Current state\n` },
+    comments: [],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false,
+    runNotesPath: "/tmp/.gene/programs/PRG-1/.gene-run-notes.md"
+  });
+  assert.match(prompt, /every run/);
+  assert.doesNotMatch(prompt, /If you write nothing/);
+});
+
+test("program prompt leaves notes optional when the ticket has no notes section", () => {
+  const prompt = buildPrompt({
+    issue: program,
+    comments: [],
+    worktreePath: "/tmp/.gene/programs/PRG-1",
+    intent: "program",
+    attachmentRelativePaths: [],
+    hasRepo: false,
+    runNotesPath: "/tmp/.gene/programs/PRG-1/.gene-run-notes.md"
+  });
+  assert.doesNotMatch(prompt, /every run/);
+  assert.match(prompt, /If you write nothing/);
+});
+
 // Gene tells its own comments from a human's only by the marker. A program agent's
 // unmarked question reads as a human reply, so a Blocked program resumed itself.
 test("program prompt tells the agent to mark every comment it posts", () => {

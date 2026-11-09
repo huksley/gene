@@ -264,8 +264,8 @@ A run report comment listing what was reviewed, and one sub-issue per finding.
 - **`## Acceptance criteria`** is what a good run looks like.
 - **`## Branch`** (optional) pins the branch a repo-linked program runs on (see
   [Branch](#branch)).
-- **`## Run notes`** is written by the program itself, not by you (see
-  [Run notes](#run-notes)).
+- **`## Run notes`** (or **`## Current state`**) is written by the program itself, not
+  by you (see [Run notes](#run-notes)).
 
 Gene won't fire a program that's missing a required section (`GENE_PROGRAM_REQUIRE_SECTIONS`,
 defaults to the first three; empty = no gate); it comments with what's missing instead.
@@ -338,8 +338,17 @@ its new notes to a file. When the run ends, Gene replaces just that section of t
 description as it is at that moment. It doesn't touch `## Trigger`, `## Workflow`,
 `## Acceptance criteria`, or edits you made during the run.
 
+The agent never edits the description itself, so a run can't rewrite your workflow or
+clobber an edit you're making.
+
+To call the section **`## Current state`** instead, add that heading to the description
+(empty is fine). Gene fills whichever of the two it finds first and keeps your heading as
+written. With neither, it appends `## Run notes`.
+
+- Once the section exists, the agent **refreshes it every run**. Without one, notes are
+  optional and the first run that writes some adds `## Run notes`.
 - The notes are **replaced, not appended to**, so they stay short.
-- A run that writes no notes, or the same notes, leaves the description untouched.
+- Notes identical to what's there leave the description untouched.
 - Changing the notes never recompiles the trigger.
 - A cancelled run's notes are dropped.
 

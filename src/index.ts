@@ -785,13 +785,14 @@ const settleProgramRun = async (program: Issue, ending: ProgramEnding, runStarte
   return plan;
 };
 
-/** Where a program run writes its new `## Run notes` — in its worktree / scratch dir. */
+/** Where a program run writes its new run notes — in its worktree / scratch dir. */
 const RUN_NOTES_FILE = ".gene-run-notes.md";
 
 /**
- * Put the notes a run wrote (if any) in place of the live description's `## Run notes`
- * section — only that section changes, and it's applied to the description as it is now,
- * so an edit made during the run survives. Best-effort; the notes file is consumed.
+ * Put the notes a run wrote (if any) in place of the live description's notes section
+ * (`## Run notes` / `## Current state`) — only that section changes, and it's applied to
+ * the description as it is now, so an edit made during the run survives. Best-effort;
+ * the notes file is consumed.
  */
 const saveRunNotes = async (program: Issue, live: Issue | undefined, notesPath: string): Promise<void> => {
   let notes: string;

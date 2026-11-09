@@ -14,7 +14,8 @@ import {
   programBranch,
   planProgramEnding,
   resumeExchange,
-  replaceRunNotes
+  replaceRunNotes,
+  runNotesHeading
 } from "./programs.ts";
 
 /** Minimal Issue factory — mirrors src/subcards.test.ts's real Issue shape. */
@@ -320,10 +321,10 @@ test("replaceRunNotes: code fences in the notes are kept as written", () => {
   assert.equal(out, "## Workflow\nReview.\n\n## Run notes\n\nRan:\n```sh\n# list MRs\nglab mr list\n```\n");
 });
 
-test("replaceRunNotes: a heading with trailing text is still the notes section", () => {
+test("replaceRunNotes: a heading with trailing text is still the notes section, kept as written", () => {
   assert.equal(
     replaceRunNotes("## Run notes (kept by Gene)\n\nold\n\n## Workflow\nReview.", "new"),
-    "## Run notes\n\nnew\n\n## Workflow\nReview."
+    "## Run notes (kept by Gene)\n\nnew\n\n## Workflow\nReview."
   );
 });
 
@@ -337,4 +338,33 @@ test("ending: a run stopped at the time limit says it timed out, not just an exi
   assert.equal(plan.lastResult, "incomplete");
   assert.match(plan.comment ?? "", /time limit/);
   assert.doesNotMatch(plan.comment ?? "", /exited with code/);
+});
+
+// A program can name its memory `## Current state` instead of `## Run notes`.
+test("replaceRunNotes: a `## Current state` section is the notes section, heading kept", () => {
+  const desc = "## Workflow\nReview.\n\n## Current state\n\nLast SHA: aaa\n\n## Acceptance criteria\nDone.";
+  assert.equal(
+    replaceRunNotes(desc, "Last SHA: bbb"),
+    "## Workflow\nReview.\n\n## Current state\n\nLast SHA: bbb\n\n## Acceptance criteria\nDone."
+  );
+});
+
+test("replaceRunNotes: an empty `## Current state` heading opts in to that name", () => {
+  assert.equal(
+    replaceRunNotes("## Workflow\nReview.\n\n## Current state\n", "Last SHA: bbb"),
+    "## Workflow\nReview.\n\n## Current state\n\nLast SHA: bbb\n"
+  );
+});
+
+test("replaceRunNotes: a `### Current state` subheading is not the notes section", () => {
+  assert.equal(
+    replaceRunNotes("## Workflow\n### Current state\nexplained", "x"),
+    "## Workflow\n### Current state\nexplained\n\n## Run notes\n\nx\n"
+  );
+});
+
+test("runNotesHeading: names the section the description already has, else `## Run notes`", () => {
+  assert.equal(runNotesHeading("## Workflow\nReview."), "## Run notes");
+  assert.equal(runNotesHeading("## Workflow\nReview.\n## Current state\nA"), "## Current state");
+  assert.equal(runNotesHeading("## Run notes (by Gene)\nA"), "## Run notes (by Gene)");
 });

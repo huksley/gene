@@ -246,9 +246,20 @@ export const extractProgramSections = (description: string): ProgramSections => 
 });
 
 // --- Run notes ----------------------------------------------------------------------
-/** The description section a program run keeps its memory in between runs. */
+/** The description section a program run keeps its memory in between runs (the default name). */
 export const RUN_NOTES_HEADING = "## Run notes";
-const RUN_NOTES_LINE = /^##[ \t]+Run notes\b.*$/im;
+/** A `## Run notes` or `## Current state` heading line — the first one in the description wins. */
+const RUN_NOTES_LINE = /^##[ \t]+(?:Run notes|Current state)\b.*$/im;
+
+/**
+ * The heading of the section a run's notes go in, as the description writes it — its
+ * `## Run notes` or `## Current state` section — or `## Run notes` when it has neither.
+ */
+export const runNotesHeading = (description: string): string =>
+  RUN_NOTES_LINE.exec(description)?.[0].trim() ?? RUN_NOTES_HEADING;
+
+/** Whether the description already has a `## Run notes` / `## Current state` section. */
+export const hasRunNotesSection = (description: string): boolean => RUN_NOTES_LINE.test(description);
 
 /** Demote `#`/`##` headings to `###`, leaving fenced code blocks as written. */
 const demoteHeadings = (markdown: string): string => {
@@ -263,19 +274,21 @@ const demoteHeadings = (markdown: string): string => {
 };
 
 /**
- * The description with its `## Run notes` section replaced by `notes` (appended when the
- * section is missing). Only that section changes, and an unchanged section leaves the
- * description byte-for-byte as it was. Headings inside the notes are demoted to `###`,
- * so they can't end the section early or pose as a program section.
+ * The description with its notes section (`## Run notes` or `## Current state`, heading
+ * kept as written) replaced by `notes`; a `## Run notes` section is appended when it has
+ * neither. Only that section changes, and an unchanged section leaves the description
+ * byte-for-byte as it was. Headings inside the notes are demoted to `###`, so they can't
+ * end the section early or pose as a program section.
  */
 export const replaceRunNotes = (description: string, notes: string): string => {
   const body = demoteHeadings(notes.trim());
-  const section = `${RUN_NOTES_HEADING}\n\n${body}\n`;
   const match = RUN_NOTES_LINE.exec(description);
   if (!match) {
+    const section = `${RUN_NOTES_HEADING}\n\n${body}\n`;
     const head = description.trimEnd();
     return head ? `${head}\n\n${section}` : section;
   }
+  const section = `${match[0].trimEnd()}\n\n${body}\n`;
   const before = description.slice(0, match.index);
   const rest = description.slice(match.index + match[0].length);
   const next = rest.search(/^#{1,2}\s/m);
