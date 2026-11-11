@@ -32,6 +32,14 @@ const DIRECTIVE_PATTERN = new RegExp(
   "i"
 );
 
+/**
+ * Whether a comment addresses Gene: it holds the command base (`!gene`) as a word of its
+ * own, with or without a known command after it (`!gene go ahead`, `!gene approve`).
+ */
+const ADDRESS_PATTERN = new RegExp(`(?:^|[\\s\`(>])${escapeRegExp(env.COMMAND_BASE)}(?=$|[\\s\`).,:;!?])`, "i");
+
+export const addressesGene = (commentText: string): boolean => ADDRESS_PATTERN.test(commentText);
+
 export const parseDirective = (commentText: string): Directive | null => {
   const match = DIRECTIVE_PATTERN.exec(commentText);
   if (!match) {

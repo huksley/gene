@@ -280,7 +280,7 @@ The ticket's state says whether a program is switched on, running, or waiting fo
 
 | State | What it means for a program |
 |---|---|
-| **Todo** | Switched on and at rest. Its trigger is armed, and `g` runs it. **Every run comes back here.** |
+| **Todo** | Switched on and at rest. Its trigger is armed, `g` runs it, and so does a `!gene` comment. **Every run comes back here.** |
 | **In Progress** | A run is live. If nothing is running it, Gene moves it back to Todo on the next scan. |
 | **Blocked** | Waiting for a human: the run asked a question, or the branch can't be synced. Reply to resume, or reply `!gene stop` to drop the run (→ Todo). |
 | **Triage, Backlog, any other** | Switched off: still with humans. Its trigger compiles (review it with `t`) but isn't armed, so it never runs on its own. Move it to **Todo** to switch it on. (`g` still runs it once, and the run lands in Todo.) |
@@ -290,7 +290,7 @@ only when it needs you. It never rests in Blocked or In Progress.
 
 ### A run, step by step
 
-1. **Fired** — press `g` on it in the dashboard, or its trigger matches.
+1. **Fired** — press `g` on it in the dashboard, comment `!gene …` on it, or its trigger matches.
 2. Gene moves the ticket to **In Progress**. It posts no comment: the state says it's
    running, and the dashboard shows the live progress.
 3. If the program links a repo, Gene brings its worktree level with the remote branch.
@@ -328,7 +328,7 @@ they are.
 
 Every comment the agent posts ends with the agent marker (`GENE_AGENT_MARKER`, default
 `#gene-ai`). That's how Gene tells its own comments from yours, so a reply from you is what
-resumes a Blocked program.
+resumes a Blocked program or fires one in Todo, and the agent's own comments never do.
 
 ### Run notes
 
@@ -364,7 +364,14 @@ to drop the run instead; the program goes back to Todo.
 
 ### Firing a program
 
-In the dashboard, select a program row and press **`g`**, then **`g`** again within 2 s to
+**From the ticket:** comment on a program in **Todo** with a line addressed to Gene, e.g.
+`!gene go ahead with option B`. The next scan (within `GENE_POLL_INTERVAL_MS`) fires it, and
+the run gets your comment in its prompt as the reason it fired. Only comments posted
+since the program's last run count, and each fires one run. A comment without `!gene` doesn't fire
+anything: it's a note the next run reads. `!gene stop` has nothing to stop in Todo, so it
+doesn't fire either. A program switched off (Triage, Backlog) ignores `!gene` comments.
+
+**From the dashboard:** in the dashboard, select a program row and press **`g`**, then **`g`** again within 2 s to
 confirm. Pressing `g` on a running program **restarts** it: the live run is cancelled and
 fired again. Programs are marked **⟳** in the list (**ϟ** when a trigger is armed);
 **`Shift+P`** shows programs only. Opening a program shows the live agent progress while it

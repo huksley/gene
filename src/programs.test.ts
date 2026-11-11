@@ -368,3 +368,74 @@ test("runNotesHeading: names the section the description already has, else `## R
   assert.equal(runNotesHeading("## Workflow\nReview.\n## Current state\nA"), "## Current state");
   assert.equal(runNotesHeading("## Run notes (by Gene)\nA"), "## Run notes (by Gene)");
 });
+
+// --- A `!gene` comment fires a program at rest ---------------------------------------
+const lastRun = "2026-11-11T10:00:00.000Z";
+const atRest = (comments: Comment[], opts: { lastRunAt?: string | null; firedComments?: Set<string> } = {}) =>
+  decideProgramAction(prog(env.TRIGGER_STATE), comments, {
+    firePending: false,
+    runInFlight: false,
+    lastRunAt: lastRun,
+    ...opts
+  });
+
+test("decide: Todo with a `!gene` comment since the last run → fire, carrying the comment", () => {
+  const ask = comment("c2", false, "2026-11-11T11:00:00.000Z", "!gene go ahead with option B");
+  const a = atRest([comment("c1", true, "2026-11-11T10:30:00.000Z"), ask]);
+  assert.deepEqual(a, { kind: "fire", source: "comment", comment: ask });
+});
+
+test("decide: Todo with a `!gene` comment from before the last run → nothing (that run saw it)", () => {
+  const a = atRest([comment("c1", false, "2026-11-11T09:00:00.000Z", "!gene go ahead")]);
+  assert.equal(a.kind, "nothing");
+});
+
+test("decide: Todo with plain prose since the last run → nothing (a note for the next run)", () => {
+  const a = atRest([comment("c1", false, "2026-11-11T11:00:00.000Z", "next time also check the staging cluster")]);
+  assert.equal(a.kind, "nothing");
+});
+
+test("decide: Todo with `!gene stop` since the last run → nothing to stop", () => {
+  const a = atRest([comment("c1", false, "2026-11-11T11:00:00.000Z", "!gene stop")]);
+  assert.equal(a.kind, "nothing");
+});
+
+test("decide: Todo with Gene's own comment mentioning `!gene` → nothing", () => {
+  const a = atRest([comment("c1", true, "2026-11-11T11:00:00.000Z", "Reply `!gene approve` to go on.")]);
+  assert.equal(a.kind, "nothing");
+});
+
+test("decide: a comment that already fired a run doesn't fire again", () => {
+  const a = atRest([comment("c1", false, "2026-11-11T11:00:00.000Z", "!gene go")], { firedComments: new Set(["c1"]) });
+  assert.equal(a.kind, "nothing");
+});
+
+test("decide: a program that never ran fires on any `!gene` comment", () => {
+  const a = atRest([comment("c1", false, "2026-11-01T11:00:00.000Z", "!gene run it")], { lastRunAt: null });
+  assert.equal(a.kind, "fire");
+});
+
+test("decide: when the last run is unknown, comments never fire", () => {
+  const a = atRest([comment("c1", false, "2026-11-11T11:00:00.000Z", "!gene go")], { lastRunAt: undefined });
+  assert.equal(a.kind, "nothing");
+});
+
+test("decide: a `!gene` comment outside Todo (switched off) doesn't fire", () => {
+  const a = decideProgramAction(prog("Backlog"), [comment("c1", false, "2026-11-11T11:00:00.000Z", "!gene go")], {
+    firePending: false,
+    runInFlight: false,
+    lastRunAt: lastRun
+  });
+  assert.equal(a.kind, "nothing");
+});
+
+test("decide: a `!gene` word inside another word doesn't address Gene", () => {
+  const a = atRest([comment("c1", false, "2026-11-11T11:00:00.000Z", "see foo!gene-bar")]);
+  assert.equal(a.kind, "nothing");
+});
+
+test("fire queue: a comment fire keeps its comment through a re-queue", () => {
+  const ask = comment("c9", false, "2026-11-11T11:00:00.000Z", "!gene go");
+  fireProgram("PRG-9", "comment", undefined, ask);
+  assert.deepEqual(takeFireRequest("PRG-9"), { source: "comment", reason: undefined, comment: ask });
+});

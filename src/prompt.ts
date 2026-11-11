@@ -49,6 +49,8 @@ export type PromptInputs = {
   reviewContext?: ReviewContext;
   /** Why a trigger fired this program run (program intent only); absent for a manual fire. */
   fireReason?: string;
+  /** A program run fired by a `!gene` comment on its ticket: that comment. */
+  fireComment?: Comment;
   /** A program run resuming from Blocked: the question it asked and the replies since. */
   conversation?: Comment[];
   /** Where a program run writes its new run notes (program intent only). */
@@ -334,7 +336,8 @@ const runNotesInstructions = (description: string, runNotesPath: string): string
  * agent writes back to the ticket and may spawn child coding tickets.
  */
 const buildProgramPrompt = (inputs: PromptInputs): string => {
-  const { issue, worktreePath, hasRepo, attachmentRelativePaths, fireReason, conversation, runNotesPath } = inputs;
+  const { issue, worktreePath, hasRepo, attachmentRelativePaths, fireReason, fireComment, conversation, runNotesPath } =
+    inputs;
   const workspace = hasRepo
     ? `# Working tree\n\nYou are in a git worktree at \`${worktreePath}\`. Read and run things here, but do NOT commit, push, or open a change request — this is a program run, not a coding task.`
     : `# Working directory\n\nYou are in a scratch working directory at \`${worktreePath}\` (no git repository). Use it for any temporary files.`;
@@ -355,6 +358,16 @@ const buildProgramPrompt = (inputs: PromptInputs): string => {
     "",
     ...(fireReason
       ? ["# Why this run fired", "", `This run was started automatically by the program's trigger: ${fireReason}`, ""]
+      : []),
+    ...(fireComment
+      ? [
+          "# Why this run fired",
+          "",
+          "A comment on the ticket asked for this run. Follow it, within the program's workflow:",
+          "",
+          formatTranscript([fireComment]),
+          ""
+        ]
       : []),
     ...(conversation && conversation.length > 0
       ? [

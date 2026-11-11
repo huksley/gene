@@ -666,6 +666,24 @@ export const hasUnfinishedRun = async (tracker: string, identifier: string): Pro
 };
 
 /**
+ * When this ticket's last run was dispatched (ISO), or null when it never ran. Every program
+ * run — a fresh fire or a resume — logs one `dispatch` row as it starts, so a comment posted
+ * after it is one no run has seen yet.
+ */
+export const lastDispatchAt = async (tracker: string, identifier: string): Promise<string | null> => {
+  const db = await getDb();
+  const res = await db.query<{ created_at: Date | string }>(
+    `SELECT created_at FROM issue_log
+      WHERE tracker = $1 AND identifier = $2 AND event = 'dispatch'
+      ORDER BY id DESC LIMIT 1`,
+    [tracker, identifier]
+  );
+  const at = res.rows[0]?.created_at;
+  if (at === undefined) return null;
+  return at instanceof Date ? at.toISOString() : new Date(at).toISOString();
+};
+
+/**
  * Begin shutdown of the store: cancel any in-flight connect-retry loop, then close the
  * pool if it was ever opened — so a one-shot (`--once` / `log` / `reset`) or a Ctrl+C
  * during startup exits promptly instead of lingering on open sockets or a 30s retry.

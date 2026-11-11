@@ -7,18 +7,19 @@
  */
 import { env } from "./config.ts";
 import { commentIsIgnored } from "./ignore.ts";
-import { parseDirective } from "./directives.ts";
+import { addressesGene, parseDirective } from "./directives.ts";
 import type { Comment, Issue } from "./tracker/index.ts";
 
 /** Drop program tickets from a coding-scan issue list (by identifier). */
 export const excludePrograms = (issues: Issue[], programIds: Set<string>): Issue[] =>
   issues.filter(i => !programIds.has(i.identifier));
 
-export type ProgramSource = "manual" | "trigger";
+/** Who fired a run: `g` in the dashboard, the `## Trigger`, or a `!gene` comment on the ticket. */
+export type ProgramSource = "manual" | "trigger" | "comment";
 
 export type ProgramAction =
   | { kind: "nothing"; reason: string }
-  | { kind: "fire"; source: ProgramSource }
+  | { kind: "fire"; source: ProgramSource; comment?: Comment }
   | { kind: "restart"; source: ProgramSource }
   | { kind: "resume"; latestUserCommentId: string }
   | { kind: "resume-interrupted" }
@@ -26,15 +27,20 @@ export type ProgramAction =
   /** In ACTIVE with no run behind it: put it back to rest (Todo) — never re-run it. */
   | { kind: "rest" };
 
-/** A queued fire: who asked, and (for a trigger) why — surfaced in the run's prompt. */
-export type FireRequest = { source: ProgramSource; reason?: string };
+/** A queued fire: who asked, and why (a trigger's reason, the `!gene` comment) — surfaced in the run's prompt. */
+export type FireRequest = { source: ProgramSource; reason?: string; comment?: Comment };
 
 // --- Fire queue (manual `g` and triggers both enqueue here) -------------------------
 const pendingFires = new Map<string, FireRequest>();
 
 /** Enqueue a fire for a program (idempotent per identifier; the latest request wins). */
-export const fireProgram = (identifier: string, source: ProgramSource = "manual", reason?: string): void => {
-  pendingFires.set(identifier.toLowerCase(), { source, reason });
+export const fireProgram = (
+  identifier: string,
+  source: ProgramSource = "manual",
+  reason?: string,
+  comment?: Comment
+): void => {
+  pendingFires.set(identifier.toLowerCase(), { source, reason, ...(comment ? { comment } : {}) });
 };
 
 export const hasFireRequest = (identifier: string): boolean =>
@@ -85,6 +91,15 @@ export const decideProgramAction = (
      * inference alone.
      */
     interruptedRun?: boolean;
+    /**
+     * When this program's last run was dispatched (ISO), `null` when it never ran. A
+     * `!gene` comment in Todo fires the program only if it was posted after this — the
+     * last run already saw anything older. Undefined (unknown, e.g. the store couldn't be
+     * read) means comments never fire it.
+     */
+    lastRunAt?: string | null;
+    /** Comments that already fired a run — never fire again, even if `lastRunAt` lags. */
+    firedComments?: ReadonlySet<string>;
   }
 ): ProgramAction => {
   const source = opts.source ?? "manual";
@@ -115,7 +130,37 @@ export const decideProgramAction = (
     if (parseDirective(latest.body)?.command === "stop") return { kind: "stop" };
     return { kind: "resume", latestUserCommentId: latest.id };
   }
+  if (program.stateName === env.TRIGGER_STATE && !opts.runInFlight) {
+    const request = commentFireRequest(comments, opts.lastRunAt, opts.firedComments);
+    if (request) return { kind: "fire", source: "comment", comment: request };
+  }
   return { kind: "nothing", reason: "resting" };
+};
+
+/**
+ * The comment that should fire a program at rest: the newest human comment addressing
+ * Gene (`!gene …`) posted since the last run. Plain prose stays a note the next run reads;
+ * `!gene stop` has nothing to stop. Gene's own comments (marked) never fire it.
+ */
+const commentFireRequest = (
+  comments: Comment[],
+  lastRunAt: string | null | undefined,
+  firedComments: ReadonlySet<string> | undefined
+): Comment | undefined => {
+  if (lastRunAt === undefined) return undefined;
+  const since = lastRunAt === null ? -Infinity : Date.parse(lastRunAt);
+  if (Number.isNaN(since)) return undefined;
+  const addressed = comments.filter(
+    c =>
+      !c.isAgent &&
+      Date.parse(c.createdAt) > since &&
+      addressesGene(c.body) &&
+      !commentIsIgnored(env.TRACKER, c.body)
+  );
+  const latest = addressed[addressed.length - 1];
+  if (!latest || firedComments?.has(latest.id)) return undefined;
+  if (parseDirective(latest.body)?.command === "stop") return undefined;
+  return latest;
 };
 
 // --- Where a run ends up ------------------------------------------------------------

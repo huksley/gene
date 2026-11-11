@@ -59,7 +59,7 @@ import { runCheck } from "./trigger/sandbox.ts";
 import { createHost } from "./trigger/host.ts";
 import { completeFinishedParents, isParentAwaitingChildren } from "./subcards.ts";
 import { dispatch as dispatchPluginEvent, setupPlugins } from "./plugins/index.ts";
-import { closeDb, findInterruptedRuns, hasUnfinishedRun, logEvent, readTokenTotal, readIssueLog } from "./db.ts";
+import { closeDb, findInterruptedRuns, hasUnfinishedRun, lastDispatchAt, logEvent, readTokenTotal, readIssueLog } from "./db.ts";
 import { stageIssueAttachments } from "./attachments.ts";
 import { isHeldByLiveProcess, listOwnedLocks, withLock } from "./lock.ts";
 import { resetIssue } from "./reset.ts";
@@ -890,7 +890,14 @@ const finishProgramRun = async (
 const dispatchProgram = async (
   program: Issue,
   comments: Comment[],
-  opts: { source: ProgramSource; freshFire: boolean; reason?: string; conversation?: Comment[] }
+  opts: {
+    source: ProgramSource;
+    freshFire: boolean;
+    reason?: string;
+    conversation?: Comment[];
+    /** The `!gene` comment that fired this run, handed to the agent. */
+    fireComment?: Comment;
+  }
 ): Promise<void> => {
   if (inFlight.has(program.id)) {
     logger.info(`${logger.tag.flow} [${program.identifier}] program already running — skipping`);
@@ -922,7 +929,7 @@ const dispatchProgram = async (
     logger.info(`${logger.tag.flow} [${program.identifier}] at concurrency cap — deferring`);
     // Re-enqueue the fire so the next scan runs it; the row stays "queued" (do NOT
     // call agentSettled here — it would flip a merely-deferred program to "error").
-    if (opts.freshFire) fireProgram(program.identifier, opts.source, opts.reason);
+    if (opts.freshFire) fireProgram(program.identifier, opts.source, opts.reason, opts.fireComment);
     return;
   }
 
@@ -993,6 +1000,7 @@ const dispatchProgram = async (
         repoLabel,
         subdir: target?.subdir,
         fireReason: opts.reason,
+        fireComment: opts.fireComment,
         conversation: opts.conversation,
         runNotesPath
       });
@@ -1043,10 +1051,14 @@ const dispatchProgram = async (
   });
 };
 
+/** `!gene` comments that already fired a program in this process, so one comment fires once. */
+const firedComments = new Set<string>();
+
 /**
  * One pass over the program tickets: register each row, decide, and act. Fetches
- * comments only when a decision needs them (a fire is pending, or the ticket sits
- * in Blocked/Active) so a resting-program poll stays cheap.
+ * comments only when a decision needs them (a fire is pending, the ticket sits in
+ * Blocked/Active, or it rests in Todo where a `!gene` comment fires it) — so a program
+ * switched off (Triage, Backlog) costs no comment reads.
  */
 const scanPrograms = async (programs: Issue[]): Promise<void> => {
   // Triggers first, so a fire they enqueue is dispatched by the loop below in this same scan.
@@ -1060,10 +1072,24 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
     // A pending fire stays queued until the decision below: a restart's cancelled run that
     // ends while these awaits run must still see its re-fire queued, or it drops to Todo.
     const firePending = hasFireRequest(program.identifier);
+    // At rest, a `!gene` comment posted since the last run fires it — so read the comments
+    // in Todo too, and when that last run was. A store failure reads as "unknown": no fire.
+    const resting = program.stateName === env.TRIGGER_STATE;
     const comments =
-      firePending || program.stateName === env.BLOCKED_STATE || program.stateName === env.ACTIVE_STATE
+      firePending || resting || program.stateName === env.BLOCKED_STATE || program.stateName === env.ACTIVE_STATE
         ? await tracker.getComments(program)
         : [];
+    let lastRunAt: string | null | undefined;
+    if (resting && !firePending) {
+      try {
+        lastRunAt = await lastDispatchAt(tracker.name, program.identifier);
+      } catch (error) {
+        logger.warn(
+          `${logger.tag.flow} [${program.identifier}] could not read when it last ran:`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    }
 
     // Only an ACTIVE program with nothing running locally can resume, and only against a
     // logged unfinished run — so the store is read just for that case. A failure here must
@@ -1088,7 +1114,9 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
       firePending: source !== undefined,
       source,
       runInFlight,
-      interruptedRun
+      interruptedRun,
+      lastRunAt,
+      firedComments
     });
     if (action.kind !== "nothing") {
       logger.info(`${logger.tag.flow} [${program.identifier}] program → ${action.kind}`);
@@ -1098,12 +1126,18 @@ const scanPrograms = async (programs: Issue[]): Promise<void> => {
       case "nothing":
         break;
       case "fire":
-        await dispatchProgram(program, comments, { source: action.source, freshFire: true, reason: request?.reason });
+        if (action.comment) firedComments.add(action.comment.id);
+        await dispatchProgram(program, comments, {
+          source: action.source,
+          freshFire: true,
+          reason: request?.reason,
+          fireComment: action.comment ?? request?.comment
+        });
         break;
       case "restart":
         // Cancel the live run; re-enqueue so the next scan fires once the lock frees.
         monitor.requestCancel(program.identifier);
-        fireProgram(program.identifier, action.source, request?.reason);
+        fireProgram(program.identifier, action.source, request?.reason, request?.comment);
         break;
       case "resume":
         // Hand the run the question it asked and the reply, so it doesn't start blind.
