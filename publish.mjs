@@ -1,12 +1,18 @@
 /**
  * Publish the standalone binary to a GitHub release.
  *
- *   npm run publish
+ *   npm run publish                                     # every target
+ *   npm run publish -- --target linux-x64,linux-arm64   # only these (see below)
  *
  * Rebuilds the release artifacts (so the upload always matches the current source),
  * ensures a GitHub release exists for the package.json version (tag `vX.Y.Z`), and
- * uploads the gzipped binary + its `.sha256` with `--clobber`. The matching installer
- * (`install.sh`) and `gene --update` download and decompress that `.gz`.
+ * uploads each target's gzipped binary + its `.sha256` with `--clobber`. The matching
+ * installer (`install.sh`) and `gene --update` download and decompress that `.gz`.
+ *
+ * `--target` is passed through to build.mjs and limits what is uploaded, leaving the
+ * release's other assets alone. A notarized macOS binary needs a Mac (codesign +
+ * notarytool), so a release can be filled from two machines: the Linux targets from
+ * Linux, then `--target darwin-arm64` with GENE_CODESIGN_IDENTITY on a Mac.
  *
  * Requires the `gh` CLI, authenticated against the repo (`gh auth login`).
  */
@@ -20,7 +26,15 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 const p = (...s) => path.join(root, ...s);
 
 const REPO = "huksley/gene";
-const ASSET = "gene-macos-arm64"; // keep in sync with build.mjs and ASSET_CANDIDATES
+const ALL_TARGETS = ["darwin-arm64", "linux-x64", "linux-arm64"]; // keep in sync with build.mjs TARGETS
+const HOST = `${process.platform}-${process.arch}`;
+const targetArg = (() => {
+  const eq = process.argv.find(a => a.startsWith("--target="));
+  const i = process.argv.indexOf("--target");
+  return eq ? eq.slice("--target=".length) : i >= 0 ? process.argv[i + 1] : "all";
+})();
+const targets =
+  targetArg === "all" ? ALL_TARGETS : [...new Set(targetArg.split(",").map(t => (t.trim() === "host" ? HOST : t.trim())))];
 
 const { version } = JSON.parse(fs.readFileSync(p("package.json"), "utf8"));
 const tag = `v${version}`;
@@ -68,15 +82,14 @@ if (spawnSync("gh", ["auth", "status"], { stdio: "ignore" }).status !== 0) {
 
 // 1. Rebuild so the published binary matches the current source. build.mjs signs with
 // GENE_CODESIGN_IDENTITY and notarizes with GENE_NOTARY_PROFILE when they're set.
-if (!process.env.GENE_CODESIGN_IDENTITY?.trim()) {
-  console.warn("! GENE_CODESIGN_IDENTITY is not set — this release will be ad-hoc signed only (not notarized)");
+if (targets.includes("darwin-arm64") && !process.env.GENE_CODESIGN_IDENTITY?.trim()) {
+  console.warn("! GENE_CODESIGN_IDENTITY is not set — the macOS binary will not be notarized (ad-hoc signed, or unsigned off a Mac)");
 }
-console.log("• building release artifacts");
-execFileSync(process.execPath, [p("build.mjs")], { stdio: "inherit", cwd: root });
+console.log(`• building release artifacts (${targets.join(", ")})`);
+execFileSync(process.execPath, [p("build.mjs"), "--target", targets.join(",")], { stdio: "inherit", cwd: root });
 
-const gz = p(`${ASSET}.gz`);
-const sum = p(`${ASSET}.gz.sha256`);
-for (const f of [gz, sum]) {
+const files = targets.flatMap(t => [p(`gene-${t}.gz`), p(`gene-${t}.gz.sha256`)]);
+for (const f of files) {
   if (!fs.existsSync(f)) {
     console.error(`✗ missing artifact ${path.basename(f)} — build did not produce it.`);
     process.exit(1);
@@ -97,7 +110,7 @@ if (spawnSync("gh", ["release", "view", tag, "--repo", REPO], { stdio: "ignore" 
 }
 
 // 3. Upload the artifacts, clobbering any same-named assets from a previous run.
-console.log(`• uploading ${ASSET}.gz + .sha256 → ${tag}`);
-execFileSync("gh", ["release", "upload", tag, gz, sum, "--repo", REPO, "--clobber"], { stdio: "inherit" });
+console.log(`• uploading ${files.map(f => path.basename(f)).join(", ")} → ${tag}`);
+execFileSync("gh", ["release", "upload", tag, ...files, "--repo", REPO, "--clobber"], { stdio: "inherit" });
 
 console.log(`✓ published ${tag} → https://github.com/${REPO}/releases/tag/${tag}`);

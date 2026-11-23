@@ -5,7 +5,11 @@
   "disableExperimentalSEAWarning": true,
   "useSnapshot": false,
   "useCodeCache": false,
-  "execArgv": ["--experimental-ffi", "--no-warnings", "--max-old-space-size=2048"],
+  "execArgv": [
+    "--experimental-ffi",
+    "--no-warnings",
+    "--max-old-space-size=2048"
+  ],
   "execArgvExtension": "env",
   "assets": {
     "package.json": "package.json",
@@ -13,7 +17,6 @@
     "initdb.wasm": "node_modules/@electric-sql/pglite/dist/initdb.wasm",
     "pglite.data": "node_modules/@electric-sql/pglite/dist/pglite.data",
     "quickjs.wasm": "node_modules/@jitl/quickjs-wasmfile-release-sync/dist/emscripten-module.wasm",
-    "libopentui.dylib": "node_modules/@opentui/core-darwin-arm64/libopentui.dylib",
     "sandbox.sh": "sandbox/sandbox.sh",
     "Dockerfile": "sandbox/Dockerfile"
   }

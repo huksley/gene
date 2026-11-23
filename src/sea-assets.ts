@@ -50,26 +50,46 @@ export const textAsset = (key: string): string =>
   new TextDecoder().decode(getRawAsset(key));
 
 /**
- * Materialise an embedded asset to `<tmpdir>/<subdir>/<filename>` and return its
- * path. Things that must live on disk to be used — the OpenTUI dylib (dlopen'd), the
- * sandbox.sh launcher + its Dockerfile (spawned / read by docker) — are extracted
- * once and reused when the size already matches. `mode` sets the file permissions
- * (0o755 for executables, 0o644 for plain data).
+ * Where embedded assets are extracted. macOS gives every user a private `TMPDIR`; on
+ * Linux `os.tmpdir()` is the shared, world-writable `/tmp`, where another user could
+ * own the directory (EACCES for us) or plant a library we'd then dlopen — so there it
+ * is the per-user cache dir instead (`$XDG_CACHE_HOME/gene`, default `~/.cache/gene`).
+ */
+const extractRoot = (): string => {
+  if (process.platform === "darwin") return os.tmpdir();
+  const cache = process.env.XDG_CACHE_HOME?.trim() || path.join(os.homedir(), ".cache");
+  return path.join(cache, "gene");
+};
+
+/**
+ * Materialise an embedded asset to `<extract root>/<subdir>/<filename>` and return
+ * its path. Things that must live on disk to be used — the OpenTUI native library
+ * (dlopen'd), the sandbox.sh launcher + its Dockerfile (spawned / read by docker) —
+ * are extracted once and rewritten only when the bytes on disk differ (a new release,
+ * or a damaged file). `mode` sets the file permissions (0o755 for executables, 0o644
+ * for plain data).
  */
 export const extractAssetTo = (subdir: string, key: string, filename: string, mode = 0o755): string => {
-  const dir = path.join(os.tmpdir(), subdir);
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = path.join(extractRoot(), subdir);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const dest = path.join(dir, filename);
 
   const buf = Buffer.from(getRawAsset(key)); // ArrayBuffer → Buffer
 
   let needWrite = true;
   try {
-    if (fs.statSync(dest).size === buf.length) needWrite = false;
+    const onDisk = fs.statSync(dest);
+    if (onDisk.size === buf.length && fs.readFileSync(dest).equals(buf)) needWrite = false;
   } catch {
     // not present yet — write it
   }
-  if (needWrite) fs.writeFileSync(dest, buf, { mode });
+  if (needWrite) {
+    // Write beside it and rename into place: replacing a library another running gene
+    // has mapped must not change the bytes under it.
+    const tmp = `${dest}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, buf, { mode });
+    fs.renameSync(tmp, dest);
+  }
   return dest;
 };
 

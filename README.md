@@ -9,7 +9,7 @@ that change request through review and CI — replying to comments, fixing CI fa
 It's the personal, unattended *harness* around `claude`, not a replacement for it: watching the tracker, the ticket lifecycle, per-issue multi-repo/forge routing, and the review/CI re-dispatch loop are what Gene adds. If you already drive Claude
 Code by hand, Gene is what runs it for you — from a ticket — while you do something more meaningful.
 
-> **Status:** open source (**Apache-2.0**) and under active development. The prebuilt binary is **macOS arm64**; on other platforms, build manually from the source code.
+> **Status:** open source (**Apache-2.0**) and under active development. Prebuilt binaries ship for **macOS arm64**, **Linux x64** and **Linux arm64**; on other platforms, run from source.
 
 <img width="1505" height="898" alt="Screenshot 2026-06-21 at 21 01 27" src="https://github.com/user-attachments/assets/86c5d374-5889-464b-b8d6-f715cc9463e0" />
 
@@ -572,12 +572,13 @@ database was reset), Gene recreates them on the next query.
   concurrency to get a feel for it.
 - **An issue tracker** — a Linear or Trello account (`GENE_TRACKER`).
 - **A change request forge and its CLI** — `gh` (GitHub) and/or `glab` (GitLab), authenticated; plus `git`, and the `linear` CLI for the Linear backend.
-- **OS** — the prebuilt binary is **macOS arm64** only. On Linux/Windows, run from
-  source with Node 26 (`npm start`); everything but the single-file binary works the same.
+- **OS** — prebuilt binaries for **macOS arm64**, **Linux x64** and **Linux arm64**
+  (glibc — not Alpine/musl). Elsewhere (Intel Macs, Windows, musl), run from source with
+  Node 26 (`npm run gene`); everything but the single-file binary works the same.
 
 ## Installation
 
-### Standalone binary (macOS arm64)
+### Standalone binary (macOS arm64, Linux x64/arm64)
 
 Install — or upgrade — to the latest release with one command. It drops a `gene` binary
 on your `PATH` (`/usr/local/bin` if writable, else `~/.local/bin`):
@@ -608,6 +609,35 @@ The binary bundles the embedded state store, so it needs no other dependencies t
 but Gene still shells out to the runtime CLIs (`claude`, `git`, `gh`/`glab`, and
 `linear` for the Linear backend). Install whichever you need from the
 [Dependencies](#dependencies) table below.
+
+### Building the binary yourself
+
+`npm run build` produces every platform's binary from either macOS or Linux — the
+JavaScript bundle is shared, and each target's Node binary (same version as yours, checked
+against nodejs.org's checksums) and OpenTUI native library are downloaded once into
+`node_modules/.cache/gene-build`:
+
+```bash
+npm ci
+npm run build                                   # darwin-arm64, linux-x64, linux-arm64
+npm run build -- --target host                  # just this machine's platform
+npm run build -- --target linux-x64,linux-arm64 # a subset
+```
+
+Each target lands in `dist/<target>/gene`, plus a release asset `gene-<target>.gz` and its
+`.sha256` in the repo root; your own platform's build is also copied to `./gene`.
+
+macOS needs the binary signed. Built on a Mac it's ad-hoc signed — or signed with a
+Developer ID and notarized when `GENE_CODESIGN_IDENTITY` (and `GENE_NOTARY_PROFILE`) are
+set. Built on Linux it's ad-hoc signed if [`rcodesign`](https://github.com/indygreg/apple-platform-rs)
+is on your `PATH`, and otherwise left unsigned; `install.sh` and `gene --update` ad-hoc sign
+an unsigned binary when they install it. If you copy a Linux-built macOS binary by hand,
+run `codesign --sign - --force gene` on the Mac first.
+
+`npm run publish` builds and uploads the assets to the GitHub release for the
+`package.json` version. It takes the same `--target` flag and uploads only those targets,
+so you can upload the Linux binaries from Linux and the notarized macOS binary from a Mac
+into the same release.
 
 ## Dependencies
 
@@ -714,8 +744,9 @@ you ran Claude Code by hand. Secrets stay in your gitignored `.gene.config`/envi
 and your API key is handed to the agent only when you turn on API billing.
 
 **Is it macOS only?**
-The prebuilt binary is macOS arm64. On Linux/Windows you run from source with Node 26 —
-same behaviour, just no single-file binary.
+No. Prebuilt binaries ship for macOS arm64, Linux x64 and Linux arm64, and `install.sh`
+picks the right one. On other platforms (Windows, Intel Macs, Alpine/musl) you run from
+source with Node 26 — same behaviour, just no single-file binary.
 
 **Why not just use Claude Code (or aider) directly?**
 Gene is the harness *around* `claude`, not a replacement: it polls your tracker, drives

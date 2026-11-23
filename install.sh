@@ -10,17 +10,13 @@
 #   -h, --help         show this help
 #
 # Environment overrides: GENE_INSTALL_DIR, GENE_VERSION, GH_TOKEN (lifts the
-# GitHub API rate limit). Prebuilt releases are macOS arm64 only.
+# GitHub API rate limit). Prebuilt releases: macOS arm64, Linux x64, Linux arm64 (glibc).
 
 set -euo pipefail
 
 OWNER="huksley"
 REPO="gene"
 BIN="gene"
-# Assets to try, in priority order. Published assets are gzipped (.gz) and decompressed
-# on install; the plain names are a fallback for older releases. Keep in sync with
-# ASSET_CANDIDATES in src/update.ts.
-ASSET_CANDIDATES=("gene-darwin-arm64.gz" "gene-macos-arm64.gz" "gene.gz" "gene-darwin-arm64" "gene-macos-arm64" "gene")
 
 INSTALL_DIR="${GENE_INSTALL_DIR:-}"
 VERSION="${GENE_VERSION:-}"
@@ -49,11 +45,28 @@ while [ "$#" -gt 0 ]; do
 done
 
 # ---- platform check ------------------------------------------------------
+# Assets to try, in priority order. Published assets are gzipped (.gz) and decompressed
+# on install; on macOS the older names are a fallback for releases before Linux builds
+# (<= 1.5.2). Keep in sync with assetCandidates in src/update.ts.
 OS="$(uname -s)"
 ARCH="$(uname -m)"
-if [ "$OS" != "Darwin" ] || [ "$ARCH" != "arm64" ]; then
-  die "prebuilt releases are macOS arm64 only (this is ${OS}/${ARCH})."
-fi
+case "${OS}/${ARCH}" in
+  Darwin/arm64)
+    TARGET="darwin-arm64"
+    ASSET_CANDIDATES=("gene-darwin-arm64.gz" "gene-macos-arm64.gz" "gene.gz" "gene-darwin-arm64" "gene-macos-arm64" "gene")
+    ;;
+  Linux/x86_64|Linux/amd64)
+    TARGET="linux-x64"
+    ASSET_CANDIDATES=("gene-linux-x64.gz")
+    ;;
+  Linux/aarch64|Linux/arm64)
+    TARGET="linux-arm64"
+    ASSET_CANDIDATES=("gene-linux-arm64.gz")
+    ;;
+  *)
+    die "no prebuilt release for ${OS}/${ARCH} (published: macOS arm64, Linux x64, Linux arm64) — build from source instead."
+    ;;
+esac
 
 # ---- pick an HTTP client -------------------------------------------------
 if command -v curl >/dev/null 2>&1; then
@@ -117,7 +130,7 @@ for candidate in "${ASSET_CANDIDATES[@]}"; do
     break
   fi
 done
-[ -n "$ASSET" ] || die "no macOS arm64 asset found at ${BASE} (looked for: ${ASSET_CANDIDATES[*]}). Are there published releases?"
+[ -n "$ASSET" ] || die "no ${TARGET} asset found at ${BASE} (looked for: ${ASSET_CANDIDATES[*]}). Are there published releases?"
 [ -s "$RAW" ] || die "downloaded file is empty."
 say "downloaded ${ASSET} ($(($(wc -c <"$RAW") / 1000000)) MB)"
 
@@ -170,7 +183,10 @@ mv -f "$DL" "$DEST" || die "failed to move binary into ${DEST}"
 
 # ---- verify --------------------------------------------------------------
 if ! "$DEST" --version >/dev/null 2>&1; then
-  die "installed binary failed to run ($DEST --version). It may be blocked by Gatekeeper — try: xattr -d com.apple.quarantine $DEST"
+  if [ "$OS" = "Darwin" ]; then
+    die "installed binary failed to run ($DEST --version). It may be blocked by Gatekeeper — try: xattr -d com.apple.quarantine $DEST"
+  fi
+  die "installed binary failed to run ($DEST --version). Prebuilt Linux releases need glibc (not musl/Alpine)."
 fi
 say "✓ installed $("$DEST" --version 2>/dev/null || echo gene) at ${DEST}"
 

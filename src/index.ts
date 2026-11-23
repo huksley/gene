@@ -1881,13 +1881,15 @@ const main = async (): Promise<void> => {
   }
 
   if (useUi) {
-    // Inside the single executable the OpenTUI native library is embedded as an
-    // asset; extract it into the `<root>/<package>/<file>` layout OpenTUI expects
+    // Inside the single executable the OpenTUI native library for this platform is
+    // embedded as the `libopentui` asset; extract it into the `<root>/<package>/<file>`
+    // layout OpenTUI expects (@opentui/core-<platform>-<arch>/libopentui.{dylib,so})
     // and point OTUI_ASSET_ROOT there BEFORE the UI module (and thus @opentui/core)
-    // loads. In dev the real platform package resolves the dylib itself.
+    // loads. In dev the real platform package resolves the library itself.
     if (inSea()) {
-      const dylib = extractAssetTo("gene-sea/opentui/@opentui/core-darwin-arm64", "libopentui.dylib", "libopentui.dylib");
-      process.env.OTUI_ASSET_ROOT = path.resolve(dylib, "../../..");
+      const file = process.platform === "darwin" ? "libopentui.dylib" : "libopentui.so";
+      const lib = extractAssetTo(`gene-sea/opentui/@opentui/core-${process.platform}-${process.arch}`, "libopentui", file);
+      process.env.OTUI_ASSET_ROOT = path.resolve(lib, "../../..");
     }
     // Dynamic import so @opentui/core (and its native FFI renderer) is loaded ONLY
     // in UI mode — headless mode never touches FFI. startUi mounts the renderer,

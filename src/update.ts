@@ -4,9 +4,10 @@
  *
  * Only meaningful for the single executable (`inSea()`): there is a real file at
  * `process.execPath` to swap. In a dev checkout `process.execPath` is `node`, so we
- * refuse and point at `git pull` instead. macOS arm64 is the only published target.
+ * refuse and point at `git pull` instead. Published targets: macOS arm64, Linux x64
+ * and Linux arm64 (glibc).
  *
- * Published assets are gzipped (`gene-macos-arm64.gz`) and decompressed on the fly as
+ * Published assets are gzipped (`gene-<platform>-<arch>.gz`) and decompressed on the fly as
  * they download. The swap is careful: stream into a sibling temp file (same dir →
  * atomic rename), make it executable + ad-hoc signed, stash the current binary as
  * `<bin>.old`, move the new one into place, then verify it runs `--version`; on any
@@ -28,19 +29,26 @@ import { inSea, readVersion } from "./sea-assets.ts";
 const OWNER = "huksley";
 const REPO = "gene";
 
+/** Platforms a release ships a binary for (`<platform>-<arch>`, as build.mjs names them). */
+const PUBLISHED_TARGETS = ["darwin-arm64", "linux-x64", "linux-arm64"];
+
 /**
- * Release assets to try, in priority order. Published assets are gzipped (`.gz`) and
- * decompressed while downloading; the plain-binary names are kept as a fallback for
- * older releases. Keep in sync with install.sh's ASSET_CANDIDATES.
+ * Release assets to try for a target, in priority order. Published assets are gzipped
+ * (`.gz`) and decompressed while downloading. macOS also accepts the names releases
+ * used before Linux builds (≤ 1.5.2: `gene-macos-arm64.gz`, earlier plain binaries).
+ * Keep in sync with install.sh's asset candidates and build.mjs's TARGETS.
  */
-const ASSET_CANDIDATES: { name: string; gzip: boolean }[] = [
-  { name: "gene-darwin-arm64.gz", gzip: true },
-  { name: "gene-macos-arm64.gz", gzip: true },
-  { name: "gene.gz", gzip: true },
-  { name: "gene-darwin-arm64", gzip: false },
-  { name: "gene-macos-arm64", gzip: false },
-  { name: "gene", gzip: false }
-];
+export const assetCandidates = (target: string): { name: string; gzip: boolean }[] =>
+  target === "darwin-arm64"
+    ? [
+        { name: "gene-darwin-arm64.gz", gzip: true },
+        { name: "gene-macos-arm64.gz", gzip: true },
+        { name: "gene.gz", gzip: true },
+        { name: "gene-darwin-arm64", gzip: false },
+        { name: "gene-macos-arm64", gzip: false },
+        { name: "gene", gzip: false }
+      ]
+    : [{ name: `gene-${target}.gz`, gzip: true }];
 
 interface ReleaseAsset {
   name: string;
@@ -173,10 +181,12 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
     );
     return false;
   }
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
-    logger.error(`${tag} prebuilt releases are macOS arm64 only (this is ${process.platform}/${process.arch}).`);
+  const platform = `${process.platform}-${process.arch}`;
+  if (!PUBLISHED_TARGETS.includes(platform)) {
+    logger.error(`${tag} no prebuilt release for ${platform} (published: ${PUBLISHED_TARGETS.join(", ")}).`);
     return false;
   }
+  const candidates = assetCandidates(platform);
 
   let target: string;
   try {
@@ -230,14 +240,14 @@ export const selfUpdate = async (options: UpdateOptions = {}): Promise<boolean> 
   }
 
   // 3. Pick a matching asset, carrying whether it needs decompressing.
-  const asset = ASSET_CANDIDATES.map(c => {
+  const asset = candidates.map(c => {
     const found = release.assets?.find(a => a.name === c.name);
     return found ? { ...found, gzip: c.gzip } : undefined;
   }).find(Boolean);
   if (!asset) {
     const have = (release.assets ?? []).map(a => a.name).join(", ") || "none";
     logger.error(
-      `${tag} release ${latest} has no macOS arm64 asset (looked for ${ASSET_CANDIDATES.map(c => c.name).join("/")}; found: ${have}).`
+      `${tag} release ${latest} has no ${platform} asset (looked for ${candidates.map(c => c.name).join("/")}; found: ${have}).`
     );
     return false;
   }
