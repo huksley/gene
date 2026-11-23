@@ -15,7 +15,11 @@
     "headless": "node --env-file-if-exists=.env.development src/index.ts --headless",
     "once": "node --env-file-if-exists=.env.development src/index.ts --once",
     "build": "node build.mjs",
+    "build:mac": "node build.mjs --target darwin-arm64",
+    "build:linux": "node build.mjs --target linux-x64,linux-arm64",
     "publish": "node publish.mjs",
+    "publish:mac": "node publish.mjs --target darwin-arm64",
+    "publish:linux": "node publish.mjs --target linux-x64,linux-arm64",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'src/**/*.test.ts'"
   },

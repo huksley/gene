@@ -620,8 +620,10 @@ against nodejs.org's checksums) and OpenTUI native library are downloaded once i
 ```bash
 npm ci
 npm run build                                   # darwin-arm64, linux-x64, linux-arm64
+npm run build:mac                               # darwin-arm64
+npm run build:linux                             # linux-x64 + linux-arm64
 npm run build -- --target host                  # just this machine's platform
-npm run build -- --target linux-x64,linux-arm64 # a subset
+npm run build -- --target linux-x64             # any subset
 ```
 
 Each target lands in `dist/<target>/gene`, plus a release asset `gene-<target>.gz` and its
@@ -635,9 +637,9 @@ an unsigned binary when they install it. If you copy a Linux-built macOS binary 
 run `codesign --sign - --force gene` on the Mac first.
 
 `npm run publish` builds and uploads the assets to the GitHub release for the
-`package.json` version. It takes the same `--target` flag and uploads only those targets,
-so you can upload the Linux binaries from Linux and the notarized macOS binary from a Mac
-into the same release.
+`package.json` version. It takes the same `--target` flag and uploads only those targets —
+`npm run publish:linux` and `npm run publish:mac` are the shortcuts — so you can upload the
+Linux binaries from Linux and the notarized macOS binary from a Mac into the same release.
 
 ## Dependencies
 
