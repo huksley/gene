@@ -6,12 +6,14 @@
  *   node build.mjs --target host                    # just this machine's platform
  *   node build.mjs --target linux-x64,darwin-arm64  # a chosen subset
  *
+ *   0. Vite builds the web UI (web/) into one self-contained dist/ui/index.html,
+ *      embedded below as the `ui.html` asset (served by src/web/server.ts).
  *   1. esbuild bundles src/index.ts and its whole import graph into a single ESM
  *      file (dist/gene.js). String-literal dynamic imports of local modules
  *      (./ui/app.ts, ./import-legacy.ts) and of @electric-sql/pglite are inlined.
  *      The bundle is plain JS, so one bundle serves every target.
  *   2. Per target, `node --build-sea` wraps that bundle — plus the embedded assets
- *      (PGlite WASM, the target's OpenTUI native library, package.json) — into
+ *      (PGlite WASM, the target's OpenTUI native library, package.json, the web UI) — into
  *      dist/<target>/gene. The SEA is injected into *that target's* Node binary
  *      (sea.json's `executable`): the running node for the host target, otherwise the
  *      same Node version for the target, downloaded from nodejs.org and verified
@@ -102,6 +104,13 @@ const stubFileAttrImports = {
   },
 };
 
+// The web UI (src/web/) is one self-contained HTML file, embedded as the `ui.html` asset.
+console.log("• building the web UI → dist/ui/index.html");
+execFileSync(process.execPath, [p("node_modules", "vite", "bin", "vite.js"), "build", "--config", p("web", "vite.config.ts")], {
+  stdio: "inherit",
+  cwd: root,
+});
+
 console.log("• bundling src/index.ts → dist/gene.js");
 await esbuild.build({
   entryPoints: [p("src", "index.ts")],
@@ -180,15 +189,18 @@ const nodeFor = async target => {
 };
 
 /**
- * The OpenTUI native library for a target: from node_modules when npm installed that
+ * The OpenTUI native library for a target: from node_modules when the package manager installed that
  * platform package (it installs only the host's), else `npm pack`ed at the exact
  * version @opentui/core pins and cached.
  */
 const openTuiLibFor = target => {
   const pkg = `@opentui/core-${target}`;
   const { lib } = TARGETS[target];
-  const installed = p("node_modules", pkg, lib);
-  if (fs.existsSync(installed)) return installed;
+  // npm hoists it into node_modules/; pnpm keeps it beside @opentui/core in its store.
+  const core = fs.realpathSync(p("node_modules", "@opentui", "core"));
+  for (const installed of [p("node_modules", pkg, lib), path.join(core, "..", `core-${target}`, lib)]) {
+    if (fs.existsSync(installed)) return installed;
+  }
 
   const version = JSON.parse(fs.readFileSync(p("node_modules", "@opentui", "core", "package.json"), "utf8")).version;
   const dir = path.join(CACHE, `opentui-core-${target}-${version}`);

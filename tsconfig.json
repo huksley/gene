@@ -17,7 +17,8 @@
     "isolatedModules": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "erasableSyntaxOnly": true
   },
   "include": ["src/**/*.ts", "trello/**/*.ts"],
   "exclude": ["node_modules", "repos", "pipeline", "lib", "types"]

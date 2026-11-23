@@ -205,7 +205,7 @@ never wedges an issue.
 within `GENE_POLL_INTERVAL_MS`. On Trello you can drop that to seconds: set
 `GENE_WEBHOOK_URL` (a public tunnel pointing at the local listener on
 `GENE_WEBHOOK_PORT`, default `8473`) plus `TRELLO_API_SECRET`, register the board
-webhook with `npm run webhook`, and board activity wakes the poll loop immediately.
+webhook with `pnpm webhook`, and board activity wakes the poll loop immediately.
 It's a per-tracker capability (`Tracker.startWatch`); without it the daemon just
 polls — correctness never depends on the webhook.
 
@@ -227,7 +227,7 @@ handling, just with "there's queued work here" rather than "wait for a new signa
 per-issue **activity log** in the state store, keyed by `(tracker, issue id)`:
 each dispatch, the agent's start / finish (with its own final summary), review
 re-dispatches, draft pickups, and resets (dry-run entries are flagged). Inspect one
-issue's history with `npm run log -- <system>:<id>` (e.g. `linear:CLOUD-1094`; a bare
+issue's history with `pnpm log <system>:<id>` (e.g. `linear:CLOUD-1094`; a bare
 id defaults the system to `GENE_TRACKER`). With the **opt-in Postgres backend** the
 store is multi-connection, so a one-shot command (`log` / `reset`) reads it fine
 while the daemon runs — both point at the same server. The **default embedded store**
@@ -505,6 +505,72 @@ Gene runs unattended and acts with your credentials, so the guardrails are delib
   **Blocked** with a comment rather than left hanging In Progress — and the worktree is
   preserved so a reply resumes it.
 
+## Web UI
+
+Set `GENE_UI_PORT` (or `GENE_UI_HOSTNAME`) and the daemon also serves a read-only web
+overview of recent work, in dashboard and `--headless` mode alike:
+
+```bash
+GENE_UI_PORT=8474 gene --headless              # http://127.0.0.1:8474/
+GENE_UI_HOSTNAME=0.0.0.0 GENE_UI_PORT=8474 GENE_UI_TOKEN=$(openssl rand -hex 24) gene
+```
+
+- **Activity**: every run in the last 24h / 7d / 30d, grouped by day. Each row shows
+  when it ran, how it ended, the ticket (linked to the tracker), what fired it, how long it
+  took, tokens, and its change request. Expand a row for the run's result, its notes, and
+  the ticket's latest comment.
+- **Programs**: one card per program: its state, last run, a strip of recent runs, the
+  trigger and its next check, and Gene's latest comment on the ticket (the last run's
+  resolution), rendered as markdown.
+- **Tickets**: the Gene tickets the last scan listed: state, live agent, last run and
+  linked change request.
+
+| Variable | Default | |
+|---|---|---|
+| `GENE_UI_HOSTNAME` | `127.0.0.1` | Address to bind. Setting it alone turns the UI on. |
+| `GENE_UI_PORT` | `8474` | Port to bind. Setting it alone turns the UI on. |
+| `GENE_UI_CLAUDE_SESSIONS` | `false` | Adds the Sessions tab (see below). |
+| `GENE_UI_TOKEN` | — | When set, `/api/*` requires `Authorization: Bearer <token>`. The page asks for it once and keeps it in the browser's localStorage; a `?token=…` link is saved and stripped from the address bar. |
+
+The bare `UI_HOSTNAME` / `UI_PORT` / `UI_TOKEN` / `UI_CLAUDE_SESSIONS` work too; the `GENE_` names win. Without
+a token anyone who can reach the port can read ticket titles and comments, so set one before
+binding anything but localhost (the daemon warns if you don't).
+
+### Claude sessions addon
+
+Set `GENE_UI_CLAUDE_SESSIONS=true` and the page gains a **Sessions** tab: the Claude Code
+sessions on this machine, yours and Gene's, read from `$CLAUDE_CONFIG_DIR` (default
+`~/.claude`).
+
+- **Live**: sessions a running `claude` process holds right now, working or idle, with
+  the latest prompt.
+- **Recent**: every session active in the window, by day: title, repo and branch, linked
+  tickets and PRs, prompts and tokens. Expand one for its recent prompts, latest reply,
+  tools, cost and lines changed, plus a `claude --resume <id>` line to copy.
+- **By ticket**: each ticket the sessions touched, with its sessions and PRs together.
+
+A session is tied to a ticket by its Gene worktree path, its git branch
+(`CLOUD-123/…`, `ruslan/cloud-123-…`), its title, or (dashed, off by default in
+"By ticket") a mention in a prompt. Only team keys Gene knows from its tracker count, so
+`utf-8` never reads as a ticket. PRs are the ones Claude Code recorded the session
+opening, plus the URLs `gh pr create` / `glab mr create` printed. Their state (open,
+draft, merged, closed) and CI come from `gh` / `glab`, cached and re-checked every 5
+minutes; merged and closed ones are final.
+
+Transcripts are read incrementally: only bytes appended since the last poll. It's off by
+default because it puts your prompts on the page. Behind anything but localhost, set
+`GENE_UI_TOKEN`.
+
+The page reads only what the daemon already has: the last scan's tickets and programs, the
+activity log and program status in the state store. The one extra tracker call is each
+ticket's latest comment, cached and refreshed in the background (on a new run, a ticket
+update, or after 5 minutes). The page polls every 10 seconds while the tab is visible.
+
+The UI lives in `web/` (Vite, React, Tailwind, shadcn/ui) and builds into one
+self-contained HTML file that the binary embeds. `pnpm build:ui` builds it for a source
+checkout; `pnpm dev:ui` serves it with hot reload, proxying `/api` to a daemon on
+`GENE_UI_PORT`.
+
 ## Repo targeting (per issue)
 
 An issue declares its target repo simply by including a **GitLab or GitHub link**
@@ -546,12 +612,12 @@ log** (`db.ts`) — in a small PostgreSQL store, with two backends picked automa
 - **Embedded PGlite (default)** — Postgres compiled to WASM, running in-process. No
   server, no setup: data lives under `~/.config/gene/pgdata` (override with
   `GENE_DB_DIR`; honours `XDG_CONFIG_HOME`). This is what makes Gene
-  **self-contained** — `npm start` just works. It is **single-process**: one Gene
+  **self-contained** — `pnpm gene` just works. It is **single-process**: one Gene
   owns the data dir behind a self-healing PID lock, so a one-shot `log` / `reset`
   can't run *while* the daemon is up — stop it first, or use Postgres.
 - **Postgres server (opt-in)** — set `GENE_DATABASE_URL` and Gene talks to that
   instead. Multi-connection, so `log` / `reset` work alongside a running daemon.
-  `npm run pg` brings up a throwaway local cluster under `data/pg/` (gitignored) on
+  `pnpm pg` brings up a throwaway local cluster under `data/pg/` (gitignored) on
   port **5434** if you want one locally
   (`GENE_DATABASE_URL=postgres://$USER@127.0.0.1:5434/postgres`). The generic
   `DATABASE_URL` / `PG*` vars are ignored on purpose: Gene runs inside the project it
@@ -574,7 +640,7 @@ database was reset), Gene recreates them on the next query.
 - **A change request forge and its CLI** — `gh` (GitHub) and/or `glab` (GitLab), authenticated; plus `git`, and the `linear` CLI for the Linear backend.
 - **OS** — prebuilt binaries for **macOS arm64**, **Linux x64** and **Linux arm64**
   (glibc — not Alpine/musl). Elsewhere (Intel Macs, Windows, musl), run from source with
-  Node 26 (`npm run gene`); everything but the single-file binary works the same.
+  Node 26 (`pnpm gene`); everything but the single-file binary works the same.
 
 ## Installation
 
@@ -612,18 +678,18 @@ but Gene still shells out to the runtime CLIs (`claude`, `git`, `gh`/`glab`, and
 
 ### Building the binary yourself
 
-`npm run build` produces every platform's binary from either macOS or Linux — the
+`pnpm build` produces every platform's binary from either macOS or Linux — the
 JavaScript bundle is shared, and each target's Node binary (same version as yours, checked
 against nodejs.org's checksums) and OpenTUI native library are downloaded once into
 `node_modules/.cache/gene-build`:
 
 ```bash
-npm ci
-npm run build                                   # darwin-arm64, linux-x64, linux-arm64
-npm run build:mac                               # darwin-arm64
-npm run build:linux                             # linux-x64 + linux-arm64
-npm run build -- --target host                  # just this machine's platform
-npm run build -- --target linux-x64             # any subset
+pnpm install --frozen-lockfile
+pnpm build                        # darwin-arm64, linux-x64, linux-arm64
+pnpm build:mac                    # darwin-arm64
+pnpm build:linux                  # linux-x64 + linux-arm64
+pnpm build --target host          # just this machine's platform
+pnpm build --target linux-x64     # any subset
 ```
 
 Each target lands in `dist/<target>/gene`, plus a release asset `gene-<target>.gz` and its
@@ -636,9 +702,9 @@ is on your `PATH`, and otherwise left unsigned; `install.sh` and `gene --update`
 an unsigned binary when they install it. If you copy a Linux-built macOS binary by hand,
 run `codesign --sign - --force gene` on the Mac first.
 
-`npm run publish` builds and uploads the assets to the GitHub release for the
+`pnpm run publish` builds and uploads the assets to the GitHub release for the
 `package.json` version. It takes the same `--target` flag and uploads only those targets —
-`npm run publish:linux` and `npm run publish:mac` are the shortcuts — so you can upload the
+`pnpm publish:linux` and `pnpm publish:mac` are the shortcuts — so you can upload the
 Linux binaries from Linux and the notarized macOS binary from a Mac into the same release.
 
 ## Dependencies

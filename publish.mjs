@@ -1,8 +1,8 @@
 /**
  * Publish the standalone binary to a GitHub release.
  *
- *   npm run publish                                     # every target
- *   npm run publish -- --target linux-x64,linux-arm64   # only these (see below)
+ *   pnpm run publish                                    # every target
+ *   pnpm run publish --target linux-x64,linux-arm64     # only these (see below)
  *
  * Rebuilds the release artifacts (so the upload always matches the current source),
  * ensures a GitHub release exists for the package.json version (tag `vX.Y.Z`), and

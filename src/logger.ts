@@ -64,6 +64,7 @@ export interface Logger {
     update: string;
     export: string;
     trigger: string;
+    web: string;
   };
   verbose: (...args: unknown[]) => void;
   info: (...args: unknown[]) => void;
@@ -236,6 +237,7 @@ const logger: Logger = {
     update: chalk.cyanBright("[gene:update]"),
     export: chalk.cyanBright("[gene:export]"),
     trigger: chalk.magentaBright("[gene:trigger]"),
+    web: chalk.cyanBright("[gene:web]"),
   }
 };
 

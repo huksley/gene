@@ -1,7 +1,7 @@
 /**
  * Pre-clone the configured default repos so the common path is warm:
  *
- *   npm run clone
+ *   pnpm run clone
  *
  * This is optional — repos referenced by a per-issue link are cloned on demand at
  * dispatch time. Running it once during setup just avoids a first-dispatch clone

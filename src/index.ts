@@ -24,7 +24,7 @@ import path from "node:path";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import logger from "./logger.ts";
 import { monitor } from "./monitor.ts";
-import { env, WATCHED_STATES, GENE_DIR } from "./config.ts";
+import { env, WATCHED_STATES, GENE_DIR, webUiAddress } from "./config.ts";
 import { decideAction, findMissingSections, type Action } from "./decide.ts";
 import { tracker, findIssue } from "./tracker/index.ts";
 import type { Comment, Issue } from "./tracker/index.ts";
@@ -70,6 +70,7 @@ import { inSea, extractAssetTo, readVersion } from "./sea-assets.ts";
 import { selfUpdate } from "./update.ts";
 import { runSandbox } from "./sandbox.ts";
 import { runExport } from "./export.ts";
+import { startWebUi, type WebAddon } from "./web/server.ts";
 
 const summarizeAction = (action: Action): string => {
   switch (action.kind) {
@@ -1407,6 +1408,7 @@ const scanOnce = async (
   // Program tickets (labelled PROGRAM_LABEL) are never coding work — keep them out of
   // the scan even when they also carry the Gene label. Default empty set = no-op.
   all = excludePrograms(all, excludeIdentifiers);
+  monitor.setTrackedTickets(all.filter(i => tracker.isAssignedToOwner(i)));
 
   if (issueFilter) {
     all = all.filter(i => i.identifier.toLowerCase() === issueFilter.toLowerCase());
@@ -1617,6 +1619,7 @@ const scanCycle = async (issueFilter?: string): Promise<boolean> => {
   // cycle out and let the next poll re-list.
   if (listed) {
     lastProgramIds = new Set(programs.map(p => p.identifier));
+    monitor.setTrackedPrograms(programs.filter(p => tracker.isAssignedToOwner(p)));
   } else if (lastProgramIds === null) {
     logger.warn(`${logger.tag.flow} no known program set yet — skipping the coding scan this cycle`);
     return false;
@@ -1851,6 +1854,19 @@ const main = async (): Promise<void> => {
 
   // Load lifecycle observers (GENE_PLUGINS) once, before any scan can emit an event.
   await setupPlugins();
+
+  // Optional web UI (GENE_UI_HOSTNAME / GENE_UI_PORT): a read-only overview served for
+  // as long as the daemon runs — in the dashboard and headless alike, not for --once.
+  const uiAddress = webUiAddress();
+  if (uiAddress && !once) {
+    const addons: WebAddon[] = [];
+    if (env.UI_CLAUDE_SESSIONS) {
+      // Loaded only when on, so a daemon without it never touches ~/.claude.
+      const { claudeSessionsAddon } = await import("./addons/claude-sessions/index.ts");
+      addons.push(claudeSessionsAddon);
+    }
+    await startWebUi(uiAddress, addons);
+  }
 
   // The TUI installs its own signal + key handling (it must restore the terminal
   // before exiting), so only the console paths get the plain signal handlers.

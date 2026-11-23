@@ -229,7 +229,29 @@ export const env = {
 
   // Comma-separated list of additional tools to allow the agent to use.
   ALLOWED_TOOLS: list("GENE_ALLOWED_TOOLS"),
+
+  // Web UI (src/web/): a read-only overview of tickets, programs and recent runs,
+  // served by the daemon when either the host or the port is set. GENE_UI_* wins over
+  // the bare UI_* spelling. With a token set, every /api call must carry it as a
+  // bearer token (the page asks once and keeps it in the browser's localStorage).
+  UI_HOSTNAME: optional("GENE_UI_HOSTNAME") ?? optional("UI_HOSTNAME"),
+  UI_PORT: optional("GENE_UI_PORT") ?? optional("UI_PORT"),
+  UI_TOKEN: optional("GENE_UI_TOKEN") ?? optional("UI_TOKEN"),
+  // Claude sessions addon: a Sessions tab listing this machine's Claude Code sessions
+  // (live and recent, from $CLAUDE_CONFIG_DIR or ~/.claude) with their tickets and PRs.
+  // Off by default — it shows your prompts on the page.
+  UI_CLAUDE_SESSIONS: bool(process.env.GENE_UI_CLAUDE_SESSIONS !== undefined ? "GENE_UI_CLAUDE_SESSIONS" : "UI_CLAUDE_SESSIONS", false),
 } as const;
+
+/** Where the web UI listens, or null when it's off (neither host nor port set). */
+export const webUiAddress = (): { host: string; port: number } | null => {
+  if (env.UI_HOSTNAME === undefined && env.UI_PORT === undefined) return null;
+  return { host: env.UI_HOSTNAME ?? "127.0.0.1", port: env.UI_PORT === undefined ? 8474 : Number(env.UI_PORT) };
+};
+
+if (env.UI_PORT !== undefined && !/^\d+$/.test(env.UI_PORT)) {
+  problems.push(`GENE_UI_PORT / UI_PORT: expected a port number, got "${env.UI_PORT}"`);
+}
 
 // Trello needs a board to watch; fail fast with a friendly message rather than
 // silently listing nothing later.

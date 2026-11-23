@@ -4,7 +4,7 @@ node_modules
 
 # Gene pipeline runtime state (locks; default .gene/repos clones — see GENE_REPOS_DIR)
 .gene/
-# Local Postgres state store (initdb'd by `npm run prepg`, data lives here)
+# Local Postgres state store (initdb'd by `pnpm run prepg`, data lives here)
 data/
 # Legacy / GENE_REPOS_DIR=repos clone location (default moved under .gene/ above)
 repos/

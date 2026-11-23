@@ -12,9 +12,9 @@
 #
 # Instead: background pg, wait until it accepts connections, run the UI in the
 # foreground, and stop the pg we started once the UI exits. If a Postgres is
-# already listening (e.g. `npm run pg` in another window) we reuse it untouched.
+# already listening (e.g. `pnpm run pg` in another window) we reuse it untouched.
 #
-# Focus/flags pass through, e.g. `npm start -- linear:CLOUD-1094`.
+# Focus/flags pass through, e.g. `pnpm start linear:CLOUD-1094`.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -67,4 +67,4 @@ else
 fi
 
 # Foreground, no `exec`, so the EXIT trap still runs to stop pg afterwards.
-npm run ui -- "$@"
+pnpm run ui "$@"

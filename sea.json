@@ -13,6 +13,7 @@
   "execArgvExtension": "env",
   "assets": {
     "package.json": "package.json",
+    "ui.html": "dist/ui/index.html",
     "pglite.wasm": "node_modules/@electric-sql/pglite/dist/pglite.wasm",
     "initdb.wasm": "node_modules/@electric-sql/pglite/dist/initdb.wasm",
     "pglite.data": "node_modules/@electric-sql/pglite/dist/pglite.data",

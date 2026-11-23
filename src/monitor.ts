@@ -22,6 +22,7 @@
 
 import { EventEmitter } from "node:events";
 import type { TriggerView } from "./trigger/index.ts";
+import type { Issue } from "./tracker/index.ts";
 
 /**
  * One distilled agent stream event — the structured sibling of the one-line
@@ -243,6 +244,13 @@ class Monitor extends EventEmitter {
    */
   private lifetimeBase: TokenUsage = { in: 0, out: 0, total: 0 };
 
+  /**
+   * The owner's tickets and programs as the last scan listed them — the web UI's view
+   * of the tracker, so serving a page never costs a tracker call. Null until a scan
+   * has listed that kind.
+   */
+  private tracked: { tickets: Issue[] | null; programs: Issue[] | null } = { tickets: null, programs: null };
+
   /** Kill closures registered by {@link agentSpawned}, used by {@link requestCancel}. */
   private cancels = new Map<string, () => void>();
 
@@ -428,6 +436,23 @@ class Monitor extends EventEmitter {
     }
     this.issueStates.set(id, state);
     this.scheduleChange();
+  }
+
+  /** Record the coding tickets a scan listed (programs excluded, owner's only). */
+  setTrackedTickets(issues: Issue[]): void {
+    this.tracked.tickets = issues;
+    this.scheduleChange();
+  }
+
+  /** Record the program tickets a scan listed (owner's only). */
+  setTrackedPrograms(programs: Issue[]): void {
+    this.tracked.programs = programs;
+    this.scheduleChange();
+  }
+
+  /** The tickets and programs from the last scans (null = not listed yet). */
+  getTracked(): { tickets: Issue[] | null; programs: Issue[] | null } {
+    return this.tracked;
   }
 
   /** An issue's last-known tracker state (set each scan), for the dashboard STATE column. */
