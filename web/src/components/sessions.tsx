@@ -7,6 +7,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Dot, StateBadge } from "@/components/status";
 import { PrChip } from "@/components/pr-chip";
+import { Clamped } from "@/components/comment";
+import { LinkedText, Markdown } from "@/components/markdown";
 import { clock, dateTime, dayKey, dayLabel, duration, relative, tokens } from "@/lib/format";
 import { usePolled } from "@/lib/use-polled";
 import type { SessionKind, SessionPr, SessionsOverview, SessionTicket, SessionView } from "@/lib/types";
@@ -128,7 +130,9 @@ const SessionDetail = ({ s }: { s: SessionView }) => (
               <span className="w-10 shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground" title={p.at && dateTime(p.at)}>
                 {p.at ? clock(p.at) : ""}
               </span>
-              <span className="line-clamp-3 min-w-0 whitespace-pre-wrap break-words">{p.text}</span>
+              <span className="line-clamp-3 min-w-0 whitespace-pre-wrap break-words">
+                <LinkedText text={p.text} />
+              </span>
             </li>
           ))}
         </ol>
@@ -137,7 +141,11 @@ const SessionDetail = ({ s }: { s: SessionView }) => (
     {s.lastReply && (
       <div>
         <p className="mb-1.5 text-xs font-medium text-muted-foreground">Latest reply</p>
-        <p className="line-clamp-4 whitespace-pre-wrap break-words rounded-lg border bg-muted/30 p-2.5 text-[13px]">{s.lastReply}</p>
+        <div className="min-w-0 rounded-lg border bg-muted/30 p-2.5">
+          <Clamped watch={s.lastReply}>
+            <Markdown source={s.lastReply} />
+          </Clamped>
+        </div>
       </div>
     )}
     <dl className="grid grid-cols-[5.5rem_1fr] gap-x-3 gap-y-1 text-xs sm:grid-cols-[6.5rem_1fr] sm:gap-x-4">
@@ -207,7 +215,11 @@ const LiveCard = ({ s, now }: { s: SessionView; now: number }) => {
       </CardHeader>
       <CardContent className="space-y-3 px-4">
         <Links s={s} />
-        {last && <p className="line-clamp-2 text-xs text-muted-foreground">› {last.text}</p>}
+        {last && (
+          <p className="line-clamp-2 break-words text-xs text-muted-foreground">
+            › <LinkedText text={last.text} />
+          </p>
+        )}
         <div className="flex items-center gap-3 text-[11px] text-muted-foreground tabular-nums">
           <span>{busy ? "working" : "idle"}{s.lastAt && ` · ${relative(s.lastAt, now)}`}</span>
           <span>{s.prompts} prompts</span>

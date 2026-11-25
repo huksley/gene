@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { linearWorkspaceOf, splitTicketRefs, teamKeyOf, ticketUrl, ticketUrlBase } from "./ticket-url.ts";
+import { linearWorkspaceOf, splitLinks, splitTicketRefs, teamKeyOf, ticketUrl, ticketUrlBase } from "./ticket-url.ts";
 
 test("linearWorkspaceOf reads the workspace slug from an issue URL", () => {
   assert.equal(linearWorkspaceOf("https://linear.app/verda-cloud/issue/CORE-512/containers-proxy"), "verda-cloud");
@@ -44,4 +44,26 @@ test("splitTicketRefs finds known keys only, as whole words", () => {
   ]);
   assert.deepEqual(splitTicketRefs("CORE-7", keys), [{ identifier: "CORE-7" }]);
   assert.deepEqual(splitTicketRefs("anything", []), ["anything"]);
+});
+
+test("splitLinks finds URLs and ticket references in plain text", () => {
+  const mr = "https://gitlab.example.com/g/app/-/merge_requests/2465";
+  assert.deepEqual(splitLinks(`${mr} check review notes for CORE-1.`, ["CORE"]), [
+    { url: mr },
+    " check review notes for ",
+    { identifier: "CORE-1" },
+    "."
+  ]);
+  // Trailing prose punctuation and wrapping brackets stay outside the link.
+  assert.deepEqual(splitLinks("see (https://x.test/a?b=1), then https://y.test/p.", []), [
+    "see (",
+    { url: "https://x.test/a?b=1" },
+    "), then ",
+    { url: "https://y.test/p" },
+    "."
+  ]);
+  // A ticket key inside a URL is part of the URL, not a separate reference.
+  assert.deepEqual(splitLinks("https://linear.app/a/issue/CORE-9/x", ["CORE"]), [{ url: "https://linear.app/a/issue/CORE-9/x" }]);
+  assert.deepEqual(splitLinks("javascript:alert(1) ftp://x", []), ["javascript:alert(1) ftp://x"]);
+  assert.deepEqual(splitLinks("", ["CORE"]), []);
 });

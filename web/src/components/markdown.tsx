@@ -1,8 +1,8 @@
-import { createContext, useContext, useMemo } from "react";
+import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { cn } from "@/lib/utils";
-import { splitTicketRefs } from "../../../src/web/ticket-url.ts";
+import { splitLinks, splitTicketRefs } from "../../../src/web/ticket-url.ts";
 
 DOMPurify.addHook("afterSanitizeAttributes", node => {
   if (node.tagName === "A") {
@@ -18,6 +18,10 @@ DOMPurify.addHook("afterSanitizeAttributes", node => {
 export type TicketRefs = { keys: string[]; base?: string; urls: ReadonlyMap<string, string> };
 
 export const TicketRefsContext = createContext<TicketRefs | null>(null);
+
+/** Where a ticket reference links to, or undefined when the ticket's URL isn't known. */
+const ticketHref = (refs: TicketRefs, identifier: string): string | undefined =>
+  refs.urls.get(identifier) ?? (refs.base ? `${refs.base}${identifier}` : undefined);
 
 /**
  * Turn ticket references in sanitized HTML's text into links, leaving text inside links
@@ -42,7 +46,7 @@ const linkTicketRefs = (html: string, refs: TicketRefs | null): string => {
         fragment.append(part);
         continue;
       }
-      const url = refs.urls.get(part.identifier) ?? (refs.base ? `${refs.base}${part.identifier}` : undefined);
+      const url = ticketHref(refs, part.identifier);
       if (!url) {
         fragment.append(part.identifier);
         continue;
@@ -67,4 +71,36 @@ export const Markdown = ({ source, className }: { source: string; className?: st
     [source, refs]
   );
   return <div className={cn("prose-comment", className)} dangerouslySetInnerHTML={{ __html: html }} />;
+};
+
+const LINK_CLASS = "underline underline-offset-2 text-run break-all";
+
+/**
+ * Plain text (a prompt) with its URLs and ticket references as links; everything else
+ * renders as is, so the caller's whitespace and clamping still apply.
+ */
+export const LinkedText = ({ text }: { text: string }) => {
+  const refs = useContext(TicketRefsContext);
+  const nodes = useMemo(() => {
+    const out: ReactNode[] = [];
+    splitLinks(text, refs?.keys ?? []).forEach((part, i) => {
+      if (typeof part === "string") {
+        out.push(part);
+        return;
+      }
+      const href = "url" in part ? part.url : refs ? ticketHref(refs, part.identifier) : undefined;
+      const label = "url" in part ? part.url : part.identifier;
+      out.push(
+        href ? (
+          <a key={i} href={href} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className={LINK_CLASS}>
+            {label}
+          </a>
+        ) : (
+          label
+        )
+      );
+    });
+    return out;
+  }, [text, refs]);
+  return <>{nodes}</>;
 };

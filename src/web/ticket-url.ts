@@ -45,3 +45,29 @@ export const splitTicketRefs = (text: string, keys: readonly string[]): TextPart
   if (last < text.length) parts.push(text.slice(last));
   return parts.length > 0 ? parts : [text];
 };
+
+/** http(s) URLs in prose; stops at whitespace and the brackets/quotes that wrap links. */
+const PROSE_URL = /https?:\/\/[^\s<>()[\]{}"'`]+/g;
+
+export type LinkPart = TextPart | { url: string };
+
+/**
+ * Split plain text (a prompt, a reply) around http(s) URLs and ticket references, for
+ * rendering them as links. Trailing prose punctuation stays outside a URL, and ticket
+ * keys inside a URL stay part of it. Empty text → no parts.
+ */
+export const splitLinks = (text: string, keys: readonly string[]): LinkPart[] => {
+  const parts: LinkPart[] = [];
+  const pushText = (chunk: string): void => {
+    if (chunk) parts.push(...splitTicketRefs(chunk, keys));
+  };
+  let last = 0;
+  for (const match of text.matchAll(PROSE_URL)) {
+    const url = match[0].replace(/[.,;:!?]+$/, "");
+    pushText(text.slice(last, match.index));
+    parts.push({ url });
+    last = match.index + url.length;
+  }
+  pushText(text.slice(last));
+  return parts;
+};
