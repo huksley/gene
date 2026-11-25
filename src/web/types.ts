@@ -8,11 +8,14 @@
  * How a run ended. Program runs report the program lifecycle's own result
  * (ok / incomplete / blocked / cancelled / error); coding runs report the agent's
  * (done / error / stalled / timeout / cancelled / interrupted). `running` is live,
- * `dispatched` was logged but never spawned (dry-run, deferred, or lost).
+ * `dispatched` was logged but never spawned (dry-run, deferred, or lost), `skipped`
+ * never started because another run held the ticket's lock. A run that failed before
+ * the agent started reads `error`, with the reason as its detail.
  */
 export type RunOutcome =
   | "running"
   | "dispatched"
+  | "skipped"
   | "ok"
   | "done"
   | "incomplete"
@@ -133,4 +136,10 @@ export type Overview = {
   programs: ProgramView[];
   /** Every run in the window, newest first. */
   runs: RunView[];
+  /**
+   * For linking ticket references (`CORE-512`) in comment text: the team keys seen on
+   * tickets and runs, and the URL prefix an identifier is appended to (Linear only,
+   * absent until the workspace is known). A listed ticket links to its own URL.
+   */
+  ticketRefs: { keys: string[]; base?: string };
 };

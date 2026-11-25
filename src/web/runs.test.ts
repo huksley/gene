@@ -73,3 +73,28 @@ test("changeRequestUrl pulls the URL out of a cr-linked detail", () => {
   assert.equal(changeRequestUrl("linked https://github.com/o/r/pull/3 to X-1"), "https://github.com/o/r/pull/3");
   assert.equal(changeRequestUrl("nothing here"), undefined);
 });
+
+test("a run that failed before the agent started reads error, with the reason", () => {
+  const runs = buildRuns([
+    row("C-5", "dispatch", "17:08", "review-fix → g/r [gitlab] ⎇ b"),
+    row("C-5", "agent-error", "17:08", "spawn failed: git fetch exited 128"),
+    row("C-5", "dispatch", "17:13", "review-fix → g/r [gitlab] ⎇ b"),
+    row("C-5", "agent-skipped", "17:13", "another run holds the lock")
+  ]);
+  assert.deepEqual(
+    runs.map(r => [r.outcome, r.detail]),
+    [
+      ["skipped", "another run holds the lock"],
+      ["error", "spawn failed: git fetch exited 128"]
+    ]
+  );
+});
+
+test("a run takes its ticket URL from the dispatch row", () => {
+  const [run] = buildRuns([
+    row("C-6", "dispatch", "10:00", "processing → r [github] ⎇ b", {
+      data: { title: "T", url: "https://linear.app/acme/issue/C-6/t" }
+    })
+  ]);
+  assert.equal(run!.url, "https://linear.app/acme/issue/C-6/t");
+});

@@ -24,7 +24,9 @@ const AGENT_END: Record<string, RunOutcome> = {
   "agent-error": "error",
   "agent-stalled": "stalled",
   "agent-cancelled": "cancelled",
-  "agent-interrupted": "interrupted"
+  "agent-interrupted": "interrupted",
+  // Dispatched but never started: another run held the lock (index.ts).
+  "agent-skipped": "skipped"
 };
 
 const PROGRAM_RESULTS = new Set<RunOutcome>(["ok", "incomplete", "blocked", "cancelled", "error"]);
@@ -90,9 +92,11 @@ export const buildRuns = (rows: LogRow[], running: ReadonlySet<string> = new Set
       }
       if (row.event === "dispatch") {
         const intent = intentOf(row.detail);
+        const url = field(row.data, "url");
         current = {
           identifier,
           title: field(row.data, "title"),
+          ...(url ? { url } : {}),
           kind: intent === "program" ? "program" : "ticket",
           intent,
           ...(pendingFire?.source ? { source: pendingFire.source } : {}),

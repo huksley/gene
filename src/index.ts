@@ -555,7 +555,7 @@ const dispatchAgent = async (
     issue,
     "dispatch",
     `${intent} → ${targetLabel(target)} [${forge.name}] ⎇ ${workBranch}`,
-    { title: issue.title }
+    { title: issue.title, url: issue.url }
   );
 
   if (env.DRY_RUN) {
@@ -589,7 +589,10 @@ const dispatchAgent = async (
   }
 
   // Live: run everything below inside the per-issue lock, fire-and-forget. The
-  // monitor already has this run as "queued" (registered above).
+  // monitor already has this run as "queued" (registered above). `agentStarted` flips
+  // once invokeAgent takes over — it logs the run's own outcome from there on, so only
+  // a failure before it (worktree, tracker) needs closing here.
+  let agentStarted = false;
   const spawnPromise = withLock(issue.identifier, async () => {
     await postStartComment(issue, intent);
     await tracker.moveToState(issue, env.ACTIVE_STATE);
@@ -636,6 +639,7 @@ const dispatchAgent = async (
       reviewContext: extras.reviewContext
     });
 
+    agentStarted = true;
     return invokeAgent({ issue, prompt, worktreePath, forge }, (pid: number) => {
       inFlight.set(issue.id, { ...inFlight.get(issue.id), pid });
     });
@@ -643,6 +647,7 @@ const dispatchAgent = async (
     .then(async result => {
       if (result === "skipped") {
         logger.info(`${logger.tag.flow} [${issue.identifier}] another run holds the lock — skipping`);
+        await record(issue, "agent-skipped", "another run holds the lock");
         return;
       }
       // Silent crash / transient exhaustion: exited code 0 but never produced a
@@ -656,11 +661,11 @@ const dispatchAgent = async (
       await enforceDraftMode(issue, comments, target, forge);
       await linkChangeRequest(issue, target, forge, workBranch);
     })
-    .catch(error => {
-      logger.error(
-        `${logger.tag.flow} [${issue.identifier}] spawn failed:`,
-        error instanceof Error ? error.message : error
-      );
+    .catch(async error => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(`${logger.tag.flow} [${issue.identifier}] spawn failed:`, message);
+      // Close the dispatch in the activity log, or the run reads "dispatched" forever.
+      if (!agentStarted) await record(issue, "agent-error", `spawn failed: ${message}`);
     })
     .finally(() => {
       inFlight.delete(issue.id);
@@ -945,7 +950,8 @@ const dispatchProgram = async (
     });
   }
   await record(program, "dispatch", `program → ${repoLabel} [${forge ? forge.name : "none"}] ⎇ (program run)`, {
-    title: program.title
+    title: program.title,
+    url: program.url
   });
 
   if (env.DRY_RUN) {
@@ -1023,9 +1029,10 @@ const dispatchProgram = async (
     await finishProgramRun(program, result, runStartedAt, runNotesPath);
     return result;
   })
-    .then(result => {
+    .then(async result => {
       if (result === "skipped") {
         logger.info(`${logger.tag.flow} [${program.identifier}] another run holds the lock — skipping`);
+        await record(program, "agent-skipped", "another run holds the lock");
       }
     })
     .catch(error => {

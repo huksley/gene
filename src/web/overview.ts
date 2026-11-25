@@ -14,6 +14,7 @@ import { monitor, type AgentState } from "../monitor.ts";
 import { readVersion } from "../sea-assets.ts";
 import { tracker, type Issue } from "../tracker/index.ts";
 import { buildRuns, changeRequestUrl, type LogRow } from "./runs.ts";
+import { linearWorkspaceOf, teamKeyOf, ticketUrl, ticketUrlBase } from "./ticket-url.ts";
 import type { AgentView, CommentView, Overview, ProgramView, RunView, TicketView } from "./types.ts";
 
 export const MAX_WINDOW_DAYS = 90;
@@ -134,14 +135,25 @@ const refreshComments = (stale: Issue[]): void => {
     });
 };
 
-/** A Linear issue's URL from its identifier alone (Trello shortLinks resolve too). */
-export const unlistedUrl = (identifier: string): string | undefined => {
-  if (tracker.name === "linear" && env.LINEAR_WORKSPACE) {
-    return `https://linear.app/${env.LINEAR_WORKSPACE}/issue/${identifier}`;
+/** The Linear workspace slug, read off a listed issue's URL once one has been seen. */
+let detectedWorkspace: string | undefined;
+
+/** `LINEAR_WORKSPACE` when set, else the workspace the tracked tickets' URLs point at. */
+const linearWorkspace = (): string | undefined => {
+  if (env.LINEAR_WORKSPACE) return env.LINEAR_WORKSPACE;
+  if (!detectedWorkspace) {
+    const { tickets, programs } = monitor.getTracked();
+    for (const issue of [...(tickets ?? []), ...(programs ?? [])]) {
+      detectedWorkspace = linearWorkspaceOf(issue.url);
+      if (detectedWorkspace) break;
+    }
   }
-  if (tracker.name === "trello") return `https://trello.com/c/${identifier}`;
-  return undefined;
+  return detectedWorkspace;
 };
+
+/** A ticket's URL from its identifier alone, for tickets no longer listed. */
+export const unlistedUrl = (identifier: string): string | undefined =>
+  ticketUrl(tracker.name, identifier, tracker.name === "linear" ? linearWorkspace() : undefined);
 
 // ─── Assembly ────────────────────────────────────────────────────────────────
 
@@ -232,9 +244,16 @@ export const buildOverview = async (windowDays: number): Promise<Omit<Overview, 
   for (const run of runs) {
     const issue = listed.get(run.identifier);
     if (issue) run.title = issue.title;
-    const url = issue?.url ?? unlistedUrl(run.identifier);
+    const url = issue?.url ?? run.url ?? unlistedUrl(run.identifier);
     if (url) run.url = url;
   }
+
+  const keys = new Set<string>();
+  for (const identifier of [...listed.keys(), ...runsById.keys()]) {
+    const key = teamKeyOf(identifier);
+    if (key) keys.add(key);
+  }
+  const base = tracker.name === "linear" ? ticketUrlBase(tracker.name, linearWorkspace()) : undefined;
 
   const d = state.daemon;
   return {
@@ -259,6 +278,7 @@ export const buildOverview = async (windowDays: number): Promise<Omit<Overview, 
     scanned: { tickets: trackedTickets !== null, programs: trackedPrograms !== null },
     tickets,
     programs,
-    runs
+    runs,
+    ticketRefs: { keys: [...keys].sort(), ...(base ? { base } : {}) }
   };
 };

@@ -7,6 +7,7 @@ type Tone = "ok" | "warn" | "bad" | "run" | "idle" | "review";
 const OUTCOME_TONE: Record<RunOutcome, Tone> = {
   running: "run",
   dispatched: "idle",
+  skipped: "idle",
   ok: "ok",
   done: "ok",
   incomplete: "warn",

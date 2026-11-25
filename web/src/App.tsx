@@ -12,6 +12,7 @@ import { Tickets } from "@/components/tickets";
 import { Sessions } from "@/components/sessions";
 import { TokenGate } from "@/components/token-gate";
 import { Dot } from "@/components/status";
+import { TicketRefsContext, type TicketRefs } from "@/components/markdown";
 import { getToken, prefs, setToken } from "@/lib/api";
 import { relative, tokens as fmtTokens } from "@/lib/format";
 import { usePolled } from "@/lib/use-polled";
@@ -136,6 +137,17 @@ export function App() {
     return map;
   }, [data]);
 
+  // Polls return a fresh object each time; key the context on its content so comments
+  // re-render only when what their references link to actually changed.
+  const refsKey = useMemo(() => {
+    const urls = [...(data?.tickets ?? []), ...(data?.programs ?? [])].map(i => [i.identifier, i.url]);
+    return JSON.stringify([data?.ticketRefs?.keys ?? [], data?.ticketRefs?.base ?? null, urls]);
+  }, [data]);
+  const ticketRefs = useMemo<TicketRefs>(() => {
+    const [keys, base, urls] = JSON.parse(refsKey) as [string[], string | null, [string, string][]];
+    return { keys, ...(base ? { base } : {}), urls: new Map(urls) };
+  }, [refsKey]);
+
   useEffect(() => {
     const running = data?.daemon.running ?? 0;
     document.title = running > 0 ? `(${running}) Gene` : "Gene";
@@ -144,125 +156,127 @@ export function App() {
   if (auth !== "ok") return <TokenGate rejected={auth === "rejected"} onSaved={refresh} />;
 
   return (
-    <TooltipProvider delayDuration={150}>
-      <div className="mx-auto max-w-6xl px-[max(1rem,env(safe-area-inset-left))] pb-16 sm:px-6">
-        <header className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-2 border-b bg-background/80 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-3 backdrop-blur sm:-mx-6 sm:mb-6 sm:gap-3 sm:px-6">
-          <span className="text-xl" aria-hidden>🧬</span>
-          <div className="flex min-w-0 items-baseline gap-2">
-            <h1 className="font-semibold tracking-tight">Gene</h1>
-            {data && (
-              <span className="hidden truncate text-xs text-muted-foreground sm:inline">
-                v{data.version} · {data.tracker} · label {data.daemon.label}
-              </span>
-            )}
-          </div>
-          {data?.daemon.dryRun && <Badge variant="outline" className="border-warn text-warn">dry-run</Badge>}
-          <div className="ml-auto flex items-center gap-1.5">
-            {data && <DaemonStatus d={data.daemon} now={now} />}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon-sm" onClick={refresh} aria-label="Refresh">
-                  <RefreshCw className={cn(loading && "animate-spin")} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{fetchedAt ? `Updated ${relative(fetchedAt, now)}` : "Refresh"}</TooltipContent>
-            </Tooltip>
-            <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="Toggle theme">
-              {theme === "dark" ? <Sun /> : <Moon />}
-            </Button>
-            {getToken() && (
+    <TicketRefsContext.Provider value={ticketRefs}>
+      <TooltipProvider delayDuration={150}>
+        <div className="mx-auto max-w-6xl px-[max(1rem,env(safe-area-inset-left))] pb-16 sm:px-6">
+          <header className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-2 border-b bg-background/80 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-3 backdrop-blur sm:-mx-6 sm:mb-6 sm:gap-3 sm:px-6">
+            <span className="text-xl" aria-hidden>🧬</span>
+            <div className="flex min-w-0 items-baseline gap-2">
+              <h1 className="font-semibold tracking-tight">Gene</h1>
+              {data && (
+                <span className="hidden truncate text-xs text-muted-foreground sm:inline">
+                  v{data.version} · {data.tracker} · label {data.daemon.label}
+                </span>
+              )}
+            </div>
+            {data?.daemon.dryRun && <Badge variant="outline" className="border-warn text-warn">dry-run</Badge>}
+            <div className="ml-auto flex items-center gap-1.5">
+              {data && <DaemonStatus d={data.daemon} now={now} />}
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Forget token"
-                    onClick={() => {
-                      setToken(null);
-                      refresh();
-                    }}
-                  >
-                    <LogOut />
+                  <Button variant="ghost" size="icon-sm" onClick={refresh} aria-label="Refresh">
+                    <RefreshCw className={cn(loading && "animate-spin")} />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Forget the saved token</TooltipContent>
+                <TooltipContent>{fetchedAt ? `Updated ${relative(fetchedAt, now)}` : "Refresh"}</TooltipContent>
               </Tooltip>
-            )}
-          </div>
-        </header>
-
-        {error && (
-          <div className="mb-4 rounded-lg border border-bad/40 bg-bad/10 px-4 py-2 text-sm text-bad">
-            Couldn't reach the daemon: {error}
-            {data && " — showing the last data."}
-          </div>
-        )}
-        {data && !data.scanned.tickets && (
-          <div className="mb-4 rounded-lg border px-4 py-2 text-sm text-muted-foreground">
-            Waiting for the first scan to list tickets and programs…
-          </div>
-        )}
-
-        {!data ? (
-          <Loading />
-        ) : (
-          <div className="space-y-4 sm:space-y-6">
-            <Stats data={data} />
-            <Tabs
-              value={tab}
-              onValueChange={v => {
-                setTab(v);
-                prefs.set("tab", v);
-                window.history.replaceState(null, "", `#${v}`);
-              }}
-              className="gap-4"
-            >
-              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-                <TabsList className="w-full justify-start overflow-x-auto sm:w-fit [&::-webkit-scrollbar]:hidden">
-                  <TabsTrigger value="activity">Activity</TabsTrigger>
-                  <TabsTrigger value="programs">
-                    Programs <span className="text-muted-foreground tabular-nums">{data.programs.length}</span>
-                  </TabsTrigger>
-                  <TabsTrigger value="tickets">
-                    Tickets <span className="text-muted-foreground tabular-nums">{data.tickets.length}</span>
-                  </TabsTrigger>
-                  {data.addons.includes("claude-sessions") && <TabsTrigger value="sessions">Sessions</TabsTrigger>}
-                </TabsList>
-                <TabsList aria-label="Time window" className="self-end sm:self-auto">
-                  {RANGES.map(r => (
-                    <button
-                      key={r.days}
-                      type="button"
+              <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="Toggle theme">
+                {theme === "dark" ? <Sun /> : <Moon />}
+              </Button>
+              {getToken() && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Forget token"
                       onClick={() => {
-                        setDays(r.days);
-                        prefs.set("days", String(r.days));
+                        setToken(null);
+                        refresh();
                       }}
-                      data-state={days === r.days ? "active" : "inactive"}
-                      className="h-[calc(100%-1px)] rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm dark:data-[state=active]:bg-input/30"
                     >
-                      {r.label}
-                    </button>
-                  ))}
-                </TabsList>
-              </div>
-              <TabsContent value="activity">
-                <Activity runs={data.runs} comments={comments} />
-              </TabsContent>
-              <TabsContent value="programs">
-                <Programs programs={data.programs} />
-              </TabsContent>
-              <TabsContent value="tickets">
-                <Tickets tickets={data.tickets} />
-              </TabsContent>
-              {data.addons.includes("claude-sessions") && (
-                <TabsContent value="sessions">
-                  <Sessions days={Math.min(days, 30)} now={now} />
-                </TabsContent>
+                      <LogOut />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Forget the saved token</TooltipContent>
+                </Tooltip>
               )}
-            </Tabs>
-          </div>
-        )}
-      </div>
-    </TooltipProvider>
+            </div>
+          </header>
+
+          {error && (
+            <div className="mb-4 rounded-lg border border-bad/40 bg-bad/10 px-4 py-2 text-sm text-bad">
+              Couldn't reach the daemon: {error}
+              {data && " — showing the last data."}
+            </div>
+          )}
+          {data && !data.scanned.tickets && (
+            <div className="mb-4 rounded-lg border px-4 py-2 text-sm text-muted-foreground">
+              Waiting for the first scan to list tickets and programs…
+            </div>
+          )}
+
+          {!data ? (
+            <Loading />
+          ) : (
+            <div className="space-y-4 sm:space-y-6">
+              <Stats data={data} />
+              <Tabs
+                value={tab}
+                onValueChange={v => {
+                  setTab(v);
+                  prefs.set("tab", v);
+                  window.history.replaceState(null, "", `#${v}`);
+                }}
+                className="gap-4"
+              >
+                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                  <TabsList className="w-full justify-start overflow-x-auto sm:w-fit [&::-webkit-scrollbar]:hidden">
+                    <TabsTrigger value="activity">Activity</TabsTrigger>
+                    <TabsTrigger value="programs">
+                      Programs <span className="text-muted-foreground tabular-nums">{data.programs.length}</span>
+                    </TabsTrigger>
+                    <TabsTrigger value="tickets">
+                      Tickets <span className="text-muted-foreground tabular-nums">{data.tickets.length}</span>
+                    </TabsTrigger>
+                    {data.addons.includes("claude-sessions") && <TabsTrigger value="sessions">Sessions</TabsTrigger>}
+                  </TabsList>
+                  <TabsList aria-label="Time window" className="self-end sm:self-auto">
+                    {RANGES.map(r => (
+                      <button
+                        key={r.days}
+                        type="button"
+                        onClick={() => {
+                          setDays(r.days);
+                          prefs.set("days", String(r.days));
+                        }}
+                        data-state={days === r.days ? "active" : "inactive"}
+                        className="h-[calc(100%-1px)] rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm dark:data-[state=active]:bg-input/30"
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </TabsList>
+                </div>
+                <TabsContent value="activity">
+                  <Activity runs={data.runs} comments={comments} />
+                </TabsContent>
+                <TabsContent value="programs">
+                  <Programs programs={data.programs} />
+                </TabsContent>
+                <TabsContent value="tickets">
+                  <Tickets tickets={data.tickets} />
+                </TabsContent>
+                {data.addons.includes("claude-sessions") && (
+                  <TabsContent value="sessions">
+                    <Sessions days={Math.min(days, 30)} now={now} />
+                  </TabsContent>
+                )}
+              </Tabs>
+            </div>
+          )}
+        </div>
+      </TooltipProvider>
+    </TicketRefsContext.Provider>
   );
 }
