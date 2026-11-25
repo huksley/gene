@@ -380,13 +380,18 @@ runs, and its activity log at rest, just like a coding ticket.
 ### Branch
 
 A program that links a repo runs on that repo's default branch. Pin another one with a
-**`## Branch`** section holding just the branch name (or link the repo as
-`…/tree/<branch>`; `## Branch` wins when both are set):
+**`## Branch`** section naming it (or link the repo as `…/tree/<branch>`; `## Branch`
+wins when both are set):
 
 ```markdown
 ## Branch
 release/2.x
 ```
+
+The first line that is just a branch name, or says `branch <name>` / `Branch: <name>`,
+counts. Links on the line are ignored, so the repo link can sit in the same section
+(`Branch main on https://gitlab.example.com/group/app`). A section that names no branch
+leaves the run on the default.
 
 The program's worktree is reused across runs, so before **every** run Gene fetches the
 branch and resets the worktree to `origin/<branch>`. Leftover edits and local commits from

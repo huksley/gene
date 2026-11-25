@@ -179,6 +179,21 @@ test("programBranch: reads the ## Branch section, stripping backticks and origin
   assert.equal(programBranch("## Branch\n\n  origin/develop  \n## Workflow\nx"), "develop");
 });
 
+test("programBranch: prose and links around the branch (as Linear stores them)", () => {
+  const repo = "[https://gitlab.example.com/g/app/](<https://gitlab.example.com/g/app/>)";
+  // CORE-507 as it failed, and as it reads now.
+  assert.equal(programBranch(`## Branch\n\n${repo} branch main\n\n## Workflow\nx`), "main");
+  assert.equal(programBranch(`## Branch\n\nBranch main\n\nOn Repo ${repo}\n\n## Workflow\nx`), "main");
+  assert.equal(programBranch("## Branch\nbranch: `release/2.x`"), "release/2.x");
+  assert.equal(programBranch("## Branch\n* **Branch:** origin/develop"), "develop");
+  assert.equal(programBranch("## Branch\nOn https://gitlab.example.com/g/app\n`hotfix/1`"), "hotfix/1");
+});
+
+test("programBranch: no recognisable branch → undefined (the repo link / default decides)", () => {
+  assert.equal(programBranch("## Branch\nOn Repo [https://gitlab.example.com/g/app](<https://gitlab.example.com/g/app>)"), undefined);
+  assert.equal(programBranch("## Branch\nwhatever the default is"), undefined);
+});
+
 test("programBranch: absent or empty section → undefined", () => {
   assert.equal(programBranch("## Workflow\ndo it"), undefined);
   assert.equal(programBranch("## Branch\n\n## Workflow\nx"), undefined);
@@ -438,4 +453,9 @@ test("fire queue: a comment fire keeps its comment through a re-queue", () => {
   const ask = comment("c9", false, "2026-11-11T11:00:00.000Z", "!gene go");
   fireProgram("PRG-9", "comment", undefined, ask);
   assert.deepEqual(takeFireRequest("PRG-9"), { source: "comment", reason: undefined, comment: ask });
+});
+
+test("programBranch: underscores in the name survive", () => {
+  assert.equal(programBranch("## Branch\nfeature_x"), "feature_x");
+  assert.equal(programBranch("## Branch\nBranch: `my_branch/v2`"), "my_branch/v2");
 });

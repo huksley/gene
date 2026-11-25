@@ -342,17 +342,38 @@ export const replaceRunNotes = (description: string, notes: string): string => {
   return next === -1 ? `${before}${section}` : `${before}${section}\n${rest.slice(next)}`;
 };
 
+/** A plausible git branch name: no spaces, no `..`, not starting with `-`. */
+const BRANCH_NAME = /^[A-Za-z0-9_][\w./-]*$/;
+
 /**
- * The branch a program pins in its `## Branch` section — the first non-empty line,
- * with markdown backticks and an `origin/` prefix stripped. Undefined when the
- * section is absent/empty (the run then uses the repo link's /tree/<ref>/, else the
- * repo's default branch).
+ * The branch named on one line of the `## Branch` section, or undefined. Links and URLs
+ * are dropped first (Linear stores a pasted URL as `[url](<url>)`), along with list
+ * bullets, backticks and bold, so `branch main` / `Branch: main` reads as the branch,
+ * and so does a line that is nothing but the name (`main`, `origin/develop`).
+ */
+const branchOnLine = (line: string): string | undefined => {
+  const withoutLinks = line.replace(/\[[^\]]*\]\([^)]*\)/g, " ").replace(/https?:\/\/\S+/g, " ");
+  const text = withoutLinks
+    .replace(/^\s*[-*+]\s+/, "")
+    .replace(/[`*]/g, "")
+    .trim();
+  const labelled = /(?:^|\s)branch\s*:?\s+(\S+)/i.exec(text)?.[1];
+  // A bare word is the branch only when it's all the line says (`On <url>` isn't one).
+  const bare = withoutLinks === line && !/\s/.test(text) ? text : undefined;
+  const candidate = (labelled ?? bare)?.replace(/^origin\//, "");
+  return candidate && BRANCH_NAME.test(candidate) && !candidate.includes("..") ? candidate : undefined;
+};
+
+/**
+ * The branch a program pins in its `## Branch` section: the first line naming one (see
+ * branchOnLine), with an `origin/` prefix stripped. Undefined when the section is absent
+ * or names no branch (the run then uses the repo link's /tree/<ref>/, else the repo's
+ * default branch).
  */
 export const programBranch = (description: string): string | undefined => {
-  const line = sectionBody(description, "## Branch")
-    .split("\n")
-    .map(l => l.replace(/`/g, "").trim())
-    .find(l => l !== "");
-  const branch = line?.replace(/^origin\//, "");
-  return branch || undefined;
+  for (const line of sectionBody(description, "## Branch").split("\n")) {
+    const branch = branchOnLine(line);
+    if (branch) return branch;
+  }
+  return undefined;
 };
